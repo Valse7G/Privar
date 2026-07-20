@@ -7,6 +7,8 @@ import {
   buildDepositCalldata, buildWithdrawCalldata,
   buildShieldedSendCalldata, buildPrivateSwapCalldata, buildPrivateBridgeCalldata,
   buildSwapAdapterRouteData, buildAtomicSwapCalldata,
+  buildSwapWithRouteCalldata, buildLiFiBridgeCalldata,
+  encodeLiFiRouteData, fetchLiFiQuote,
   buildApproveCalldata, buildStakeCalldata, needsApproveBeforeDeposit,
   randomBytes32, buildGetLastRootCall,
   buildRegisterViewKeyCalldata, buildHasViewKeyCall, buildGetViewKeyCall,
@@ -2790,14 +2792,14 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
 }
 
 function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBals, recomputeShielded, protocolStats }) {
-  // ── Architecture: PrivARCShieldVault.privateSwapExec → MockSwapRouter ───────────
+  // ── Architecture: PrivARCShieldVault.privateSwap()/privateSwapWithRoute() ──
   // Flow (1 tx via PrivARCShieldVault) :
-  //   PrivARCShieldVault.privateSwapExec(SwapParams)
-  //     → PrivateSwap.executeSwap()
-  //       → MockSwapRouter.fallback(routeData)   [whitelisted, pre-funded]
+  //   PrivARCShieldVault.privateSwap[WithRoute](...)
+  //     → swapRouter.executeSwap()
+  //       → LiFiPrivacyAdapter (default, v3.2) → LI.FI Diamond, off-chain-quoted route
+  //         (fallback: TowerSwapAdapter, testnet-simulated pricing, ignores routeData)
   //
-  // Requires: deploy-mock-swap-router.js must have been executed
-  // and MockSwapRouter address set in CONTRACTS.MockSwapRouter
+  // See scripts/deploy-lifi.js for how swapRouter gets set.
 
   const TK  = ["USDC","EURC","cirBTC"];
   const [fr, setFr]           = useState("USDC");
@@ -2836,19 +2838,51 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     if (fr === to) { notify("Swap","Sélectionnez deux tokens différents.","error"); return; }
     if (tkFr.bal <= 0) { notify("Swap",`Solde shieldé ${fr} insuffisant.`,"error"); return; }
 
-    // Atomic swap via PrivARCShieldVault.privateSwap() + TowerSwapAdapter
-    // Funds NEVER touch user wallet — atomically re-shielded after swap
-    const swapAdapter = CONTRACTS.TowerSwapAdapter;
-    if (!swapAdapter || swapAdapter === "0x0000000000000000000000000000000000000000") {
-      notify("Swap","TowerSwapAdapter non déployé. Exécutez deploy.js et ajoutez VITE_TOWER_SWAP_ADAPTER dans .env","error");
-      return;
+    // Atomic swap via PrivARCShieldVault.privateSwap() / privateSwapWithRoute()
+    // Funds NEVER touch user wallet — atomically re-shielded after swap.
+    // v3.2: ShieldVault.swapRouter() is LiFiPrivacyAdapter by default — that
+    // adapter REQUIRES a non-empty routeData (an off-chain LI.FI quote) or it
+    // reverts with EmptyRoute(). TowerSwapAdapter (rollback target) ignores
+    // routeData entirely, so the legacy no-route call still works against it.
+    const usingLiFi = CONTRACTS.LiFiPrivacyAdapter && CONTRACTS.LiFiPrivacyAdapter !== "0x0000000000000000000000000000000000000000";
+    if (!usingLiFi) {
+      const swapAdapter = CONTRACTS.TowerSwapAdapter;
+      if (!swapAdapter || swapAdapter === "0x0000000000000000000000000000000000000000") {
+        notify("Swap","Aucun swapRouter configuré (ni LiFiPrivacyAdapter, ni TowerSwapAdapter).","error");
+        return;
+      }
     }
 
     setLoading(true);
     const amountBig    = BigInt(Math.round(Number(amount)    * (10 ** tkFr.dec)));
-    const outAmountBig = BigInt(Math.round(parseFloat(q.out) * (10 ** tkTo.dec)));
-    const minOut       = outAmountBig * 990n / 1000n;
+    let   outAmountBig = BigInt(Math.round(parseFloat(q.out) * (10 ** tkTo.dec)));
+    let   minOut       = outAmountBig * 990n / 1000n;
     const deadline     = BigInt(Math.floor(Date.now()/1000) + 600);
+
+    // Fetch the real LI.FI route BEFORE spending the note — if no route
+    // exists for this pair/amount we want to fail early, not mid-swap.
+    // fromAddress/toAddress are the ADAPTER contract, never the user's EOA:
+    // that's what keeps the swap's counterparty private on-chain.
+    let routeData = "0x";
+    if (usingLiFi) {
+      try {
+        const quote = await fetchLiFiQuote({
+          fromChain: ARC_CHAIN_ID, toChain: ARC_CHAIN_ID,
+          fromToken: tkFr.addr, toToken: tkTo.addr,
+          fromAmount: amountBig.toString(),
+          fromAddress: CONTRACTS.LiFiPrivacyAdapter,
+        });
+        routeData = encodeLiFiRouteData(quote.transactionRequest.to, quote.transactionRequest.data);
+        // Prefer LI.FI's own slippage-protected minimum over our local estimate.
+        if (quote?.estimate?.toAmountMin) {
+          outAmountBig = BigInt(quote.estimate.toAmount);
+          minOut       = BigInt(quote.estimate.toAmountMin);
+        }
+      } catch (e) {
+        notify("Swap", `Route LI.FI indisponible: ${e.message}`, "error");
+        setLoading(false); return;
+      }
+    }
 
     // Read Merkle root
     let merkleRoot;
@@ -2889,18 +2923,25 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       swapFeeBps  = bpsRes && bpsRes !== "0x" ? BigInt(bpsRes) : 0n;
     } catch {}
 
-    // Build calldata for PrivARCShieldVault.privateSwap()
-    // Atomic: ShieldVault spends nullifier → TowerSwapAdapter.executeSwap() → re-shield
-    // Tower Exchange / StableFX is the DEX on Arc Testnet: https://www.tower.exchange/
-    const { data, value } = buildAtomicSwapCalldata({
-      nullifier, root: merkleRoot, tokenIn: tkFr.addr, tokenOut: tkTo.addr,
-      amountIn: amountBig, minAmountOut: minOut,
-      commitmentOut, deadline, flatFeeUsdc,
-    });
+    // Build calldata for PrivARCShieldVault.privateSwap() / privateSwapWithRoute()
+    // Atomic: ShieldVault spends nullifier → swapRouter.executeSwap() → re-shield
+    const { data, value } = usingLiFi
+      ? buildSwapWithRouteCalldata({
+          nullifier, root: merkleRoot, tokenIn: tkFr.addr, tokenOut: tkTo.addr,
+          amountIn: amountBig, minAmountOut: minOut,
+          commitmentOut, deadline, routeData,
+        })
+      : buildAtomicSwapCalldata({
+          nullifier, root: merkleRoot, tokenIn: tkFr.addr, tokenOut: tkTo.addr,
+          amountIn: amountBig, minAmountOut: minOut,
+          commitmentOut, deadline, flatFeeUsdc,
+        });
 
     const ok = await sendRealTx({
       label: `Swap ${fr}→${to}`,
-      description: `Private swap ${amount} ${fr} → ~${q.out} ${to} via PrivARCShieldVault + MockSwapRouter`,
+      description: usingLiFi
+        ? `Private swap ${amount} ${fr} → ~${q.out} ${to} via PrivARCShieldVault + LI.FI`
+        : `Private swap ${amount} ${fr} → ~${q.out} ${to} via PrivARCShieldVault + TowerSwapAdapter`,
       buildTx: () => ({ to: CONTRACTS.PrivARCShieldVault, value, data }),
     });
 
@@ -2927,11 +2968,12 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     </select>
   );
 
-  const routerOk = CONTRACTS.TowerSwapAdapter && CONTRACTS.TowerSwapAdapter !== "0x0000000000000000000000000000000000000000";
+  const routerOk = (CONTRACTS.LiFiPrivacyAdapter && CONTRACTS.LiFiPrivacyAdapter !== "0x0000000000000000000000000000000000000000")
+                || (CONTRACTS.TowerSwapAdapter   && CONTRACTS.TowerSwapAdapter   !== "0x0000000000000000000000000000000000000000");
 
   return (
     <div style={{ animation:"fi .3s ease" }}>
-      <PH icon="⇄" title="SWAP" sub="Confidential swap — PrivARCShieldVault + MockSwapRouter (Arc Testnet)"/>
+      <PH icon="⇄" title="SWAP" sub="Confidential swap — PrivARCShieldVault + LI.FI (Arc Testnet)"/>
       <NotOnArcWarning/>
       {!routerOk && (
         <div style={{ background:"rgba(248,113,113,.08)", border:"1px solid rgba(248,113,113,.25)", borderRadius:4, padding:"8px 12px", marginBottom:10, fontSize:8, color:"#fca5a5", fontFamily:"monospace", lineHeight:1.7 }}>
@@ -3389,15 +3431,19 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
 }
 
 function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedBals, recomputeShielded, protocolStats }) {
-  // ── Architecture: PrivARCShieldVault + CCTP v2 direct ───────────────────────────
-  // kit.bridge() requires switching chains in the wallet — not supported on
-  // Arc Testnet browser wallets. We call PrivARCShieldVault.privateBridgeExec()
-  // directly via buildPrivateBridgeCalldata (CCTP v2 burn-and-mint).
+  // ── Architecture: LiFiPrivacyBridge.privateBridge() — v3.2 ─────────────────
+  // Replaces the old 3-step (unshield → swap → CCTP) flow, which sent EURC/
+  // cirBTC into the user's PUBLIC wallet mid-flight — see /areas/privarc.md
+  // audit notes. Now: ONE transaction, ONE contract, funds never at rest
+  // anywhere except LiFiPrivacyBridge itself:
   //
-  // Flow (1 tx) :
-  //   PrivARCShieldVault.privateBridgeExec() → CCTP burn on Arc → mint on destination
+  //   LiFiPrivacyBridge.privateBridge(nullifier, root, token, amount, ...,
+  //     routeData)
+  //     → ShieldVault.withdraw(recipient = LiFiPrivacyBridge)   [same tx]
+  //     → LI.FI Diamond.call(routeData)                         [same tx]
   //
-  // For EURC/cirBTC: call /api/swap first to convert to USDC, then bridge.
+  // routeData is an off-chain LI.FI quote (any token, cross-chain in one
+  // route) — no more separate manual swap-then-bridge step for EURC/cirBTC.
   const CH = Object.values(CCTP_DOMAINS);
   const [destId, setDestId]       = useState(0);
   const [amount, setAmount]       = useState("");
@@ -3409,8 +3455,6 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
   const bals = shieldedBals;
   const ch   = CH.find(c=>c.domainId===destId) || CH[0];
 
-  const KIT_KEY = import.meta.env.VITE_KIT_KEY ?? "";
-
   const BRIDGE_TOKENS = {
     USDC:   { sym:"USDC",   addr: NATIVE_USDC,      dec:6, bal: bals?.usdc ?? 0, color:"#00FFB0" },
     EURC:   { sym:"EURC",   addr: CONTRACTS.EURC,   dec:6, bal: bals?.eurc ?? 0, color:"#60a5fa" },
@@ -3418,58 +3462,15 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
   };
   const tk = BRIDGE_TOKENS[token] || BRIDGE_TOKENS.USDC;
 
-  // ── Helper: withdraw note from PrivARCShieldVault to wallet ─────────────────────
-  const withdrawToWallet = async (tokenAddr, dec, amountBig) => {
-    const notes      = getNotes(account?.address);
-    const tokenNotes = notes.filter(n => n.token?.toLowerCase() === tokenAddr.toLowerCase());
-    let note = tokenNotes.find(n => BigInt(Math.round(Number(n.amount)||0)) >= amountBig);
-    if (!note && tokenNotes.length > 0) {
-      note = tokenNotes.reduce((best, n) =>
-        BigInt(Math.round(Number(n.amount)||0)) > BigInt(Math.round(Number(best.amount)||0)) ? n : best
-      );
-    }
-    if (!note) return false;
-
-    let root;
-    try {
-      const res = await rpcCall("eth_call", [{ to: CONTRACTS.PrivARCMerkleTreeManager, data: buildGetLastRootCall() }, "latest"]);
-      root = (res && res !== "0x" && res.length >= 66) ? res : null;
-    } catch { root = null; }
-    if (!root) return false;
-
-    let flatFeeUsdc = 0n;
-    try {
-      const feeRes = await rpcCall("eth_call", [{ to: CONTRACTS.PrivARCShieldVault, data: SEL.flatFeeUsdc }, "latest"]);
-      flatFeeUsdc = feeRes && feeRes !== "0x" ? BigInt(feeRes) : 0n;
-    } catch {}
-
-    const { data, value: txValue } = buildWithdrawCalldata({
-      nullifier:  randomBytes32(), root,
-      token:      tokenAddr, recipient: account.address,
-      amount:     amountBig, relayerFee: 0n,
-      relayer:    "0x0000000000000000000000000000000000000000",
-      flatFeeUsdc,
-    });
-
-    const ok = await sendRealTx({
-      label: `Unshield ${token}`,
-      description: `Withdraw ${amount} ${token} from PrivARCShieldVault`,
-      buildTx: () => ({ to: CONTRACTS.PrivARCShieldVault, value: txValue, data }),
-    });
-
-    if (ok) {
-      const updated   = notes.filter(n => n.commitment !== note.commitment);
-      const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
-      if (remaining > 0n) updated.push({ ...note, amount: remaining.toString(), commitment: randomBytes32() });
-      saveNotes(account?.address, updated);
-      recomputeShielded?.();
-    }
-    return ok;
-  };
-
   const bridge = async () => {
     if (!amount || Number(amount) <= 0 || !onArc) return;
     if (tk.bal <= 0) { notify("Bridge", `Solde shieldé ${token} insuffisant.`, "error"); return; }
+
+    const bridgeAddr = CONTRACTS.LiFiPrivacyBridge;
+    if (!bridgeAddr || bridgeAddr === "0x0000000000000000000000000000000000000000") {
+      notify("Bridge", "LiFiPrivacyBridge non déployé. Exécutez scripts/deploy-lifi.js et ajoutez VITE_LIFI_BRIDGE dans .env", "error");
+      return;
+    }
 
     const recipientAddr = (recipient.trim().startsWith("0x") && recipient.trim().length === 42)
       ? recipient.trim() : account?.address;
@@ -3477,175 +3478,97 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
     setLoading(true);
     const amountBig = BigInt(Math.round(Number(amount) * (10 ** tk.dec)));
 
-    // ── Si non-USDC : unshield + swap → USDC via /api/swap ───────────────────
-    let usdcAmountStr = amount;
-    if (token !== "USDC") {
-      // Validate kitKey only if needed for swap step
-      if (!KIT_KEY || !KIT_KEY.startsWith("KIT_KEY:") || KIT_KEY.split(":").length !== 3) {
-        notify("Bridge", `EURC/cirBTC bridge requires VITE_KIT_KEY for swap→USDC step (format: KIT_KEY:<id>:<secret>).`, "error");
-        setLoading(false); return;
-      }
-      setStep(`Étape 1/3 — Unshield ${token}…`);
-      const wd = await withdrawToWallet(tk.addr, tk.dec, amountBig);
-      if (!wd) {
-        notify("Bridge", `Échec unshield ${token}.`, "error");
-        setLoading(false); setStep(""); return;
-      }
-      setStep(`Étape 2/3 — Swap ${token}→USDC…`);
-      try {
-        // Use PrivateSwapAdapter via PrivARCShieldVault.privateSwapExec (same flow as SwapPanel)
-        const swapAdapter = CONTRACTS.PrivateSwapAdapter;
-        if (!swapAdapter || swapAdapter === "0x0000000000000000000000000000000000000000") {
-          throw new Error("PrivateSwapAdapter non déployé — impossible de swapper vers USDC");
-        }
-
-        const tokenInAddr  = BRIDGE_TOKENS[token]?.addr || NATIVE_USDC;
-        const dec          = BRIDGE_TOKENS[token]?.dec || 6;
-        const amtBig       = BigInt(Math.round(Number(amount) * (10 ** dec)));
-        const eurUsd       = prices?.EUR ?? 1.08;
-        const btcUsd       = prices?.BTC ?? 100000;
-        const toUsd        = { USDC:1, EURC:eurUsd, cirBTC:btcUsd };
-        const rate         = toUsd[token] / toUsd["USDC"];
-        const estimatedOut = BigInt(Math.round(Number(amount) * rate * 0.995 * 1e6));
-        const minOut       = estimatedOut * 990n / 1000n;
-
-        // Build privateSwap via PrivARCShieldVault (consumes shielded note)
-        const swapNotes    = getNotes(account?.address);
-        const swapNote     = swapNotes.filter(n => n.token?.toLowerCase() === tokenInAddr.toLowerCase())
-          .reduce((best, n) => !best || BigInt(Math.round(Number(n.amount)||0)) > BigInt(Math.round(Number(best.amount)||0)) ? n : best, null);
-        if (!swapNote) throw new Error(`Aucune note ${token} shieldée trouvée`);
-
-        let swapRoot;
-        try {
-          const res = await rpcCall("eth_call",[{ to:CONTRACTS.PrivARCMerkleTreeManager, data:buildGetLastRootCall() },"latest"]);
-          swapRoot = (res && res !== "0x" && res.length >= 66) ? res : null;
-        } catch { swapRoot = null; }
-        if (!swapRoot) throw new Error("Impossible de lire le Merkle root");
-
-        const swapNullifier = randomBytes32();
-        const swapCommitOut = randomBytes32();
-        let swapFlatFee = 0n;
-        try {
-          const r = await rpcCall("eth_call",[{ to:CONTRACTS.PrivARCShieldVault, data:SEL.flatFeeUsdc },"latest"]);
-          swapFlatFee = r && r !== "0x" ? BigInt(r) : 0n;
-        } catch {}
-
-        const swapRouteData = buildSwapAdapterRouteData({
-          tokenIn: tokenInAddr, tokenOut: NATIVE_USDC,
-          amountIn: amtBig, minAmountOut: minOut,
-          feeTier: token === "cirBTC" ? 3000 : 500,
-        });
-        const { data: swapData, value: swapValue } = buildPrivateSwapCalldata({
-          nullifier: swapNullifier, merkleRoot: swapRoot, commitmentOut: swapCommitOut,
-          tokenIn: tokenInAddr, tokenOut: NATIVE_USDC,
-          amountIn: amtBig, minAmountOut: minOut,
-          deadline: BigInt(Math.floor(Date.now()/1000) + 600),
-          dexRouter: swapAdapter, routeData: swapRouteData, flatFeeUsdc: swapFlatFee,
-        });
-        const swapOk = await sendRealTx({
-          label: `Swap ${token}→USDC`,
-          description: `PrivateSwap: ${amount} ${token} → ~${(Number(estimatedOut)/1e6).toFixed(2)} USDC`,
-          buildTx: () => ({ to: CONTRACTS.PrivARCShieldVault, value: swapValue, data: swapData }),
-        });
-        if (!swapOk) throw new Error("PrivateSwap vers USDC échoué");
-
-        // Update notes: replace input note with USDC output note
-        const swapUpdated = swapNotes.filter(n => n.commitment !== swapNote.commitment);
-        swapUpdated.push({ commitment: swapCommitOut, amount: estimatedOut.toString(), token: NATIVE_USDC, ts: Date.now() });
-        saveNotes(account?.address, swapUpdated);
-        recomputeShielded?.();
-
-        usdcAmountStr = (Number(estimatedOut) / 1e6).toFixed(2);
-      } catch (e) {
-        notify("Bridge", `Swap ${token}→USDC échoué: ${e.message}. Vos ${token} sont dans le wallet.`, "error");
-        setLoading(false); setStep(""); return;
-      }
-      setStep(`Étape 3/3 — Bridge USDC → ${ch.name}…`);
-    } else {
-      setStep(`Bridge USDC → ${ch.name} via CCTP v2…`);
+    // 1. Merkle root
+    setStep("Étape 1/3 — Lecture du Merkle root…");
+    let root;
+    try {
+      const res = await rpcCall("eth_call", [{ to: CONTRACTS.PrivARCMerkleTreeManager, data: buildGetLastRootCall() }, "latest"]);
+      root = (res && res !== "0x" && res.length >= 66) ? res : null;
+    } catch { root = null; }
+    if (!root) {
+      notify("Bridge", "Impossible de lire le Merkle root.", "error");
+      setLoading(false); setStep(""); return;
     }
 
-    // ── Bridge USDC via PrivARCShieldVault.privateBridgeExec (CCTP v2) ──────────────
-    // For USDC: consume the shielded note directly.
-    // For EURC/cirBTC: USDC is now in the wallet after the swap — deposit then bridge.
-    let bridgeOk = false;
-    if (token === "USDC") {
-      // Direct: spend shielded USDC note → CCTP burn
-      let root;
-      try {
-        const res = await rpcCall("eth_call", [{ to: CONTRACTS.PrivARCMerkleTreeManager, data: buildGetLastRootCall() }, "latest"]);
-        root = (res && res !== "0x" && res.length >= 66) ? res : null;
-      } catch { root = null; }
-      if (!root) {
-        notify("Bridge", "Impossible de lire le Merkle root.", "error");
-        setLoading(false); setStep(""); return;
-      }
-
-      const mintRecipient = "0x" + "000000000000000000000000" + recipientAddr.replace("0x","").toLowerCase();
-      const notes         = getNotes(account?.address);
-      const tokenNotes    = notes.filter(n => n.token?.toLowerCase() === NATIVE_USDC.toLowerCase());
-      let note = tokenNotes.find(n => BigInt(Math.round(Number(n.amount)||0)) >= amountBig);
-      if (!note && tokenNotes.length > 0) {
-        note = tokenNotes.reduce((best, n) =>
-          BigInt(Math.round(Number(n.amount)||0)) > BigInt(Math.round(Number(best.amount)||0)) ? n : best
-        );
-      }
-      if (!note) {
-        notify("Bridge", "Aucune note USDC shieldée trouvée.", "error");
-        setLoading(false); setStep(""); return;
-      }
-
-      let flatFeeUsdc = 0n;
-      try {
-        const feeRes = await rpcCall("eth_call", [{ to: CONTRACTS.PrivARCShieldVault, data: SEL.flatFeeUsdc }, "latest"]);
-        flatFeeUsdc = feeRes && feeRes !== "0x" ? BigInt(feeRes) : 0n;
-      } catch {}
-
-      const { data, value } = buildPrivateBridgeCalldata({
-        nullifier: randomBytes32(), merkleRoot: root,
-        destinationDomain: ch.domainId,
-        token:     NATIVE_USDC,
-        amount:    amountBig,
-        mintRecipient,
-        maxBridgeFee: 0n,
-        flatFeeUsdc,
-      });
-
-      bridgeOk = await sendRealTx({
-        label: `Bridge → ${ch.name}`,
-        description: `${amount} USDC → ${ch.name} via CCTP v2 (private)`,
-        buildTx: () => ({ to: CONTRACTS.PrivARCShieldVault, value, data }),
-      });
-
-      if (bridgeOk) {
-        const updated   = notes.filter(n => n.commitment !== note.commitment);
-        const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
-        if (remaining > 0n) updated.push({ ...note, amount: remaining.toString(), commitment: randomBytes32() });
-        saveNotes(account?.address, updated);
-        recomputeShielded?.();
-        notify("Bridge ✓", `${amount} USDC → ${ch.name} — arrivée dans 1-5 min.`, "success");
-      }
-    } else {
-      // EURC/cirBTC: USDC now in wallet after swap — send directly via CCTP
-      // (no PrivARCShieldVault involved for this step — public bridge)
-      notify("Bridge ✓", `${token} swappé en ${usdcAmountStr} USDC — bridge CCTP lancé vers ${ch.name}.`, "success");
-      bridgeOk = true;
+    // 2. Find shielded note for the selected token
+    const notes      = getNotes(account?.address);
+    const tokenNotes = notes.filter(n => n.token?.toLowerCase() === tk.addr.toLowerCase());
+    let note = tokenNotes.find(n => BigInt(Math.round(Number(n.amount)||0)) >= amountBig);
+    if (!note && tokenNotes.length > 0) {
+      note = tokenNotes.reduce((best, n) =>
+        BigInt(Math.round(Number(n.amount)||0)) > BigInt(Math.round(Number(best.amount)||0)) ? n : best
+      );
+    }
+    if (!note) {
+      notify("Bridge", `Aucune note ${token} shieldée trouvée.`, "error");
+      setLoading(false); setStep(""); return;
     }
 
-    if (!bridgeOk) notify("Bridge", "Bridge CCTP échoué.", "error");
+    // 3. LI.FI route: fromAddress is LiFiPrivacyBridge itself (never the
+    // user's EOA) — it's the contract that will hold the unshielded funds
+    // for the single atomic tx and is what LI.FI/any observer sees as
+    // counterparty on Arc. toAddress is the destination recipient, since
+    // that's inherently a public wallet on the destination chain anyway.
+    setStep(`Étape 2/3 — Route LI.FI vers ${ch.name}…`);
+    let routeData;
+    try {
+      const quote = await fetchLiFiQuote({
+        fromChain: ARC_CHAIN_ID, toChain: ch.chainId,
+        fromToken: tk.addr, toToken: "USDC",
+        fromAmount: amountBig.toString(),
+        fromAddress: bridgeAddr, toAddress: recipientAddr,
+      });
+      routeData = encodeLiFiRouteData(quote.transactionRequest.to, quote.transactionRequest.data);
+    } catch (e) {
+      notify("Bridge", `Route LI.FI indisponible: ${e.message}`, "error");
+      setLoading(false); setStep(""); return;
+    }
+
+    // 4. Protocol fee (flat USDC side-payment, EURC/cirBTC only — same model as withdraw())
+    let flatFeeUsdc = 0n;
+    try {
+      const feeRes = await rpcCall("eth_call", [{ to: CONTRACTS.PrivARCShieldVault, data: SEL.flatFeeUsdc }, "latest"]);
+      flatFeeUsdc = feeRes && feeRes !== "0x" ? BigInt(feeRes) : 0n;
+    } catch {}
+
+    // 5. Atomic unshield + LI.FI bridge — ONE transaction, targeting
+    // LiFiPrivacyBridge directly (NOT PrivARCShieldVault).
+    setStep(`Étape 3/3 — Unshield + Bridge ${token} → ${ch.name}…`);
+    const { data, value } = buildLiFiBridgeCalldata({
+      nullifier: randomBytes32(), root,
+      token: tk.addr, amount: amountBig,
+      relayer: "0x0000000000000000000000000000000000000000", relayerFee: 0n,
+      routeData, flatFeeUsdc,
+    });
+
+    const bridgeOk = await sendRealTx({
+      label: `Bridge → ${ch.name}`,
+      description: `${amount} ${token} → ${ch.name} via LiFiPrivacyBridge (privé, 1 tx)`,
+      buildTx: () => ({ to: bridgeAddr, value, data }),
+    });
+
+    if (bridgeOk) {
+      const updated   = notes.filter(n => n.commitment !== note.commitment);
+      const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
+      if (remaining > 0n) updated.push({ ...note, amount: remaining.toString(), commitment: randomBytes32() });
+      saveNotes(account?.address, updated);
+      recomputeShielded?.();
+      notify("Bridge ✓", `${amount} ${token} → ${ch.name} — arrivée dans 1-5 min.`, "success");
+    } else {
+      notify("Bridge", "Bridge LI.FI échoué.", "error");
+    }
+
     setAmount(""); setRecipient(""); setLoading(false); setStep("");
   };
 
   return (
     <div style={{ animation:"fi .3s ease" }}>
-      <PH icon="⟺" title="BRIDGE" sub="Confidential bridge — PrivARCShieldVault + Circle CCTP v2"/>
+      <PH icon="⟺" title="BRIDGE" sub="Confidential bridge — LiFiPrivacyBridge (Arc Testnet)"/>
       <NotOnArcWarning/>
 
       <div style={{ background:"rgba(14,165,233,.04)", border:"1px solid rgba(14,165,233,.18)", borderRadius:4, padding:"9px 12px", marginBottom:8, fontSize:8, fontFamily:"monospace", color:"#94a3b8", lineHeight:1.6 }}>
-        <div style={{ color:"#0EA5E9", fontWeight:700, marginBottom:3 }}>⬡ Circle App Kit + CCTP v2</div>
-        {token === "USDC"
-          ? "1 tx : PrivARCShieldVault.privateBridgeExec → CCTP burn → mint sur destination"
-          : `3 étapes : Unshield ${token} → Swap→USDC → Bridge CCTP`}
+        <div style={{ color:"#0EA5E9", fontWeight:700, marginBottom:3 }}>⬡ LI.FI — unshield + bridge en 1 tx</div>
+        1 transaction : LiFiPrivacyBridge.privateBridge → unshield + route LI.FI → arrivée sur {ch?.name}. Fonds jamais exposés dans un wallet public entre les deux étapes.
       </div>
 
       <ShieldedWallet bals={bals} actionableFilter={["USDC","EURC","cirBTC"]}
@@ -3687,8 +3610,8 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
 
       <IG items={[
         ["Token",   token,    "sélectionné"],
-        ["Vers",    ch?.name, "CCTP v2"],
-        ["Privacy", "✓ PrivARCShieldVault", "nullifier"],
+        ["Vers",    ch?.name, "LI.FI"],
+        ["Privacy", "✓ LiFiPrivacyBridge", "1 tx atomique"],
       ]}/>
 
       {tk.bal <= 0 && (

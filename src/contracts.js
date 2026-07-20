@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════════════════════════
-//  PrivARC OS — Contract Config v12.0.0
+//  PrivARC OS — Contract Config v12.1.0
 //
-//  Addresses synced with latest.json v3.0.0 — Arc Testnet — 2026-07-20
+//  Addresses synced with latest.json v3.0.0 + LI.FI adapters — Arc Testnet — 2026-07-20
 //  Deployer: 0x1Dc72450B3e2782AcD669D7C27073f2C8F2c9894
 //
 //  ADDRESSES: sourced from VITE_ env vars (Vercel) or hardcoded fallbacks
@@ -11,23 +11,27 @@ export const ARC_CHAIN_ID = 5042002;
 
 // ── Contract addresses ────────────────────────────────────────────────────────
 const _c = {
-  PrivARCShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0x0CE16A33f3dbd4F903622bBB8bEFf04934A766fc",
+  PrivARCShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0x8e6933Da376D53CE8A5fD61f6b5f67B9B64DC89E",
   Timelock:            import.meta.env.VITE_TIMELOCK              ?? "0x8DF7C02012EBec968bdEc100F4fEAF772AcAab99",
   Governance:          import.meta.env.VITE_GOVERNANCE            ?? "0x89F08E2BBc963e48986D8A0FfA23858bA643C78A",
-  PrivARCStaking:             import.meta.env.VITE_STAKING               ?? "0x6e8a19b2CEE1AFb45357259dd532E4C649BF12D2",
-  PrivARCNullifierRegistry:   import.meta.env.VITE_NULLIFIER_REGISTRY    ?? "0x80080E52F72578961eb07fB92282f2A88520e19a",
-  PrivARCMerkleTreeManager:   import.meta.env.VITE_MERKLE_TREE_MANAGER   ?? "0x79A9c0F6218052a035F017eAf48EB01E0BC63f52",
-  PrivARCDepositManager:      import.meta.env.VITE_DEPOSIT_MANAGER       ?? "0x553CC1DC7B66697755E2350a9b0668CD324932E7",
-  WithdrawalManager:   import.meta.env.VITE_WITHDRAWAL_MANAGER    ?? "0x3590b80AE2C0f7876e6B1E35F3eAe2011a7f9919",
+  PrivARCStaking:             import.meta.env.VITE_STAKING               ?? "0xFf59d163f836844eA05186616Dd93E0d4BBdEE69",
+  PrivARCNullifierRegistry:   import.meta.env.VITE_NULLIFIER_REGISTRY    ?? "0x18Bff21dFB1f28F7E146d575D29a1D1F3c12a16e",
+  PrivARCMerkleTreeManager:   import.meta.env.VITE_MERKLE_TREE_MANAGER   ?? "0xeF118A6FEdd6C20AD3203B33455323e2C919C7d5",
+  PrivARCDepositManager:      import.meta.env.VITE_DEPOSIT_MANAGER       ?? "0xF1164b3340780614e6dd9E15b9895Cb8eb2168d6",
+  WithdrawalManager:   import.meta.env.VITE_WITHDRAWAL_MANAGER    ?? "0xEa50F28A1b7a80bF8784E9917C56fBD33751290D",
   ShieldedTransfer:    import.meta.env.VITE_SHIELDED_TRANSFER     ?? "0xa880603916611a0e624f9A04c7f08b62f0532543",
   PrivateSwap:         import.meta.env.VITE_PRIVATE_SWAP          ?? "0xd16F252FFc0a406dFcF58eBAF7EA49f9e1DF78Eb",
   PrivateBridge:       import.meta.env.VITE_PRIVATE_BRIDGE        ?? "0x1C22eEb6c422BeF73B335e1E5668ec3109839B40",
   EmergencyController: import.meta.env.VITE_EMERGENCY_CONTROLLER  ?? "0xa788E96DcF4dBf348995bc5b8D0C7BbaD8e5e88F",
-  MockVerifierZK:      import.meta.env.VITE_VERIFIER_ZK           ?? "0x52E476c865b10c7929F9C15338b67d4E2b26117F",
+  MockVerifierZK:      import.meta.env.VITE_VERIFIER_ZK           ?? "0x472335061E184d43D0f56C4a9A576195eA045Ec5",
   // ViewKeyRegistry v1.0.0 — deployed 2026-06-20. Confidential-send auto-discovery
   // (real ECDH stealth notes) is feature-gated on this being non-null — see
   // DApp.jsx ensureViewKeyRegistered()/scanStealthNotes().
   ViewKeyRegistry:     import.meta.env.VITE_VIEW_KEY_REGISTRY     ?? "0x590D1FDC3FbD4CAb151cb7E1557D9C4ecEa2C24b",
+  // LI.FI privacy adapters v3.2 — deployed 2026-07-20, see /areas/privarc.md
+  LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0xBEA02a6599cC0d90DefE7563DEc6Ed7eBdb54675",
+  LiFiPrivacyBridge:   import.meta.env.VITE_LIFI_BRIDGE           ?? "0x974366d465bc137d34E2a26acC945E2d43B2A1dD",
+  LiFiDiamond:         import.meta.env.VITE_LIFI_DIAMOND          ?? "0xFf70F4A1d11995621854F3692acF286d8aCd04b2",
 };
 
 export const CONTRACTS = {
@@ -56,11 +60,19 @@ export const CONTRACTS = {
   // Deploy: npx hardhat run scripts/deploy-private-swap-adapter.js --network arc_testnet
   // TowerSwapAdapter — Tower Exchange (StableFX) router for confidential swaps
   // Deployed by: npx hardhat run scripts/deploy.js --network arc_testnet
-  TowerSwapAdapter:    import.meta.env.VITE_TOWER_SWAP_ADAPTER ?? "0xc4CdF6A69788DE2Cb18439318Af6AEf9EF23d161",
+  // NOTE: as of the v3.2 LI.FI deployment, ShieldVault.swapRouter() points to
+  // LiFiPrivacyAdapter, NOT this address — TowerSwapAdapter is kept deployed
+  // only as a documented rollback target (see scripts/deploy-lifi.js).
+  TowerSwapAdapter:    import.meta.env.VITE_TOWER_SWAP_ADAPTER ?? "0xcb7BeafC503f57F72FaB15A37968ACb54223Bd2D",
   PrivateBridge:       _c.PrivateBridge,
   EmergencyController: _c.EmergencyController,
   MockVerifierZK:      _c.MockVerifierZK,
   ViewKeyRegistry:     _c.ViewKeyRegistry,
+  // LI.FI privacy adapters — active default swap router + confidential bridge.
+  // See contracts/adapters/LiFiPrivacyAdapter.sol / LiFiPrivacyBridge.sol.
+  LiFiPrivacyAdapter:  _c.LiFiPrivacyAdapter,
+  LiFiPrivacyBridge:   _c.LiFiPrivacyBridge,
+  LiFiDiamond:         _c.LiFiDiamond,
 };
 
 // ── Token config ──────────────────────────────────────────────────────────────
@@ -160,6 +172,10 @@ export const SEL = {
   withdraw:            "0x842dcc9e",  // withdraw(bytes32,bytes32,address,address,uint256,address,uint256)
   shieldedSend:        "0xfc70b4ba",  // shieldedSend(bytes32,bytes32,bytes32,bytes) — encryptedNote now inline, not payable
   privateSwap:         "0x4ac0a154",  // privateSwap(bytes32,bytes32,address,address,uint256,uint256,bytes32,uint256) — not payable
+  // v3.2 — forwards an off-chain-quoted routeData (e.g. LI.FI) through to swapRouter.
+  // Selector computed against PrivARCShieldVault.sol's exact new signature — see
+  // scripts/deploy-lifi.js / contracts/core/PrivARCShieldVault.sol.
+  privateSwapWithRoute:"0x9fcea826",  // privateSwapWithRoute(bytes32,bytes32,address,address,uint256,uint256,bytes32,uint256,bytes)
 
   // ── DEPRECATED (v2.x struct-based ABI, does NOT exist on v3.0.0 vault) ──────
   // Kept only so old references don't hard-crash; DO NOT call these against the
@@ -167,7 +183,9 @@ export const SEL = {
   // exactly like the "failed to call deposit" tx on ArcScan.
   shieldedSendWithNote:"0xd3c9406f",  // OBSOLETE — folded into shieldedSend() in v3.0.0
   privateSwapExec:     "0x49fa2a6e",  // OBSOLETE — replaced by privateSwap() in v3.0.0
-  privateBridgeExec:  "0x8fa6444e",  // still used — PrivateBridge is a separate contract, unaffected by this migration
+  privateBridgeExec:  "0x8fa6444e",  // OBSOLETE — public CCTP path on the orphaned PrivateBridge contract, replaced by LiFiPrivacyBridge below
+  // LiFiPrivacyBridge.privateBridge(bytes32,bytes32,address,uint256,address,uint256,bytes) — atomic unshield+LI.FI-bridge
+  lifiPrivateBridge:  "0x74c37dfc",
 
   // PrivARCShieldVault views
   totalShielded:      "0x6d7f2685",  // totalShielded(address)
@@ -432,7 +450,75 @@ export function buildAtomicSwapCalldata({
   return { data, value: "0x0" };
 }
 
-// ── DEPRECATED — v2.x struct-based ABI (privateSwapExec), does NOT exist on the
+// ── PrivARCShieldVault.privateSwapWithRoute() — v3.2, forwards routeData ──
+// Same as buildAtomicSwapCalldata but appends a dynamic `routeData` blob that
+// swapRouter.executeSwap() actually receives. Required whenever swapRouter is
+// LiFiPrivacyAdapter — it reverts on an empty routeData (TowerSwapAdapter, by
+// contrast, ignores it). `routeData` here should already be the encoded
+// (target, calldata) tuple — see encodeLiFiRouteData() below.
+export function buildSwapWithRouteCalldata({
+  nullifier, root, tokenIn, tokenOut,
+  amountIn, minAmountOut, commitmentOut,
+  deadline = BigInt(Math.floor(Date.now()/1000) + 600),
+  routeData = "0x",
+}) {
+  const offRoute = encodeUint256(0x120n); // 9 head words × 32 = 0x120
+  const data = SEL.privateSwapWithRoute
+    + nullifier.slice(2).padStart(64,"0")
+    + root.slice(2).padStart(64,"0")
+    + tokenIn.slice(2).padStart(64,"0")
+    + tokenOut.slice(2).padStart(64,"0")
+    + BigInt(amountIn).toString(16).padStart(64,"0")
+    + BigInt(minAmountOut).toString(16).padStart(64,"0")
+    + commitmentOut.slice(2).padStart(64,"0")
+    + BigInt(deadline).toString(16).padStart(64,"0")
+    + offRoute
+    + encodeBytes(routeData);
+
+  return { data, value: "0x0" };
+}
+
+// ── LI.FI routeData encoder ───────────────────────────────────────────────
+// Matches LiFiPrivacyAdapter.executeSwap() / LiFiPrivacyBridge.privateBridge()'s
+// `abi.decode(routeData, (address target, bytes calldata_))`. `target` MUST be
+// the allowlisted LI.FI Diamond (CONTRACTS.LiFiDiamond) or the adapter reverts
+// with RouteTargetMismatch — this is what stops a route from redirecting funds
+// through an arbitrary contract.
+export function encodeLiFiRouteData(diamondAddress, txCalldataHex) {
+  const addr   = encodeAddress(diamondAddress);
+  const offset = encodeUint256(0x40n);
+  return "0x" + addr + offset + encodeBytes(txCalldataHex);
+}
+
+// ── LI.FI quote fetch (li.quest public API — no key required for quotes) ──
+// fromAddress/toAddress should be the ADAPTER/BRIDGE CONTRACT, never the
+// user's own EOA — the whole point of routing through LiFiPrivacyAdapter /
+// LiFiPrivacyBridge is that LI.FI (and anyone watching the resulting public
+// tx) sees the contract as counterparty, not the user. For a same-chain swap,
+// toAddress should equal fromAddress (funds return to the contract to be
+// re-shielded). For a bridge, toAddress is the destination recipient.
+export async function fetchLiFiQuote({ fromChain, toChain, fromToken, toToken, fromAmount, fromAddress, toAddress, slippage = 0.01 }) {
+  const params = new URLSearchParams({
+    fromChain:  String(fromChain),
+    toChain:    String(toChain),
+    fromToken,
+    toToken,
+    fromAmount: String(fromAmount),
+    fromAddress,
+    toAddress:  toAddress || fromAddress,
+    slippage:   String(slippage),
+  });
+  const res = await fetch(`https://li.quest/v1/quote?${params.toString()}`);
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`LI.FI quote failed (${res.status}): ${body.slice(0, 200)}`);
+  }
+  const quote = await res.json();
+  if (!quote?.transactionRequest?.to || !quote?.transactionRequest?.data) {
+    throw new Error("LI.FI quote missing transactionRequest — no route found for this pair/amount.");
+  }
+  return quote;
+}
 // v3.0.0 vault. Calling this against the currently deployed contract will revert
 // with empty data (0x), same failure mode as the "failed to call deposit" tx.
 // Use buildAtomicSwapCalldata() instead — it targets the real v3.0.0 privateSwap().
@@ -539,7 +625,36 @@ export function buildPrivateBridgeCalldata({ nullifier, merkleRoot, destinationD
   return { data, value };
 }
 
-// ─── ERC-20 APPROVE ──────────────────────────────────────────────────────────
+// ─── LI.FI PRIVACY BRIDGE (v3.2) ──────────────────────────────────────────────
+// LiFiPrivacyBridge.privateBridge(bytes32 nullifier, bytes32 root, address token,
+//   uint256 amount, address relayer, uint256 relayerFee, bytes routeData) payable
+//
+// Replaces buildPrivateBridgeCalldata()'s CCTP path: unshields the note and
+// executes the LI.FI route in ONE transaction, targeting LiFiPrivacyBridge
+// (NOT PrivARCShieldVault) directly. For EURC/cirBTC, `flatFeeUsdc` is still
+// forwarded as msg.value exactly like a plain withdraw() — see
+// LiFiPrivacyBridge.sol's `vaultFee` handling.
+export function buildLiFiBridgeCalldata({
+  nullifier, root, token, amount,
+  relayer = "0x0000000000000000000000000000000000000000", relayerFee = 0n,
+  routeData, flatFeeUsdc = 0n,
+}) {
+  const offRoute = encodeUint256(0xE0n); // 7 head words × 32 = 0xE0
+  const data = SEL.lifiPrivateBridge
+    + encodeBytes32(nullifier)
+    + encodeBytes32(root)
+    + encodeAddress(token)
+    + encodeUint256(amount)
+    + encodeAddress(relayer)
+    + encodeUint256(relayerFee)
+    + offRoute
+    + encodeBytes(routeData);
+
+  const isNativeUsdc = token.toLowerCase() === NATIVE_USDC.toLowerCase();
+  const value = isNativeUsdc ? "0x0" : "0x" + (BigInt(flatFeeUsdc) * NATIVE_TO_ERC20).toString(16);
+
+  return { data, value };
+}
 export function buildApproveCalldata(spender, amount) {
   return SEL.approve + encodeAddress(spender) + encodeUint256(amount);
 }
@@ -716,10 +831,12 @@ export function decodeBytesReturn(hex) {
 // Circle CCTP v2 domain IDs (matches PrivateBridge.sol constructor)
 export const CCTP_DOMAINS = {
   // kitChain: App Kit chain identifier for kit.bridge() / kit.swap()
-  ethereum: { domainId: 0,  name: "Ethereum Sepolia",  icon: "Ξ",  note: "CCTP v2", kitChain: "Ethereum_Sepolia"       },
-  avalanche:{ domainId: 1,  name: "Avalanche Fuji",    icon: "🔺", note: "CCTP v2", kitChain: "Avalanche_Fuji"         },
-  optimism: { domainId: 2,  name: "Optimism Sepolia",  icon: "🔴", note: "CCTP v2", kitChain: "Optimism_Sepolia"       },
-  arbitrum: { domainId: 3,  name: "Arbitrum Sepolia",  icon: "🔵", note: "CCTP v2", kitChain: "Arbitrum_Sepolia"       },
-  base:     { domainId: 6,  name: "Base Sepolia",      icon: "🔷", note: "CCTP v2", kitChain: "Base_Sepolia"           },
-  polygon:  { domainId: 7,  name: "Polygon Amoy",      icon: "⬟", note: "CCTP v2", kitChain: "Polygon_Amoy_Testnet"  },
+  // chainId: real EVM chain ID, used for LI.FI quotes (fromChain/toChain) —
+  // distinct from CCTP's own domainId numbering.
+  ethereum: { domainId: 0,  chainId: 11155111, name: "Ethereum Sepolia",  icon: "Ξ",  note: "LI.FI", kitChain: "Ethereum_Sepolia"       },
+  avalanche:{ domainId: 1,  chainId: 43113,    name: "Avalanche Fuji",    icon: "🔺", note: "LI.FI", kitChain: "Avalanche_Fuji"         },
+  optimism: { domainId: 2,  chainId: 11155420, name: "Optimism Sepolia",  icon: "🔴", note: "LI.FI", kitChain: "Optimism_Sepolia"       },
+  arbitrum: { domainId: 3,  chainId: 421614,   name: "Arbitrum Sepolia",  icon: "🔵", note: "LI.FI", kitChain: "Arbitrum_Sepolia"       },
+  base:     { domainId: 6,  chainId: 84532,    name: "Base Sepolia",      icon: "🔷", note: "LI.FI", kitChain: "Base_Sepolia"           },
+  polygon:  { domainId: 7,  chainId: 80002,    name: "Polygon Amoy",      icon: "⬟", note: "LI.FI", kitChain: "Polygon_Amoy_Testnet"  },
 };
