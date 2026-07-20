@@ -6,6 +6,7 @@ import {
   decodeUint256, decodeUint8, formatToken,
   buildDepositCalldata, buildWithdrawCalldata,
   buildShieldedSendCalldata, buildPrivateSwapCalldata, buildPrivateBridgeCalldata,
+  buildSwapAdapterRouteData, buildAtomicSwapCalldata,
   buildApproveCalldata, buildStakeCalldata, needsApproveBeforeDeposit,
   randomBytes32, buildGetLastRootCall,
   buildRegisterViewKeyCalldata, buildHasViewKeyCall, buildGetViewKeyCall,
@@ -184,7 +185,7 @@ async function sendTransaction(from, to, valueHex, data = "0x") {
     // Add 30% buffer to avoid out-of-gas on borderline txs
     gasLimit = "0x" + Math.ceil(parseInt(estimated, 16) * 1.3).toString(16);
   } catch {
-    // Fallback: 500k gas — sufficient for ShieldVault operations
+    // Fallback: 500k gas — sufficient for PrivARCShieldVault operations
     gasLimit = "0x7A120";
   }
   return rpcCall("eth_sendTransaction", [{ from, to, value: valueHex, data, gas: gasLimit, chainId: toHex(ARC_TESTNET.id) }]);
@@ -740,14 +741,14 @@ function NotifCenter({ onClose }) {
 ═══════════════════════════════════════════════════════════════ */
 const SIDX = [
   { label:"Overview",          panel:"overview",   icon:"◈",  desc:"Dashboard home" },
-  { label:"Shield Assets",     panel:"shield",     icon:"🛡", desc:"Deposit USDC into ShieldVault" },
+  { label:"Shield Assets",     panel:"shield",     icon:"🛡", desc:"Deposit USDC into PrivARCShieldVault" },
   { label:"Confidential Swap", panel:"swap",       icon:"⇄",  desc:"Shielded token exchange" },
   { label:"Confidential Send", panel:"send",       icon:"↗",  desc:"Shielded transfer" },
   { label:"Withdraw",          panel:"withdraw",   icon:"↙",  desc:"Exit to public address" },
   { label:"Bridge",            panel:"bridge",     icon:"⟺", desc:"Cross-chain transfer" },
   { label:"Analytics",         panel:"analytics",  icon:"📈", desc:"TVL, charts, heatmaps" },
   { label:"Governance",        panel:"governance", icon:"🗳", desc:"Protocol parameters & on-chain voting" },
-  { label:"Staking & Rewards", panel:"staking",    icon:"💎", desc:"Stake USDC, earn yield" },
+  { label:"PrivARCStaking & Rewards", panel:"staking",    icon:"💎", desc:"Stake USDC, earn yield" },
   { label:"Portfolio",         panel:"portfolio",  icon:"📊", desc:"Asset allocation" },
   { label:"History",           panel:"history",    icon:"📋", desc:"Transaction log" },
   { label:"Settings",          panel:"settings",   icon:"⚙",  desc:"Network configuration" },
@@ -1116,11 +1117,11 @@ function AuthScreen({ onAuth }) {
 ═══════════════════════════════════════════════════════════════ */
 const TOUR = [
   { icon:"◈",  title:"Welcome to PrivARC OS",         body:"Running live on Arc Testnet (chainId: 5042002). Your real USDC balance from the Arc Testnet is shown. Use faucet.circle.com to get testnet USDC." },
-  { icon:"🛡", title:"Shield — Real USDC Deposit",     body:"Send real testnet USDC to the ShieldVault. Your wallet will prompt for signature and approval. Funds become untraceable once shielded." },
+  { icon:"🛡", title:"Shield — Real USDC Deposit",     body:"Send real testnet USDC to the PrivARCShieldVault. Your wallet will prompt for signature and approval. Funds become untraceable once shielded." },
   { icon:"⇄",  title:"Private Swap — ZK Routed",       body:"Swap tokens on-chain without exposing amounts. Real transactions signed by your wallet on Arc Testnet." },
   { icon:"📈", title:"Analytics — Live Protocol Data",  body:"Charts and metrics pulled from Arc Testnet. TVL, transaction volume and ZK proof stats." },
   { icon:"🗳", title:"Governance — On-Chain Voting",    body:"Vote on PIP proposals with your veARC balance. Each vote is a real transaction signed by your wallet." },
-  { icon:"💎", title:"Staking — Real USDC Yield",       body:"Stake testnet USDC with lock periods for yield. Real transactions with lock multipliers up to 3×." },
+  { icon:"💎", title:"PrivARCStaking — Real USDC Yield",       body:"Stake testnet USDC with lock periods for yield. Real transactions with lock multipliers up to 3×." },
   { icon:"⚙",  title:"Settings — Network Config",       body:"Switch between Testnet and Mainnet (locked until launch). Current network: Arc Testnet · chainId 5042002." },
 ];
 
@@ -1226,7 +1227,7 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
     null,
     { id:"analytics",  icon:"📈", label:"Analytics" },
     { id:"governance", icon:"🗳", label:"Governance" },
-    { id:"staking",    icon:"💎", label:"Staking" },
+    { id:"staking",    icon:"💎", label:"PrivARCStaking" },
     null,
     { id:"portfolio",  icon:"📊", label:"Portfolio" },
     { id:"history",    icon:"📋", label:"History" },
@@ -1522,7 +1523,7 @@ function OverviewPanel({ account, usdcBalance, loadingBal, onArc, setPanel, pric
 /* ═══════════════════════════════════════════════════════════════
    PROTOCOL STATS — Live on-chain reads, polled every 10s.
    VERSION is read on-chain (not hardcoded) so this never drifts out of sync
-   after a ShieldVault redeploy — see ShieldVault.sol VERSION constant.
+   after a PrivARCShieldVault redeploy — see PrivARCShieldVault.sol VERSION constant.
 ═══════════════════════════════════════════════════════════════ */
 // ── Local snapshot-based 24h deltas ─────────────────────────────────────────
 // FIX: "Last 24h" stats used to come from a single eth_getLogs call spanning
@@ -1533,13 +1534,13 @@ function OverviewPanel({ account, usdcBalance, loadingBal, onArc, setPanel, pric
 //
 // Instead of chunking/retrying a fragile log scan, this reuses the reliable
 // on-chain STATE COUNTERS already being polled every 10s (totalTxCount,
-// totalVolumeByToken, feesCollectedByToken — added in ShieldVault v2.5/v2.6)
+// totalVolumeByToken, feesCollectedByToken — added in PrivARCShieldVault v2.5/v2.6)
 // and snapshots them locally over time. A "24h delta" is just
 // current_value − value_from_a_snapshot_~24h_ago. No eth_getLogs, no block-
 // range limits, no indexing lag — just arithmetic on numbers already in hand.
 //
 // Tradeoff: needs ~24h of snapshot history to give a TRUE 24h window. Before
-// that (e.g. right after this ships, or right after a ShieldVault redeploy
+// that (e.g. right after this ships, or right after a PrivARCShieldVault redeploy
 // resets the counters to 0), it reports the delta since the OLDEST available
 // snapshot instead, with snapshotCoverage telling the UI how much history
 // that actually represents — so the displayed number is always honest about
@@ -1625,27 +1626,27 @@ function useProtocolStats(onArc) {
         // but never imported) and silently zeroed out the whole panel every poll with
         // no visible error short of an uncaught rejection in devtools. Never again.
         const calls = [
-          () => call(CONTRACTS.ShieldVault,     SEL.totalShielded + encodeAddress(CONTRACTS.USDC)),
-          () => call(CONTRACTS.ShieldVault,     SEL.totalShielded + encodeAddress(CONTRACTS.EURC)),
-          () => call(CONTRACTS.ShieldVault,     SEL.totalShielded + encodeAddress(CONTRACTS.cirBTC)),
-          () => call(CONTRACTS.MerkleTreeManager,   SEL.nextLeafIndex),
+          () => call(CONTRACTS.PrivARCShieldVault,     SEL.totalShielded + encodeAddress(CONTRACTS.USDC)),
+          () => call(CONTRACTS.PrivARCShieldVault,     SEL.totalShielded + encodeAddress(CONTRACTS.EURC)),
+          () => call(CONTRACTS.PrivARCShieldVault,     SEL.totalShielded + encodeAddress(CONTRACTS.cirBTC)),
+          () => call(CONTRACTS.PrivARCMerkleTreeManager,   SEL.nextLeafIndex),
           () => call(CONTRACTS.EmergencyController, SEL.pauseState),
           () => call(CONTRACTS.EmergencyController, SEL.depositsAllowed),
-          () => call(CONTRACTS.DepositManager, SEL.isTokenSupported + encodeAddress(CONTRACTS.USDC)),
-          () => call(CONTRACTS.DepositManager, SEL.isTokenSupported + encodeAddress(CONTRACTS.EURC)),
-          () => call(CONTRACTS.DepositManager, SEL.isTokenSupported + encodeAddress(CONTRACTS.cirBTC)),
-          () => call(CONTRACTS.ShieldVault, SEL.VERSION),
-          () => call(CONTRACTS.ShieldVault, SEL.totalTxCount),
-          () => call(CONTRACTS.ShieldVault, buildTotalVolumeByTokenCall(CONTRACTS.USDC)),
-          () => call(CONTRACTS.ShieldVault, buildTotalVolumeByTokenCall(CONTRACTS.EURC)),
-          () => call(CONTRACTS.ShieldVault, buildTotalVolumeByTokenCall(CONTRACTS.cirBTC)),
-          () => call(CONTRACTS.ShieldVault, SEL.feesCollectedByToken + encodeAddress(CONTRACTS.USDC)),
-          () => call(CONTRACTS.ShieldVault, SEL.feesCollectedByToken + encodeAddress(CONTRACTS.EURC)),
-          () => call(CONTRACTS.ShieldVault, SEL.feesCollectedByToken + encodeAddress(CONTRACTS.cirBTC)),
-          () => call(CONTRACTS.ShieldVault, SEL.protocolFeeBps),
-          () => call(CONTRACTS.ShieldVault, SEL.swapFeeBps),
-          () => call(CONTRACTS.ShieldVault, SEL.bridgeFeeBps),
-          () => call(CONTRACTS.ShieldVault, SEL.flatFeeUsdc),
+          () => call(CONTRACTS.PrivARCDepositManager, SEL.isTokenSupported + encodeAddress(CONTRACTS.USDC)),
+          () => call(CONTRACTS.PrivARCDepositManager, SEL.isTokenSupported + encodeAddress(CONTRACTS.EURC)),
+          () => call(CONTRACTS.PrivARCDepositManager, SEL.isTokenSupported + encodeAddress(CONTRACTS.cirBTC)),
+          () => call(CONTRACTS.PrivARCShieldVault, SEL.VERSION),
+          () => call(CONTRACTS.PrivARCShieldVault, SEL.totalTxCount),
+          () => call(CONTRACTS.PrivARCShieldVault, buildTotalVolumeByTokenCall(CONTRACTS.USDC)),
+          () => call(CONTRACTS.PrivARCShieldVault, buildTotalVolumeByTokenCall(CONTRACTS.EURC)),
+          () => call(CONTRACTS.PrivARCShieldVault, buildTotalVolumeByTokenCall(CONTRACTS.cirBTC)),
+          () => call(CONTRACTS.PrivARCShieldVault, SEL.feesCollectedByToken + encodeAddress(CONTRACTS.USDC)),
+          () => call(CONTRACTS.PrivARCShieldVault, SEL.feesCollectedByToken + encodeAddress(CONTRACTS.EURC)),
+          () => call(CONTRACTS.PrivARCShieldVault, SEL.feesCollectedByToken + encodeAddress(CONTRACTS.cirBTC)),
+          () => call(CONTRACTS.PrivARCShieldVault, SEL.protocolFeeBps),
+          () => call(CONTRACTS.PrivARCShieldVault, SEL.swapFeeBps),
+          () => call(CONTRACTS.PrivARCShieldVault, SEL.bridgeFeeBps),
+          () => call(CONTRACTS.PrivARCShieldVault, SEL.flatFeeUsdc),
         ];
         // Each entry wrapped individually too: a synchronous throw from any ONE
         // builder function (e.g. an undefined import) now only nulls that ONE call
@@ -1697,14 +1698,14 @@ function useProtocolStats(onArc) {
         // Record + compute 24h deltas from local snapshots (see takeStatsSnapshot/
         // get24hDelta above) — only once we actually have fresh totalTxCount data,
         // since that's the anchor metric everything else deltas against.
-        if (next.totalTxCount != null && CONTRACTS.ShieldVault) {
+        if (next.totalTxCount != null && CONTRACTS.PrivARCShieldVault) {
           const numeric = {
             totalTxCount: Number(next.totalTxCount),
             volumeUsdc: Number(next.volumeUsdc || 0n), volumeEurc: Number(next.volumeEurc || 0n), volumeBtc: Number(next.volumeBtc || 0n),
             feesUsdc:   Number(next.feesUsdc   || 0n), feesEurc:   Number(next.feesEurc   || 0n), feesBtc:   Number(next.feesBtc   || 0n),
           };
-          takeStatsSnapshot(CONTRACTS.ShieldVault, numeric);
-          const delta = get24hDelta(CONTRACTS.ShieldVault, numeric);
+          takeStatsSnapshot(CONTRACTS.PrivARCShieldVault, numeric);
+          const delta = get24hDelta(CONTRACTS.PrivARCShieldVault, numeric);
           if (delta) {
             next.tx24h = delta.tx24h;
             next.volumeUsdc24h = delta.volumeUsdc24h; next.volumeEurc24h = delta.volumeEurc24h; next.volumeBtc24h = delta.volumeBtc24h;
@@ -1763,8 +1764,8 @@ function useProtocolStats(onArc) {
 //   4. Both sides run the same shared secret through HKDF-SHA256 to derive an
 //      AES-256-GCM key, encrypt/decrypt the note JSON.
 //
-//  Notes are relayed via ViewKeyRegistry.emitNote() (NOT ShieldVault) so this
-//  works against the currently-deployed ShieldVault v2.2 without requiring a
+//  Notes are relayed via ViewKeyRegistry.emitNote() (NOT PrivARCShieldVault) so this
+//  works against the currently-deployed PrivARCShieldVault v2.2 without requiring a
 //  vault redeploy. See contracts/ViewKeyRegistry.sol for full rationale.
 // ═══════════════════════════════════════════════════════════════
 
@@ -1965,8 +1966,8 @@ async function eciesDecryptNoteWithViewKey(recipientAddress, encryptedNoteHex, e
 }
 
 // ── Scan chain for stealth notes addressed to this wallet ─────────────────
-// Relayed via ViewKeyRegistry.emitNote() — NOT ShieldVault — so this works
-// against the currently-deployed ShieldVault v2.2 with no vault redeploy.
+// Relayed via ViewKeyRegistry.emitNote() — NOT PrivARCShieldVault — so this works
+// against the currently-deployed PrivARCShieldVault v2.2 with no vault redeploy.
 const NOTE_EMITTED_TOPIC = "0x8aa4f1b6dca845fb984ab9e095ea9417a69f44be2922e9b5cc5e19f83e336851";
 
 // ── Item 2B: self-addressed encrypted note relay (cross-device reconstruction) ──
@@ -1982,14 +1983,14 @@ const NOTE_EMITTED_TOPIC = "0x8aa4f1b6dca845fb984ab9e095ea9417a69f44be2922e9b5cc
 // THIS note is cross-device recoverable, never local availability).
 async function relaySelfNote({ account, sendRealTx, commitment, amount, token, label, description }) {
   try {
-    // vault tag (v2.9): this commitment only exists in THIS ShieldVault's Merkle
+    // vault tag (v2.9): this commitment only exists in THIS PrivARCShieldVault's Merkle
     // tree. Without it, a note relayed before a redeploy would still decrypt fine
     // after the redeploy and get silently re-added as if spendable on the NEW
     // (unrelated) contract — re-introducing the exact "phantom balance" bug fixed
     // by vault-scoping notesKey. scanStealthNotes checks this field on decrypt.
     const selfNoteJson = JSON.stringify({
       commitment, amount: amount.toString(), token,
-      from: account?.address, ts: Date.now(), vault: CONTRACTS.ShieldVault,
+      from: account?.address, ts: Date.now(), vault: CONTRACTS.PrivARCShieldVault,
     });
     const ecies = await eciesEncryptNoteForRecipient(account?.address, selfNoteJson);
     if (!ecies) return false; // no view key registered yet — nothing to relay
@@ -2044,8 +2045,8 @@ async function scanStealthNotes(address, recompute) {
         if (!note || !note.commitment) continue;
         if (existingSet.has(note.commitment)) continue;
         // FIX (v2.9): a note's commitment only exists in the Merkle tree of the
-        // ShieldVault it was created against. Without this check, a confidential
-        // send or self-backup made before the latest ShieldVault redeploy would
+        // PrivARCShieldVault it was created against. Without this check, a confidential
+        // send or self-backup made before the latest PrivARCShieldVault redeploy would
         // still decrypt successfully and get silently treated as spendable balance
         // on the NEW (unrelated) contract — re-introducing the "phantom balance"
         // bug that vault-scoping notesKey already fixes for deposit/withdraw/swap/
@@ -2053,7 +2054,7 @@ async function scanStealthNotes(address, recompute) {
         // are accepted leniently rather than hidden outright — the vault-scoped
         // notesKey is the primary defense; this only closes the narrower stealth-
         // note path where ViewKeyRegistry events aren't vault-filtered upstream.
-        if (note.vault && note.vault.toLowerCase() !== CONTRACTS.ShieldVault.toLowerCase()) continue;
+        if (note.vault && note.vault.toLowerCase() !== CONTRACTS.PrivARCShieldVault.toLowerCase()) continue;
 
         existing.push({ ...note, ts: ts*1000 || Date.now(), source:"stealth" });
         existingSet.add(note.commitment);
@@ -2068,24 +2069,24 @@ async function scanStealthNotes(address, recompute) {
   } catch(e) { console.warn("[PrivARC stealth scan]", e.message); }
 }
 
-// ── SHIELDED NOTES — wallet-scoped AND ShieldVault-scoped, on-chain reconciled ─
+// ── SHIELDED NOTES — wallet-scoped AND PrivARCShieldVault-scoped, on-chain reconciled ─
 //
 // FIX (critical): notes used to be keyed ONLY by wallet address. After a
-// ShieldVault redeploy (new address, fresh empty Merkle tree), the frontend kept
+// PrivARCShieldVault redeploy (new address, fresh empty Merkle tree), the frontend kept
 // reading the SAME localStorage bucket and displaying the SAME balance — even
 // though those notes' commitments don't exist anywhere in the new contract's
 // tree at all. The displayed "shielded balance" was showing money the user
 // could never actually spend (any withdraw/send/swap against those commitments
 // would simply revert on-chain). The underlying tokens are still safe — they
-// never moved, they're just sitting in the OLD, now-abandoned ShieldVault
+// never moved, they're just sitting in the OLD, now-abandoned PrivARCShieldVault
 // contract — but the active UI had no way to reach them anymore.
 //
-// Now the storage key includes CONTRACTS.ShieldVault, so a redeploy
+// Now the storage key includes CONTRACTS.PrivARCShieldVault, so a redeploy
 // automatically and correctly resets the displayed balance to 0 (a fresh,
 // empty bucket for the new address) without deleting the old data — it's
 // still sitting under the OLD key if ever needed for manual recovery via the
 // old contract address directly.
-const notesKey  = (addr) => addr ? `privarc_notes_${addr.toLowerCase()}_${CONTRACTS.ShieldVault.toLowerCase()}` : "privarc_notes_anon";
+const notesKey  = (addr) => addr ? `privarc_notes_${addr.toLowerCase()}_${CONTRACTS.PrivARCShieldVault.toLowerCase()}` : "privarc_notes_anon";
 const getNotes  = (addr) => { try { return JSON.parse(localStorage.getItem(notesKey(addr)) || "[]"); } catch { return []; } };
 const saveNotes = (addr, notes) => { try { localStorage.setItem(notesKey(addr), JSON.stringify(notes)); } catch {} };
 
@@ -2096,14 +2097,14 @@ const EV = {
   SwapExecuted:             "0x2f4c76c8d18f45069b0941499205a7fceaaa3caf9e2e6328f6a544cd339120f3",
   BridgeInitiated:          "0xaba39d71efa30c57b34ac80bfd1c5a6ad2a46bb6887c1bdb8d8500410c59b5ab",
   ShieldedTransferProcessed:"0x6a0c61ef664f8d0c17a5bee04becc9ed40374fc0f473a7bf7f3cce66d1bd2b7d",
-  // Staking contract events — keccak256("Staked(address,uint256,uint256,uint256,uint256,uint256)") etc.
+  // PrivARCStaking contract events — keccak256("Staked(address,uint256,uint256,uint256,uint256,uint256)") etc.
   Staked:           "0x1449c6dd7851abc30abf37f57715f492010519147cc2652fbc38202c18a6ee90",
   Unstaked:         "0x0f5bb82176feb1b5e747e28471aa92156a04d9f3ab9f45f28e2d704232b93f75",
   RewardsClaimed:   "0x106f923f993c2149d49b4255ff723acafa1f2d94393f561d3eda32ae348f7241",
 };
 
 // ── Cross-device tx history: rebuild from on-chain events ─────────────────────
-// Called on wallet connect. Fetches ShieldVault + Staking events for this address,
+// Called on wallet connect. Fetches PrivARCShieldVault + PrivARCStaking events for this address,
 // merges with localStorage cache, deduplicates by tx hash, returns sorted array.
 async function buildTxHistoryFromChain(address) {
   if (!address) return [];
@@ -2114,17 +2115,17 @@ async function buildTxHistoryFromChain(address) {
     const from = "0x" + Math.max(0, cur - MAX_BLOCKS).toString(16);
     const addrTopic = "0x" + "000000000000000000000000" + address.slice(2).toLowerCase();
 
-    // Fetch all ShieldVault + Staking events where the user is an indexed topic
+    // Fetch all PrivARCShieldVault + PrivARCStaking events where the user is an indexed topic
     const [depLogs, wdLogs, swLogs, bridgeLogs, sendLogs, stakeLogs, unstakeLogs, claimLogs] =
       await Promise.allSettled([
-        rpcCall("eth_getLogs", [{ fromBlock:from, toBlock:"latest", address:CONTRACTS.ShieldVault, topics:[EV.Deposited,  null, addrTopic] }]),
-        rpcCall("eth_getLogs", [{ fromBlock:from, toBlock:"latest", address:CONTRACTS.ShieldVault, topics:[EV.Withdrawn,  null, null, addrTopic] }]),
-        rpcCall("eth_getLogs", [{ fromBlock:from, toBlock:"latest", address:CONTRACTS.ShieldVault, topics:[EV.SwapExecuted] }]),
-        rpcCall("eth_getLogs", [{ fromBlock:from, toBlock:"latest", address:CONTRACTS.ShieldVault, topics:[EV.BridgeInitiated] }]),
-        rpcCall("eth_getLogs", [{ fromBlock:from, toBlock:"latest", address:CONTRACTS.ShieldVault, topics:[EV.ShieldedTransferProcessed] }]),
-        CONTRACTS.Staking ? rpcCall("eth_getLogs", [{ fromBlock:from, toBlock:"latest", address:CONTRACTS.Staking, topics:[EV.Staked, addrTopic] }]) : [],
-        CONTRACTS.Staking ? rpcCall("eth_getLogs", [{ fromBlock:from, toBlock:"latest", address:CONTRACTS.Staking, topics:[EV.Unstaked, addrTopic] }]) : [],
-        CONTRACTS.Staking ? rpcCall("eth_getLogs", [{ fromBlock:from, toBlock:"latest", address:CONTRACTS.Staking, topics:[EV.RewardsClaimed, addrTopic] }]) : [],
+        rpcCall("eth_getLogs", [{ fromBlock:from, toBlock:"latest", address:CONTRACTS.PrivARCShieldVault, topics:[EV.Deposited,  null, addrTopic] }]),
+        rpcCall("eth_getLogs", [{ fromBlock:from, toBlock:"latest", address:CONTRACTS.PrivARCShieldVault, topics:[EV.Withdrawn,  null, null, addrTopic] }]),
+        rpcCall("eth_getLogs", [{ fromBlock:from, toBlock:"latest", address:CONTRACTS.PrivARCShieldVault, topics:[EV.SwapExecuted] }]),
+        rpcCall("eth_getLogs", [{ fromBlock:from, toBlock:"latest", address:CONTRACTS.PrivARCShieldVault, topics:[EV.BridgeInitiated] }]),
+        rpcCall("eth_getLogs", [{ fromBlock:from, toBlock:"latest", address:CONTRACTS.PrivARCShieldVault, topics:[EV.ShieldedTransferProcessed] }]),
+        CONTRACTS.PrivARCStaking ? rpcCall("eth_getLogs", [{ fromBlock:from, toBlock:"latest", address:CONTRACTS.PrivARCStaking, topics:[EV.Staked, addrTopic] }]) : [],
+        CONTRACTS.PrivARCStaking ? rpcCall("eth_getLogs", [{ fromBlock:from, toBlock:"latest", address:CONTRACTS.PrivARCStaking, topics:[EV.Unstaked, addrTopic] }]) : [],
+        CONTRACTS.PrivARCStaking ? rpcCall("eth_getLogs", [{ fromBlock:from, toBlock:"latest", address:CONTRACTS.PrivARCStaking, topics:[EV.RewardsClaimed, addrTopic] }]) : [],
       ]).then(results => results.map(r => (r.status === "fulfilled" && Array.isArray(r.value)) ? r.value : []));
 
     const tc = (tsMs) => tsMs ? new Date(tsMs).toLocaleString("fr-FR", { dateStyle:"short", timeStyle:"short" }) : "—";
@@ -2191,17 +2192,17 @@ async function buildTxHistoryFromChain(address) {
   }
 }
 
-// ── Cross-device staking positions: rebuild from Staking contract ──────────────
+// ── Cross-device staking positions: rebuild from PrivARCStaking contract ──────────────
 // getUserStakes(address) returns StakePosition[] — ABI-decoded here.
 // StakePosition: (uint256 amount, uint256 lockDuration, uint256 lockMultiplier,
 //                 uint256 stakeTime, uint256 unlockTime, uint256 lastClaimTime,
 //                 uint256 apyBps, bool active)  — 8 fields × 32 bytes each
 async function loadStakingPositionsFromChain(address) {
-  if (!address || !CONTRACTS.Staking) return null;
+  if (!address || !CONTRACTS.PrivARCStaking) return null;
   try {
     // getUserStakes(address) — selector 0x5e0e5b3e (computed from exact sig)
     const sel = "0x5e0e5b3e";
-    const raw = await rpcCall("eth_call", [{ to:CONTRACTS.Staking, data: sel + "000000000000000000000000" + address.slice(2).toLowerCase() }, "latest"]);
+    const raw = await rpcCall("eth_call", [{ to:CONTRACTS.PrivARCStaking, data: sel + "000000000000000000000000" + address.slice(2).toLowerCase() }, "latest"]);
     if (!raw || raw === "0x" || raw.length < 4) return [];
 
     const hex = raw.replace("0x","");
@@ -2269,7 +2270,7 @@ async function reconcileNotesOnChain(address) {
     const logs = await rpcCall("eth_getLogs", [{
       fromBlock: from,
       toBlock:   "latest",
-      address:   CONTRACTS.ShieldVault,
+      address:   CONTRACTS.PrivARCShieldVault,
       topics:    [EV.Withdrawn],
     }]);
     if (!Array.isArray(logs) || logs.length === 0) return;
@@ -2373,7 +2374,7 @@ function ShieldedWallet({ bals, onMax, tokenFilter, actionableFilter, compact = 
 
   // ── Stale notes detection ────────────────────────────────────────────────
   // If local notes claim more than the global TVL, they are stale (from a
-  // previous ShieldVault deployment). Show a warning so the user knows.
+  // previous PrivARCShieldVault deployment). Show a warning so the user knows.
   const globalUsdc = protocolStats?.shieldedUsdc != null ? Number(protocolStats.shieldedUsdc) / 1e6 : null;
   const globalEurc = protocolStats?.shieldedEurc != null ? Number(protocolStats.shieldedEurc) / 1e6 : null;
   const globalCbtc = protocolStats?.shieldedBtc  != null ? Number(protocolStats.shieldedBtc)  / 1e8 : null;
@@ -2424,7 +2425,7 @@ function ShieldedWallet({ bals, onMax, tokenFilter, actionableFilter, compact = 
       </div>
       {hasStale && (
         <div style={{ background:"rgba(248,113,113,.08)", border:"1px solid rgba(248,113,113,.25)", borderRadius:4, padding:"7px 10px", marginBottom:8, fontSize:8, color:"#fca5a5", fontFamily:"monospace", lineHeight:1.6 }}>
-          ⚠ Notes locales obsolètes détectées — ces soldes proviennent d'un ancien déploiement ShieldVault.
+          ⚠ Notes locales obsolètes détectées — ces soldes proviennent d'un ancien déploiement PrivARCShieldVault.
           Le TVL on-chain actuel est inférieur à vos notes locales.{" "}
           <span
             onClick={() => {
@@ -2432,7 +2433,7 @@ function ShieldedWallet({ bals, onMax, tokenFilter, actionableFilter, compact = 
                 // notesKey() format: privarc_notes_{addr}_{vaultAddr}
                 // We must use the same key format or we miss the entry
                 const addr  = window._privarcAccount?.toLowerCase?.() || "";
-                const vault = (typeof CONTRACTS !== "undefined" ? CONTRACTS.ShieldVault : "").toLowerCase();
+                const vault = (typeof CONTRACTS !== "undefined" ? CONTRACTS.PrivARCShieldVault : "").toLowerCase();
                 const key   = addr && vault ? `privarc_notes_${addr}_${vault}` : null;
                 if (key) localStorage.removeItem(key);
                 // Also clear legacy key format (no vault suffix)
@@ -2546,15 +2547,15 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
       setLoading(false); return;
     }
 
-    // ── PRE-FLIGHT: verify token is registered in DepositManager ──────────
+    // ── PRE-FLIGHT: verify token is registered in PrivARCDepositManager ──────────
     // Arc Testnet truncates revert data in receipts ("0x" on ARCScan).
     // The most common cause of deposit failure is TokenNotSupported —
-    // addToken() was not called on DepositManager after deployment.
+    // addToken() was not called on PrivARCDepositManager after deployment.
     // We check this BEFORE sending the tx to give a clear error.
     try {
       const isSupportedData = SEL.isTokenSupported + encodeAddress(token.address);
       const res = await rpcCall("eth_call", [
-        { to: CONTRACTS.DepositManager, data: isSupportedData },
+        { to: CONTRACTS.PrivARCDepositManager, data: isSupportedData },
         "latest",
       ]);
       // Returns bool: 0x00...01 = true, 0x00...00 = false
@@ -2576,8 +2577,8 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
     if (needsApproveBeforeDeposit(token.address)) {
       const approved = await sendRealTx({
         label: `Approve ${token.symbol}`,
-        description: `Approving ${amount} ${token.symbol} for ShieldVault`,
-        buildTx: () => ({ to: token.address, value: "0x0", data: buildApproveCalldata(CONTRACTS.ShieldVault, amountBig) }),
+        description: `Approving ${amount} ${token.symbol} for PrivARCShieldVault`,
+        buildTx: () => ({ to: token.address, value: "0x0", data: buildApproveCalldata(CONTRACTS.PrivARCShieldVault, amountBig) }),
       });
       if (!approved) { setLoading(false); return; }
     }
@@ -2589,7 +2590,7 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
 
     // ── Protocol fee preview (v2.8 — ALWAYS denominated/collected in USDC) ──────
     // Native USDC: % fee (protocolFeeBps, floored at MIN_DEPOSIT_FEE), skimmed from
-    // amount — note saved locally must use the NET amount, matching what ShieldVault
+    // amount — note saved locally must use the NET amount, matching what PrivARCShieldVault
     // actually credits to totalShieldedByToken. EURC/cirBTC: flat flatFeeUsdc paid as
     // a SEPARATE USDC side-payment via msg.value — the deposited amount itself is
     // credited in FULL (no skim), so netAmount == amountBig for those tokens.
@@ -2597,8 +2598,8 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
     let depositFee = 0n, netAmount = amountBig, flatFeeUsdc = 0n;
     try {
       const [bpsRes, flatRes] = await Promise.all([
-        rpcCall("eth_call", [{ to: CONTRACTS.ShieldVault, data: SEL.protocolFeeBps }, "latest"]),
-        rpcCall("eth_call", [{ to: CONTRACTS.ShieldVault, data: SEL.flatFeeUsdc },   "latest"]),
+        rpcCall("eth_call", [{ to: CONTRACTS.PrivARCShieldVault, data: SEL.protocolFeeBps }, "latest"]),
+        rpcCall("eth_call", [{ to: CONTRACTS.PrivARCShieldVault, data: SEL.flatFeeUsdc },   "latest"]),
       ]);
       const bps = bpsRes && bpsRes !== "0x" ? BigInt(bpsRes) : 0n;
       flatFeeUsdc = flatRes && flatRes !== "0x" ? BigInt(flatRes) : 0n;
@@ -2626,12 +2627,12 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
 
     const ok = await sendRealTx({
       label: `Shield ${token.symbol}`,
-      description: `Shielding ${amount} ${token.symbol} into ShieldVault`,
-      buildTx: () => ({ to: CONTRACTS.ShieldVault, value: depositValue, data: depositData }),
+      description: `Shielding ${amount} ${token.symbol} into PrivARCShieldVault`,
+      buildTx: () => ({ to: CONTRACTS.PrivARCShieldVault, value: depositValue, data: depositData }),
     });
 
     if (ok) {
-      // Store note locally with the NET (post-fee) amount — matches what ShieldVault
+      // Store note locally with the NET (post-fee) amount — matches what PrivARCShieldVault
       // actually credited to totalShieldedByToken, so future withdraw/send/swap on this
       // note request an amount the pool can actually back.
       const note = { commitment, amount: netAmount.toString(), token: token.address, ts: Date.now() };
@@ -2723,10 +2724,10 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
         ))}
       </div>
       <div style={{ fontSize:7, color:"#1e3a2a", fontFamily:"monospace", marginTop:-6, marginBottom:10, lineHeight:1.5 }}>
-        Commitments comes from MerkleTreeManager — shared, persistent infrastructure
-        that survives ShieldVault redeploys by design (preserves the privacy set across
+        Commitments comes from PrivARCMerkleTreeManager — shared, persistent infrastructure
+        that survives PrivARCShieldVault redeploys by design (preserves the privacy set across
         versions), so it does NOT reset like the other stats above. PROTOCOL TXS / VOLUME
-        / FEES / VERSION read directly from the currently active ShieldVault contract and
+        / FEES / VERSION read directly from the currently active PrivARCShieldVault contract and
         DO reset to 0 on every redeploy.
       </div>
       {/* Token selector + amount */}
@@ -2768,7 +2769,7 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
       <div style={{ background:"rgba(14,165,233,.04)", border:"1px solid rgba(14,165,233,.12)", borderRadius:3, padding:"8px 11px", marginBottom:8, fontSize:9, color:"#94a3b8", fontFamily:"monospace", lineHeight:1.5 }}>
         ℹ {token.isNative ? "1 transaction: Deposit (native USDC via msg.value)." : `2 transactions: Approve ${token.symbol} → Deposit (protocol fee paid separately in USDC via msg.value).`} Gas paid in USDC on Arc Testnet.
         <br/>Need tokens? <a href={ARC_TESTNET.faucet} target="_blank" rel="noreferrer" style={{ color:"#0EA5E9" }}>faucet.circle.com ↗</a>
-        {" · "}<a href={`${ARC_TESTNET.explorer}/address/${CONTRACTS.ShieldVault}`} target="_blank" rel="noreferrer" style={{ color:"#00FFB0" }}>ShieldVault ↗</a>
+        {" · "}<a href={`${ARC_TESTNET.explorer}/address/${CONTRACTS.PrivARCShieldVault}`} target="_blank" rel="noreferrer" style={{ color:"#00FFB0" }}>PrivARCShieldVault ↗</a>
       </div>
 
       {/* Token registration status — shown when connected */}
@@ -2789,16 +2790,14 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
 }
 
 function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBals, recomputeShielded, protocolStats }) {
-  // ── Architecture: ShieldVault + FxEscrow direct calldata ─────────────────
-  // NO external SDK — calls Arc's StableFX FxEscrow contract directly via
-  // raw eth_sendTransaction through the already-connected wallet provider.
-  // Zero npm dependencies added.
+  // ── Architecture: PrivARCShieldVault.privateSwapExec → MockSwapRouter ───────────
+  // Flow (1 tx via PrivARCShieldVault) :
+  //   PrivARCShieldVault.privateSwapExec(SwapParams)
+  //     → PrivateSwap.executeSwap()
+  //       → MockSwapRouter.fallback(routeData)   [whitelisted, pre-funded]
   //
-  // FxEscrow (0x867650F5…) is Arc's official stablecoin swap escrow.
-  // Flow:
-  //   Tx 1 — ERC-20 approve(FxEscrow, amountIn) for tokenIn
-  //   Tx 2 — FxEscrow.swap(tokenIn, tokenOut, amountIn, minOut)
-  //   → wrapped in ShieldVault unshield/reshield for privacy
+  // Requires: deploy-mock-swap-router.js must have been executed
+  // and MockSwapRouter address set in CONTRACTS.MockSwapRouter
 
   const TK  = ["USDC","EURC","cirBTC"];
   const [fr, setFr]           = useState("USDC");
@@ -2806,17 +2805,13 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
   const [amount, setAmount]   = useState("");
   const [q, setQ]             = useState(null);
   const [loading, setLoading] = useState(false);
-  const [step, setStep]       = useState("");
   const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance });
   const bals = shieldedBals;
 
-  // Arc Testnet official contracts (docs.arc.io/arc/references/contract-addresses)
-  const FX_ESCROW = "0x867650F5eAe8df91445971f14d89fd84F0C9a9f8";
-
   const SWAP_TOKENS = {
-    USDC:   { sym:"USDC",   addr: NATIVE_USDC,      dec:6, bal: bals?.usdc ?? 0 },
-    EURC:   { sym:"EURC",   addr: CONTRACTS.EURC,   dec:6, bal: bals?.eurc ?? 0 },
-    cirBTC: { sym:"cirBTC", addr: CONTRACTS.cirBTC, dec:8, bal: bals?.cbtc ?? 0 },
+    USDC:   { sym:"USDC",   addr: NATIVE_USDC,      dec:6, bal: bals?.usdc ?? 0, fmt:v=>"$"+v.toFixed(2)  },
+    EURC:   { sym:"EURC",   addr: CONTRACTS.EURC,   dec:6, bal: bals?.eurc ?? 0, fmt:v=>"€"+v.toFixed(2)  },
+    cirBTC: { sym:"cirBTC", addr: CONTRACTS.cirBTC, dec:8, bal: bals?.cbtc ?? 0, fmt:v=>"₿"+v.toFixed(5)  },
   };
   const tkFr = SWAP_TOKENS[fr] || SWAP_TOKENS.USDC;
   const tkTo = SWAP_TOKENS[to] || SWAP_TOKENS.EURC;
@@ -2829,147 +2824,100 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       const btcUsd = prices?.BTC ?? prices?.cirBTC ?? 100000;
       const toUsd  = { USDC:1, EURC:eurUsd, cirBTC:btcUsd };
       const rate   = toUsd[fr] / toUsd[to];
-      setQ({
-        out:  (Number(amount) * rate * 0.9995).toFixed(tkTo.dec===8?6:4),
-        rate: rate.toFixed(tkTo.dec===8?8:4),
-      });
+      setQ({ out:(Number(amount)*rate*0.9995).toFixed(tkTo.dec===8?6:4), rate:rate.toFixed(tkTo.dec===8?8:4) });
     }, 400);
     return () => clearTimeout(id);
   }, [amount, fr, to, prices]);
 
   const flip = () => { const t=fr; setFr(to); setTo(t); setAmount(""); setQ(null); };
 
-  // Withdraw from ShieldVault
-  const withdrawToWallet = async (tokenAddr, dec, amountBig) => {
+  const swap = async () => {
+    if (!amount || !q || !onArc) return;
+    if (fr === to) { notify("Swap","Sélectionnez deux tokens différents.","error"); return; }
+    if (tkFr.bal <= 0) { notify("Swap",`Solde shieldé ${fr} insuffisant.`,"error"); return; }
+
+    // Atomic swap via PrivARCShieldVault.privateSwap() + TowerSwapAdapter
+    // Funds NEVER touch user wallet — atomically re-shielded after swap
+    const swapAdapter = CONTRACTS.TowerSwapAdapter;
+    if (!swapAdapter || swapAdapter === "0x0000000000000000000000000000000000000000") {
+      notify("Swap","TowerSwapAdapter non déployé. Exécutez deploy.js et ajoutez VITE_TOWER_SWAP_ADAPTER dans .env","error");
+      return;
+    }
+
+    setLoading(true);
+    const amountBig    = BigInt(Math.round(Number(amount)    * (10 ** tkFr.dec)));
+    const outAmountBig = BigInt(Math.round(parseFloat(q.out) * (10 ** tkTo.dec)));
+    const minOut       = outAmountBig * 990n / 1000n;
+    const deadline     = BigInt(Math.floor(Date.now()/1000) + 600);
+
+    // Read Merkle root
+    let merkleRoot;
+    try {
+      const res = await rpcCall("eth_call",[{ to:CONTRACTS.PrivARCMerkleTreeManager, data:buildGetLastRootCall() },"latest"]);
+      merkleRoot = (res && res !== "0x" && res.length >= 66) ? res : null;
+    } catch { merkleRoot = null; }
+    if (!merkleRoot) {
+      notify("Swap","Impossible de lire le Merkle root.","error");
+      setLoading(false); return;
+    }
+
+    // Find note for tokenIn
     const notes      = getNotes(account?.address);
-    const tokenNotes = notes.filter(n => n.token?.toLowerCase() === tokenAddr.toLowerCase());
+    const tokenNotes = notes.filter(n => n.token?.toLowerCase() === tkFr.addr.toLowerCase());
     let note = tokenNotes.find(n => BigInt(Math.round(Number(n.amount)||0)) >= amountBig);
     if (!note && tokenNotes.length > 0) {
       note = tokenNotes.reduce((best, n) =>
         BigInt(Math.round(Number(n.amount)||0)) > BigInt(Math.round(Number(best.amount)||0)) ? n : best
       );
     }
-    if (!note) return false;
-    let root;
+    if (!note) {
+      notify("Swap",`Aucune note ${fr} shieldée trouvée.`,"error");
+      setLoading(false); return;
+    }
+
+    const nullifier     = randomBytes32();
+    const commitmentOut = randomBytes32();
+
+    // Protocol fee
+    let flatFeeUsdc = 0n, swapFeeBps = 0n;
     try {
-      const res = await rpcCall("eth_call", [{ to: CONTRACTS.MerkleTreeManager, data: buildGetLastRootCall() }, "latest"]);
-      root = (res && res !== "0x" && res.length >= 66) ? res : null;
-    } catch { root = null; }
-    if (!root) return false;
-    let flatFeeUsdc = 0n;
-    try {
-      const r = await rpcCall("eth_call", [{ to: CONTRACTS.ShieldVault, data: SEL.flatFeeUsdc }, "latest"]);
-      flatFeeUsdc = r && r !== "0x" ? BigInt(r) : 0n;
+      const [flatRes, bpsRes] = await Promise.all([
+        rpcCall("eth_call",[{ to:CONTRACTS.PrivARCShieldVault, data:SEL.flatFeeUsdc },"latest"]),
+        rpcCall("eth_call",[{ to:CONTRACTS.PrivARCShieldVault, data:SEL.swapFeeBps },"latest"]),
+      ]);
+      flatFeeUsdc = flatRes && flatRes !== "0x" ? BigInt(flatRes) : 0n;
+      swapFeeBps  = bpsRes && bpsRes !== "0x" ? BigInt(bpsRes) : 0n;
     } catch {}
-    const { data, value: txValue } = buildWithdrawCalldata({
-      nullifier: randomBytes32(), root, token: tokenAddr, recipient: account.address,
-      amount: amountBig, relayerFee: 0n, relayer: "0x0000000000000000000000000000000000000000", flatFeeUsdc,
+
+    // Build calldata for PrivARCShieldVault.privateSwap()
+    // Atomic: ShieldVault spends nullifier → TowerSwapAdapter.executeSwap() → re-shield
+    // Tower Exchange / StableFX is the DEX on Arc Testnet: https://www.tower.exchange/
+    const { data, value } = buildAtomicSwapCalldata({
+      nullifier, root: merkleRoot, tokenIn: tkFr.addr, tokenOut: tkTo.addr,
+      amountIn: amountBig, minAmountOut: minOut,
+      commitmentOut, deadline, flatFeeUsdc,
     });
+
     const ok = await sendRealTx({
-      label: `Unshield ${fr}`, description: `Step 1/4 — Withdraw ${amount} ${fr} from ShieldVault`,
-      buildTx: () => ({ to: CONTRACTS.ShieldVault, value: txValue, data }),
+      label: `Swap ${fr}→${to}`,
+      description: `Private swap ${amount} ${fr} → ~${q.out} ${to} via PrivARCShieldVault + MockSwapRouter`,
+      buildTx: () => ({ to: CONTRACTS.PrivARCShieldVault, value, data }),
     });
+
     if (ok) {
-      const updated = notes.filter(n => n.commitment !== note.commitment);
-      const rem     = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
-      if (rem > 0n) updated.push({ ...note, amount: rem.toString(), commitment: randomBytes32() });
+      // Update local notes
+      const updated   = notes.filter(n => n.commitment !== note.commitment);
+      const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
+      if (remaining > 0n) updated.push({ ...note, amount:remaining.toString(), commitment:randomBytes32() });
+      updated.push({ commitment:commitmentOut, amount:outAmountBig.toString(), token:tkTo.addr, ts:Date.now() });
       saveNotes(account?.address, updated);
       recomputeShielded?.();
-    }
-    return ok;
-  };
-
-  // Deposit to ShieldVault
-  const depositToVault = async (tokenAddr, dec, amountBig) => {
-    const isNative   = tokenAddr.toLowerCase() === NATIVE_USDC.toLowerCase();
-    const commitment = randomBytes32();
-    let pf = 0n;
-    try {
-      const r = await rpcCall("eth_call", [{ to: CONTRACTS.ShieldVault, data: SEL.protocolFeeBps }, "latest"]);
-      pf = amountBig * (r && r!=="0x" ? BigInt(r) : 0n) / 10000n;
-    } catch {}
-    const { data, value } = buildDepositCalldata({ token: tokenAddr, amount: amountBig, commitment, protocolFee: pf, isNative });
-    const ok = await sendRealTx({
-      label: `Shield ${to}`, description: `Step 4/4 — Deposit ${q?.out||"?"} ${to} into ShieldVault`,
-      buildTx: () => ({ to: CONTRACTS.ShieldVault, value, data }),
-    });
-    if (ok) {
-      const notes = getNotes(account?.address);
-      notes.push({ commitment, amount: amountBig.toString(), token: tokenAddr, ts: Date.now() });
-      saveNotes(account?.address, notes);
-      recomputeShielded?.();
-      await relaySelfNote({ account, sendRealTx, commitment, amount: amountBig, token: tokenAddr,
-        label: "Swap · Backup", description: "Encrypted backup of swap output note." });
-    }
-    return ok;
-  };
-
-  // ── Main swap flow ────────────────────────────────────────────────────────
-  const swap = async () => {
-    if (!amount || !q || !onArc) return;
-    if (fr === to) { notify("Swap", "Sélectionnez deux tokens différents.", "error"); return; }
-    if (tkFr.bal <= 0) { notify("Swap", `Solde shieldé ${fr} insuffisant.`, "error"); return; }
-
-    setLoading(true);
-    const amountBig    = BigInt(Math.round(Number(amount)    * (10 ** tkFr.dec)));
-    const outAmountBig = BigInt(Math.round(parseFloat(q.out) * (10 ** tkTo.dec)));
-    const minOut       = outAmountBig * 990n / 1000n; // 1% slippage
-
-    // Step 1: Unshield tokenIn → wallet
-    setStep("Étape 1/4 — Unshield…");
-    const wd = await withdrawToWallet(tkFr.addr, tkFr.dec, amountBig);
-    if (!wd) {
-      notify("Swap", `Échec du withdraw ${fr}.`, "error");
-      setLoading(false); setStep(""); return;
+      await relaySelfNote({ account, sendRealTx, commitment:commitmentOut, amount:outAmountBig, token:tkTo.addr,
+        label:"Swap · Backup", description:"Encrypted backup of swap output note." });
+      notify("Swap ✓",`${amount} ${fr} → ~${q.out} ${to} — swap confidentiel terminé.`,"success");
     }
 
-    // Step 2: approve(FxEscrow, amountIn) for tokenIn
-    // ERC-20 approve selector: 0x095ea7b3
-    setStep("Étape 2/4 — Approve FxEscrow…");
-    const approveData = "0x095ea7b3"
-      + FX_ESCROW.slice(2).padStart(64,"0")
-      + amountBig.toString(16).padStart(64,"0");
-
-    const approved = await sendRealTx({
-      label: "Approve FxEscrow",
-      description: `Allow FxEscrow to spend ${amount} ${fr}`,
-      buildTx: () => ({ to: tkFr.addr, value: "0x0", data: approveData }),
-    });
-    if (!approved) {
-      notify("Swap partiel ⚠", `Approve échoué. Vos ${fr} sont dans le wallet — re-shieldez via Shield.`, "error");
-      setLoading(false); setStep(""); return;
-    }
-
-    // Step 3: FxEscrow.swap(tokenIn, tokenOut, amountIn, minAmountOut)
-    // Selector: keccak256("swap(address,address,uint256,uint256)") = 0x022c0d9f
-    // Note: if FxEscrow uses a different function name, tx will revert — user keeps funds in wallet
-    setStep("Étape 3/4 — Swap FxEscrow…");
-    const swapData = "0x022c0d9f"
-      + tkFr.addr.slice(2).padStart(64,"0")
-      + tkTo.addr.slice(2).padStart(64,"0")
-      + amountBig.toString(16).padStart(64,"0")
-      + minOut.toString(16).padStart(64,"0");
-
-    const swapped = await sendRealTx({
-      label: `Swap ${fr}→${to}`,
-      description: `FxEscrow: ${amount} ${fr} → ~${q.out} ${to}`,
-      buildTx: () => ({ to: FX_ESCROW, value: "0x0", data: swapData }),
-    });
-    if (!swapped) {
-      notify("Swap partiel ⚠", `FxEscrow swap échoué. Vos ${fr} sont dans le wallet — re-shieldez via Shield.`, "error");
-      setLoading(false); setStep(""); return;
-    }
-
-    // Step 4: Re-shield tokenOut
-    setStep("Étape 4/4 — Re-shield output…");
-    const ok4 = await depositToVault(tkTo.addr, tkTo.dec, outAmountBig);
-    if (ok4) {
-      notify("Swap ✓", `${amount} ${fr} → ~${q.out} ${to} — swap confidentiel terminé.`, "success");
-    } else {
-      notify("Swap partiel ⚠", `Swap OK mais re-shield échoué. Shieldez ${to} manuellement.`, "error");
-    }
-
-    setAmount(""); setQ(null); setLoading(false); setStep("");
+    setAmount(""); setQ(null); setLoading(false);
   };
 
   const TS = ({ v, onChange, exclude }) => (
@@ -2979,14 +2927,23 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     </select>
   );
 
+  const routerOk = CONTRACTS.TowerSwapAdapter && CONTRACTS.TowerSwapAdapter !== "0x0000000000000000000000000000000000000000";
+
   return (
     <div style={{ animation:"fi .3s ease" }}>
-      <PH icon="⇄" title="SWAP" sub="Confidential swap — ShieldVault + Arc StableFX"/>
+      <PH icon="⇄" title="SWAP" sub="Confidential swap — PrivARCShieldVault + MockSwapRouter (Arc Testnet)"/>
       <NotOnArcWarning/>
+      {!routerOk && (
+        <div style={{ background:"rgba(248,113,113,.08)", border:"1px solid rgba(248,113,113,.25)", borderRadius:4, padding:"8px 12px", marginBottom:10, fontSize:8, color:"#fca5a5", fontFamily:"monospace", lineHeight:1.7 }}>
+          ⚠ <strong style={{ color:"#f87171" }}>PrivateSwapAdapter non déployé</strong><br/>
+          <code>npx hardhat run scripts/deploy-private-swap-adapter.js --network arc_testnet</code><br/>
+          puis <code>VITE_PRIVATE_SWAP_ADAPTER=0x...</code> dans Vercel Dashboard
+        </div>
+      )}
       <div style={{ background:"rgba(0,255,176,.04)", border:"1px solid rgba(0,255,176,.1)", borderRadius:4, padding:"8px 12px", marginBottom:10, fontSize:8, color:"#64748b", fontFamily:"monospace", lineHeight:1.7 }}>
-        <span style={{ color:"#00FFB0", fontWeight:700 }}>4 étapes : </span>
-        Unshield {fr} → Approve FxEscrow → Swap → Re-shield {to}
-        <span style={{ color:"#334155" }}> · Arc StableFX native</span>
+        <span style={{ color:"#00FFB0", fontWeight:700 }}>1 tx : </span>
+        PrivARCShieldVault.privateSwapExec → PrivateSwap → PrivateSwapAdapter → note shieldée
+        <br/><span style={{ color:"#334155" }}>Testnet: simulation · Mainnet: Uniswap V3</span>
       </div>
       <ShieldedWallet bals={bals} actionableFilter={["USDC","EURC","cirBTC"]}
         onMax={(sym, val, _raw, dec) => { setFr(sym); if (sym===to) setTo(TK.find(t=>t!==sym)||"EURC"); setAmount(val.toFixed(dec===8?5:2)); }}
@@ -3016,22 +2973,17 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
           </div>
         </div>
       )}
-      {step && (
-        <div style={{ background:"rgba(14,165,233,.08)", border:"1px solid rgba(14,165,233,.25)", borderRadius:4, padding:"8px 12px", marginBottom:10, fontSize:9, color:"#0EA5E9", fontFamily:"monospace" }}>
-          ⏳ {step}
-        </div>
-      )}
-      <IG items={[["Privacy","✓ ShieldVault","4-step flow"],["DEX","Arc FxEscrow","native"],["Disponible",tkFr.bal.toFixed(tkFr.dec===8?5:2)+" "+fr,"shieldé"]]}/>
+      <IG items={[["Privacy","✓ PrivARCShieldVault","1 tx"],["Adapter","PrivateSwapAdapter","Uni V3 ready"],["Disponible",tkFr.bal.toFixed(tkFr.dec===8?5:2)+" "+fr,"shieldé"]]}/>
       {tkFr.bal <= 0 && (
         <div style={{ background:"rgba(245,158,11,.06)", border:"1px solid rgba(245,158,11,.2)", borderRadius:4, padding:"8px 12px", marginBottom:12, fontSize:9, color:"#F59E0B", fontFamily:"monospace" }}>
           ⚠ Solde shieldé {fr} à zéro. Shieldez des {fr} d'abord.
         </div>
       )}
       <ArcBtn
-        label={!onArc ? "⚠ SWITCH TO ARC TESTNET" : loading ? step||"En cours…" : `⇄ SWAP ${fr} → ${to}`}
-        onClick={onArc && !loading ? swap : undefined} loading={loading}
-        disabled={!onArc||!amount||Number(amount)<=0||!q||tkFr.bal<=0||loading}
-        color={onArc?"#00FFB0":"#F59E0B"}
+        label={!onArc ? "⚠ SWITCH TO ARC TESTNET" : loading ? "En cours…" : `⇄ SWAP ${fr} → ${to}`}
+        onClick={onArc && !loading && routerOk ? swap : undefined} loading={loading}
+        disabled={!onArc||!amount||Number(amount)<=0||!q||tkFr.bal<=0||loading||!routerOk}
+        color={onArc && routerOk ? "#00FFB0" : "#F59E0B"}
       />
     </div>
   );
@@ -3089,7 +3041,7 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
 
     let merkleRoot;
     try {
-      const res = await rpcCall("eth_call", [{ to: CONTRACTS.MerkleTreeManager, data: buildGetLastRootCall() }, "latest"]);
+      const res = await rpcCall("eth_call", [{ to: CONTRACTS.PrivARCMerkleTreeManager, data: buildGetLastRootCall() }, "latest"]);
       merkleRoot = (res && res !== "0x" && res.length >= 66) ? res : null;
     } catch { merkleRoot = null; }
     if (!merkleRoot) {
@@ -3116,7 +3068,7 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
           token:      note.token,
           from:       account?.address,
           ts:         Date.now(),
-          vault:      CONTRACTS.ShieldVault, // see relaySelfNote's v2.9 comment for why
+          vault:      CONTRACTS.PrivARCShieldVault, // see relaySelfNote's v2.9 comment for why
         });
         const ecies = await eciesEncryptNoteForRecipient(dest, noteJson);
         if (ecies) {
@@ -3129,13 +3081,13 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       }
     }
 
-    // ── Flat protocol fee (ShieldVault v2.4+ — flatFeeUsdc, native USDC msg.value) ──
+    // ── Flat protocol fee (PrivARCShieldVault v2.4+ — flatFeeUsdc, native USDC msg.value) ──
     // Read before showing the confirm modal so the fee is disclosed up front.
     // Defaults to 0 until governance opts in via setSendFlatFee — matches pre-v2.4
     // behavior exactly when unset.
     let sendFee = 0n;
     try {
-      const feeRes = await rpcCall("eth_call", [{ to: CONTRACTS.ShieldVault, data: SEL.flatFeeUsdc }, "latest"]);
+      const feeRes = await rpcCall("eth_call", [{ to: CONTRACTS.PrivARCShieldVault, data: SEL.flatFeeUsdc }, "latest"]);
       sendFee = feeRes && feeRes !== "0x" ? BigInt(feeRes) : 0n;
     } catch { /* fee read failed — assume 0, matches default deploy state */ }
 
@@ -3151,12 +3103,12 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     });
     if (!confirmed) { setLoading(false); return; }
 
-    // Tx 1: the actual shielded fund movement (ShieldVault selector 0x5635a2e7)
+    // Tx 1: the actual shielded fund movement (PrivARCShieldVault selector 0x5635a2e7)
     const { data, value } = buildShieldedSendCalldata({ nullifierIn, merkleRoot, commitmentOut, sendFlatFee: sendFee, token: tkSend.addr });
     const ok = await sendRealTx({
       label: "Confidential Send",
       description: `${amount} ${sendToken} → ${dest.slice(0,8)}… (shielded)`,
-      buildTx: () => ({ to: CONTRACTS.ShieldVault, value, data }),
+      buildTx: () => ({ to: CONTRACTS.PrivARCShieldVault, value, data }),
     });
 
     if (ok) {
@@ -3261,7 +3213,7 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       <OsField label={`AMOUNT (${sendToken})`} value={amount} onChange={e=>setAmount(e.target.value)} placeholder={tkSend.dec===8?"0.00000":"0.00"} icon="💸" suffix={sendToken}/>
       <IG items={[
         ["Privacy", mode==="shielded"?"✓ Hidden":"✗ Public", ""],
-        ["Route",   mode==="shielded"?"ShieldVault":"Direct", ""],
+        ["Route",   mode==="shielded"?"PrivARCShieldVault":"Direct", ""],
         ["Token",   sendToken, "selected"],
         ["Gas",     "USDC",    "Arc Testnet"],
       ]}/>
@@ -3324,7 +3276,7 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
 
     let root;
     try {
-      const res = await rpcCall("eth_call", [{ to: CONTRACTS.MerkleTreeManager, data: buildGetLastRootCall() }, "latest"]);
+      const res = await rpcCall("eth_call", [{ to: CONTRACTS.PrivARCMerkleTreeManager, data: buildGetLastRootCall() }, "latest"]);
       root = (res && res !== "0x" && res.length >= 66) ? res : null;
     } catch { root = null; }
     if (!root) {
@@ -3342,12 +3294,12 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
     let withdrawFee = 0n;
     try {
       if (tk.isNative) {
-        const feeRes = await rpcCall("eth_call", [{ to: CONTRACTS.ShieldVault, data: SEL.protocolFeeBps }, "latest"]);
+        const feeRes = await rpcCall("eth_call", [{ to: CONTRACTS.PrivARCShieldVault, data: SEL.protocolFeeBps }, "latest"]);
         const bps = feeRes && feeRes !== "0x" ? BigInt(feeRes) : 0n;
         withdrawFee = previewWithdrawFee(amountBig, bps, true, 0n).fee;
         // flatFeeUsdc stays 0n for native USDC — fee is skimmed on-chain, no msg.value needed
       } else {
-        const feeRes = await rpcCall("eth_call", [{ to: CONTRACTS.ShieldVault, data: SEL.flatFeeUsdc }, "latest"]);
+        const feeRes = await rpcCall("eth_call", [{ to: CONTRACTS.PrivARCShieldVault, data: SEL.flatFeeUsdc }, "latest"]);
         flatFeeUsdc  = feeRes && feeRes !== "0x" ? BigInt(feeRes) : 0n;
         withdrawFee  = flatFeeUsdc;
       }
@@ -3370,8 +3322,8 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
 
     const ok = await sendRealTx({
       label: "Withdraw",
-      description: `${amount} ${tk.sym} → ${sh(target)} from ShieldVault${feeDesc}`,
-      buildTx: () => ({ to: CONTRACTS.ShieldVault, value: txValue, data }),
+      description: `${amount} ${tk.sym} → ${sh(target)} from PrivARCShieldVault${feeDesc}`,
+      buildTx: () => ({ to: CONTRACTS.PrivARCShieldVault, value: txValue, data }),
     });
 
     if (ok) {
@@ -3437,13 +3389,13 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
 }
 
 function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedBals, recomputeShielded, protocolStats }) {
-  // ── Architecture: ShieldVault + CCTP v2 direct ───────────────────────────
+  // ── Architecture: PrivARCShieldVault + CCTP v2 direct ───────────────────────────
   // kit.bridge() requires switching chains in the wallet — not supported on
-  // Arc Testnet browser wallets. We call ShieldVault.privateBridgeExec()
+  // Arc Testnet browser wallets. We call PrivARCShieldVault.privateBridgeExec()
   // directly via buildPrivateBridgeCalldata (CCTP v2 burn-and-mint).
   //
   // Flow (1 tx) :
-  //   ShieldVault.privateBridgeExec() → CCTP burn on Arc → mint on destination
+  //   PrivARCShieldVault.privateBridgeExec() → CCTP burn on Arc → mint on destination
   //
   // For EURC/cirBTC: call /api/swap first to convert to USDC, then bridge.
   const CH = Object.values(CCTP_DOMAINS);
@@ -3466,7 +3418,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
   };
   const tk = BRIDGE_TOKENS[token] || BRIDGE_TOKENS.USDC;
 
-  // ── Helper: withdraw note from ShieldVault to wallet ─────────────────────
+  // ── Helper: withdraw note from PrivARCShieldVault to wallet ─────────────────────
   const withdrawToWallet = async (tokenAddr, dec, amountBig) => {
     const notes      = getNotes(account?.address);
     const tokenNotes = notes.filter(n => n.token?.toLowerCase() === tokenAddr.toLowerCase());
@@ -3480,14 +3432,14 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
 
     let root;
     try {
-      const res = await rpcCall("eth_call", [{ to: CONTRACTS.MerkleTreeManager, data: buildGetLastRootCall() }, "latest"]);
+      const res = await rpcCall("eth_call", [{ to: CONTRACTS.PrivARCMerkleTreeManager, data: buildGetLastRootCall() }, "latest"]);
       root = (res && res !== "0x" && res.length >= 66) ? res : null;
     } catch { root = null; }
     if (!root) return false;
 
     let flatFeeUsdc = 0n;
     try {
-      const feeRes = await rpcCall("eth_call", [{ to: CONTRACTS.ShieldVault, data: SEL.flatFeeUsdc }, "latest"]);
+      const feeRes = await rpcCall("eth_call", [{ to: CONTRACTS.PrivARCShieldVault, data: SEL.flatFeeUsdc }, "latest"]);
       flatFeeUsdc = feeRes && feeRes !== "0x" ? BigInt(feeRes) : 0n;
     } catch {}
 
@@ -3501,8 +3453,8 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
 
     const ok = await sendRealTx({
       label: `Unshield ${token}`,
-      description: `Withdraw ${amount} ${token} from ShieldVault`,
-      buildTx: () => ({ to: CONTRACTS.ShieldVault, value: txValue, data }),
+      description: `Withdraw ${amount} ${token} from PrivARCShieldVault`,
+      buildTx: () => ({ to: CONTRACTS.PrivARCShieldVault, value: txValue, data }),
     });
 
     if (ok) {
@@ -3541,8 +3493,12 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
       }
       setStep(`Étape 2/3 — Swap ${token}→USDC…`);
       try {
-        // Direct FxEscrow calldata — no SDK, no external deps
-        const FX_ESCROW = "0x867650F5eAe8df91445971f14d89fd84F0C9a9f8";
+        // Use PrivateSwapAdapter via PrivARCShieldVault.privateSwapExec (same flow as SwapPanel)
+        const swapAdapter = CONTRACTS.PrivateSwapAdapter;
+        if (!swapAdapter || swapAdapter === "0x0000000000000000000000000000000000000000") {
+          throw new Error("PrivateSwapAdapter non déployé — impossible de swapper vers USDC");
+        }
+
         const tokenInAddr  = BRIDGE_TOKENS[token]?.addr || NATIVE_USDC;
         const dec          = BRIDGE_TOKENS[token]?.dec || 6;
         const amtBig       = BigInt(Math.round(Number(amount) * (10 ** dec)));
@@ -3550,32 +3506,55 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
         const btcUsd       = prices?.BTC ?? 100000;
         const toUsd        = { USDC:1, EURC:eurUsd, cirBTC:btcUsd };
         const rate         = toUsd[token] / toUsd["USDC"];
-        const estimatedOut = BigInt(Math.round(Number(amount) * rate * 0.99 * 1e6));
+        const estimatedOut = BigInt(Math.round(Number(amount) * rate * 0.995 * 1e6));
         const minOut       = estimatedOut * 990n / 1000n;
 
-        // approve(FxEscrow, amtBig)
-        const approveData = "0x095ea7b3"
-          + FX_ESCROW.slice(2).padStart(64,"0")
-          + amtBig.toString(16).padStart(64,"0");
-        const approvOk = await sendRealTx({
-          label: `Approve FxEscrow`,
-          description: `Allow FxEscrow to spend ${amount} ${token}`,
-          buildTx: () => ({ to: tokenInAddr, value: "0x0", data: approveData }),
-        });
-        if (!approvOk) throw new Error("Approve FxEscrow failed");
+        // Build privateSwap via PrivARCShieldVault (consumes shielded note)
+        const swapNotes    = getNotes(account?.address);
+        const swapNote     = swapNotes.filter(n => n.token?.toLowerCase() === tokenInAddr.toLowerCase())
+          .reduce((best, n) => !best || BigInt(Math.round(Number(n.amount)||0)) > BigInt(Math.round(Number(best.amount)||0)) ? n : best, null);
+        if (!swapNote) throw new Error(`Aucune note ${token} shieldée trouvée`);
 
-        // FxEscrow.swap(tokenIn, USDC, amtBig, minOut)
-        const swapData = "0x022c0d9f"
-          + tokenInAddr.slice(2).padStart(64,"0")
-          + NATIVE_USDC.slice(2).padStart(64,"0")
-          + amtBig.toString(16).padStart(64,"0")
-          + minOut.toString(16).padStart(64,"0");
+        let swapRoot;
+        try {
+          const res = await rpcCall("eth_call",[{ to:CONTRACTS.PrivARCMerkleTreeManager, data:buildGetLastRootCall() },"latest"]);
+          swapRoot = (res && res !== "0x" && res.length >= 66) ? res : null;
+        } catch { swapRoot = null; }
+        if (!swapRoot) throw new Error("Impossible de lire le Merkle root");
+
+        const swapNullifier = randomBytes32();
+        const swapCommitOut = randomBytes32();
+        let swapFlatFee = 0n;
+        try {
+          const r = await rpcCall("eth_call",[{ to:CONTRACTS.PrivARCShieldVault, data:SEL.flatFeeUsdc },"latest"]);
+          swapFlatFee = r && r !== "0x" ? BigInt(r) : 0n;
+        } catch {}
+
+        const swapRouteData = buildSwapAdapterRouteData({
+          tokenIn: tokenInAddr, tokenOut: NATIVE_USDC,
+          amountIn: amtBig, minAmountOut: minOut,
+          feeTier: token === "cirBTC" ? 3000 : 500,
+        });
+        const { data: swapData, value: swapValue } = buildPrivateSwapCalldata({
+          nullifier: swapNullifier, merkleRoot: swapRoot, commitmentOut: swapCommitOut,
+          tokenIn: tokenInAddr, tokenOut: NATIVE_USDC,
+          amountIn: amtBig, minAmountOut: minOut,
+          deadline: BigInt(Math.floor(Date.now()/1000) + 600),
+          dexRouter: swapAdapter, routeData: swapRouteData, flatFeeUsdc: swapFlatFee,
+        });
         const swapOk = await sendRealTx({
           label: `Swap ${token}→USDC`,
-          description: `FxEscrow: ${amount} ${token} → USDC`,
-          buildTx: () => ({ to: FX_ESCROW, value: "0x0", data: swapData }),
+          description: `PrivateSwap: ${amount} ${token} → ~${(Number(estimatedOut)/1e6).toFixed(2)} USDC`,
+          buildTx: () => ({ to: CONTRACTS.PrivARCShieldVault, value: swapValue, data: swapData }),
         });
-        if (!swapOk) throw new Error("FxEscrow swap failed");
+        if (!swapOk) throw new Error("PrivateSwap vers USDC échoué");
+
+        // Update notes: replace input note with USDC output note
+        const swapUpdated = swapNotes.filter(n => n.commitment !== swapNote.commitment);
+        swapUpdated.push({ commitment: swapCommitOut, amount: estimatedOut.toString(), token: NATIVE_USDC, ts: Date.now() });
+        saveNotes(account?.address, swapUpdated);
+        recomputeShielded?.();
+
         usdcAmountStr = (Number(estimatedOut) / 1e6).toFixed(2);
       } catch (e) {
         notify("Bridge", `Swap ${token}→USDC échoué: ${e.message}. Vos ${token} sont dans le wallet.`, "error");
@@ -3586,7 +3565,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
       setStep(`Bridge USDC → ${ch.name} via CCTP v2…`);
     }
 
-    // ── Bridge USDC via ShieldVault.privateBridgeExec (CCTP v2) ──────────────
+    // ── Bridge USDC via PrivARCShieldVault.privateBridgeExec (CCTP v2) ──────────────
     // For USDC: consume the shielded note directly.
     // For EURC/cirBTC: USDC is now in the wallet after the swap — deposit then bridge.
     let bridgeOk = false;
@@ -3594,7 +3573,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
       // Direct: spend shielded USDC note → CCTP burn
       let root;
       try {
-        const res = await rpcCall("eth_call", [{ to: CONTRACTS.MerkleTreeManager, data: buildGetLastRootCall() }, "latest"]);
+        const res = await rpcCall("eth_call", [{ to: CONTRACTS.PrivARCMerkleTreeManager, data: buildGetLastRootCall() }, "latest"]);
         root = (res && res !== "0x" && res.length >= 66) ? res : null;
       } catch { root = null; }
       if (!root) {
@@ -3618,7 +3597,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
 
       let flatFeeUsdc = 0n;
       try {
-        const feeRes = await rpcCall("eth_call", [{ to: CONTRACTS.ShieldVault, data: SEL.flatFeeUsdc }, "latest"]);
+        const feeRes = await rpcCall("eth_call", [{ to: CONTRACTS.PrivARCShieldVault, data: SEL.flatFeeUsdc }, "latest"]);
         flatFeeUsdc = feeRes && feeRes !== "0x" ? BigInt(feeRes) : 0n;
       } catch {}
 
@@ -3635,7 +3614,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
       bridgeOk = await sendRealTx({
         label: `Bridge → ${ch.name}`,
         description: `${amount} USDC → ${ch.name} via CCTP v2 (private)`,
-        buildTx: () => ({ to: CONTRACTS.ShieldVault, value, data }),
+        buildTx: () => ({ to: CONTRACTS.PrivARCShieldVault, value, data }),
       });
 
       if (bridgeOk) {
@@ -3648,7 +3627,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
       }
     } else {
       // EURC/cirBTC: USDC now in wallet after swap — send directly via CCTP
-      // (no ShieldVault involved for this step — public bridge)
+      // (no PrivARCShieldVault involved for this step — public bridge)
       notify("Bridge ✓", `${token} swappé en ${usdcAmountStr} USDC — bridge CCTP lancé vers ${ch.name}.`, "success");
       bridgeOk = true;
     }
@@ -3659,13 +3638,13 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
 
   return (
     <div style={{ animation:"fi .3s ease" }}>
-      <PH icon="⟺" title="BRIDGE" sub="Confidential bridge — ShieldVault + Circle CCTP v2"/>
+      <PH icon="⟺" title="BRIDGE" sub="Confidential bridge — PrivARCShieldVault + Circle CCTP v2"/>
       <NotOnArcWarning/>
 
       <div style={{ background:"rgba(14,165,233,.04)", border:"1px solid rgba(14,165,233,.18)", borderRadius:4, padding:"9px 12px", marginBottom:8, fontSize:8, fontFamily:"monospace", color:"#94a3b8", lineHeight:1.6 }}>
         <div style={{ color:"#0EA5E9", fontWeight:700, marginBottom:3 }}>⬡ Circle App Kit + CCTP v2</div>
         {token === "USDC"
-          ? "1 tx : ShieldVault.privateBridgeExec → CCTP burn → mint sur destination"
+          ? "1 tx : PrivARCShieldVault.privateBridgeExec → CCTP burn → mint sur destination"
           : `3 étapes : Unshield ${token} → Swap→USDC → Bridge CCTP`}
       </div>
 
@@ -3709,7 +3688,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
       <IG items={[
         ["Token",   token,    "sélectionné"],
         ["Vers",    ch?.name, "CCTP v2"],
-        ["Privacy", "✓ ShieldVault", "nullifier"],
+        ["Privacy", "✓ PrivARCShieldVault", "nullifier"],
       ]}/>
 
       {tk.bal <= 0 && (
@@ -3775,9 +3754,9 @@ function AnalyticsPanel({ protocolStats, txHistory, account, onArc, prices }) {
 
         // ── Read fees directly from contract state (most reliable) ──────────
         const [feesUsdcRaw, feesEurcRaw, leafRaw] = await Promise.all([
-          rpcCall("eth_call", [{ to:CONTRACTS.ShieldVault, data: SEL.feesCollectedByToken + encodeAddress(CONTRACTS.USDC)   }, "latest"]),
-          rpcCall("eth_call", [{ to:CONTRACTS.ShieldVault, data: SEL.feesCollectedByToken + encodeAddress(CONTRACTS.EURC)   }, "latest"]),
-          rpcCall("eth_call", [{ to:CONTRACTS.MerkleTreeManager, data: SEL.nextLeafIndex }, "latest"]),
+          rpcCall("eth_call", [{ to:CONTRACTS.PrivARCShieldVault, data: SEL.feesCollectedByToken + encodeAddress(CONTRACTS.USDC)   }, "latest"]),
+          rpcCall("eth_call", [{ to:CONTRACTS.PrivARCShieldVault, data: SEL.feesCollectedByToken + encodeAddress(CONTRACTS.EURC)   }, "latest"]),
+          rpcCall("eth_call", [{ to:CONTRACTS.PrivARCMerkleTreeManager, data: SEL.nextLeafIndex }, "latest"]),
         ]);
         const feesUsdc   = feesUsdcRaw && feesUsdcRaw !== "0x" ? Number(BigInt(feesUsdcRaw)) / 1e6 : 0;
         const feesEurc   = feesEurcRaw && feesEurcRaw !== "0x" ? Number(BigInt(feesEurcRaw)) / 1e6 : 0;
@@ -3791,7 +3770,7 @@ function AnalyticsPanel({ protocolStats, txHistory, account, onArc, prices }) {
           const res = await rpcCall("eth_getLogs", [{
             fromBlock: "0x"+from24.toString(16),
             toBlock:   "latest",
-            address:   CONTRACTS.ShieldVault,
+            address:   CONTRACTS.PrivARCShieldVault,
           }]);
           if (Array.isArray(res)) logs24 = res;
         } catch {}
@@ -3860,8 +3839,8 @@ function AnalyticsPanel({ protocolStats, txHistory, account, onArc, prices }) {
   useEffect(() => {
     if (!onArc) return;
     const run = () => Promise.all([
-      rpcCall("eth_call", [{ to: CONTRACTS.ShieldVault, data: SEL.protocolFeeBps }, "latest"]).catch(() => null),
-      rpcCall("eth_call", [{ to: CONTRACTS.ShieldVault, data: SEL.treasury }, "latest"]).catch(() => null),
+      rpcCall("eth_call", [{ to: CONTRACTS.PrivARCShieldVault, data: SEL.protocolFeeBps }, "latest"]).catch(() => null),
+      rpcCall("eth_call", [{ to: CONTRACTS.PrivARCShieldVault, data: SEL.treasury }, "latest"]).catch(() => null),
     ]).then(([bpsRes, treasuryRes]) => {
       setFeeConfig({
         bps:      bpsRes && bpsRes !== "0x" ? Number(BigInt(bpsRes)) : null,
@@ -3874,14 +3853,14 @@ function AnalyticsPanel({ protocolStats, txHistory, account, onArc, prices }) {
   }, [onArc]);
   const feeRateLabel = feeConfig.bps == null ? "loading…" : feeConfig.bps === 0 ? "Free (launch phase)" : `${(feeConfig.bps/100).toFixed(2)}%`;
 
-  // ── Staking tx count (v1.2+) — combined with ShieldVault.totalTxCount below
+  // ── PrivARCStaking tx count (v1.2+) — combined with PrivARCShieldVault.totalTxCount below
   //     for a true protocol-wide "Total Tx" figure, not just vault actions ──
   const [stakingTxCount, setStakingTxCount] = useState(null);
   useEffect(() => {
-    if (!onArc || !CONTRACTS.Staking) return;
-    const run = () => rpcCall("eth_call", [{ to: CONTRACTS.Staking, data: SEL.totalTxCount }, "latest"])
+    if (!onArc || !CONTRACTS.PrivARCStaking) return;
+    const run = () => rpcCall("eth_call", [{ to: CONTRACTS.PrivARCStaking, data: SEL.totalTxCount }, "latest"])
       .then(res => setStakingTxCount(res && res !== "0x" ? Number(BigInt(res)) : 0))
-      .catch(() => {}); // older Staking (pre-v1.2) doesn't have this — silently keep null, not an error
+      .catch(() => {}); // older PrivARCStaking (pre-v1.2) doesn't have this — silently keep null, not an error
     run();
     const id = setInterval(run, 30000);
     return () => clearInterval(id);
@@ -4034,7 +4013,7 @@ function AnalyticsPanel({ protocolStats, txHistory, account, onArc, prices }) {
           return [
             { l:"Total Tx (vault + staking)",  v: combinedTx!=null ? String(combinedTx) : "loading…", c:"#0EA5E9" },
             // v2.8: every fee, from every action, on every token, lands in USDC only
-            // (see ShieldVault.sol v2.8 changelog) — Fees (EURC) / Fees (cirBTC) tiles
+            // (see PrivARCShieldVault.sol v2.8 changelog) — Fees (EURC) / Fees (cirBTC) tiles
             // removed since they're now permanently $0/€0 by design, not a bug.
             { l:"Fees Collected (USDC)", v: stats24h.feesUsdc!=null ? "$"+stats24h.feesUsdc.toFixed(4) : "loading…", c:"#fbbf24" },
             { l:"Fee Rate (deposit/withdraw)", v: feeRateLabel,                                                       c:"#64748b" },
@@ -4047,11 +4026,11 @@ function AnalyticsPanel({ protocolStats, txHistory, account, onArc, prices }) {
           </div>
         ))}
         <div style={{ fontSize:7, color:"#1e3a2a", fontFamily:"monospace", marginTop:6, lineHeight:1.5 }}>
-          Total Tx = ShieldVault.totalTxCount() (deposit/withdraw/confidential-send/
-          swap/bridge) + Staking.totalTxCount() (stake/unstake/claimRewards), read
+          Total Tx = PrivARCShieldVault.totalTxCount() (deposit/withdraw/confidential-send/
+          swap/bridge) + PrivARCStaking.totalTxCount() (stake/unstake/claimRewards), read
           live from both contracts. Public (non-shielded) sends aren't counted — they
           never touch a PrivARC contract, so they're indistinguishable on-chain from
-          any other wallet transfer. Fees read live from ShieldVault.feesCollectedByToken().
+          any other wallet transfer. Fees read live from PrivARCShieldVault.feesCollectedByToken().
           Claimable by deployer or treasury via withdrawFees(). Updates every 30s.
         </div>
       </div>
@@ -4121,7 +4100,7 @@ function GovPanel() {
   const CONTRACTS_LIST = [
     { name: "Governance", address: CONTRACTS.Governance },
     { name: "Timelock",   address: CONTRACTS.Timelock },
-    { name: "Staking (veARC source)", address: CONTRACTS.Staking },
+    { name: "PrivARCStaking (veARC source)", address: CONTRACTS.PrivARCStaking },
   ];
 
   return (
@@ -4177,9 +4156,9 @@ function StakingPanel({ account, usdcBalance, onArc, notify, refreshBalance }) {
     try {
       // getUserStakes(address) — returns StakePosition[]
       const [stakesRaw, rewardsRaw, totalRaw] = await Promise.all([
-        rpcCall("eth_call", [{ to: CONTRACTS.Staking, data: SEL.previewRewards + encodeAddress(account.address) }, "latest"]),
-        rpcCall("eth_call", [{ to: CONTRACTS.Staking, data: SEL.previewRewards + encodeAddress(account.address) }, "latest"]),
-        rpcCall("eth_call", [{ to: CONTRACTS.Staking, data: "0x817b1cd2" /* totalStakedGlobal() */ }, "latest"]),
+        rpcCall("eth_call", [{ to: CONTRACTS.PrivARCStaking, data: SEL.previewRewards + encodeAddress(account.address) }, "latest"]),
+        rpcCall("eth_call", [{ to: CONTRACTS.PrivARCStaking, data: SEL.previewRewards + encodeAddress(account.address) }, "latest"]),
+        rpcCall("eth_call", [{ to: CONTRACTS.PrivARCStaking, data: "0x817b1cd2" /* totalStakedGlobal() */ }, "latest"]),
       ]);
       // previewRewards returns uint256
       if (rewardsRaw && rewardsRaw !== "0x") setRewards(BigInt(rewardsRaw));
@@ -4192,7 +4171,7 @@ function StakingPanel({ account, usdcBalance, onArc, notify, refreshBalance }) {
 
   useEffect(() => { loadStakingData(); const id = setInterval(loadStakingData, 15000); return () => clearInterval(id); }, [loadStakingData]);
 
-  // Staking positions — cross-device: prefer on-chain data, fallback to localStorage cache
+  // PrivARCStaking positions — cross-device: prefer on-chain data, fallback to localStorage cache
   const [stakingNotes, setStakingNotes] = useState([]);
 
   const saveNotes = useCallback((notes) => {
@@ -4223,19 +4202,19 @@ function StakingPanel({ account, usdcBalance, onArc, notify, refreshBalance }) {
     const amtWei = BigInt(Math.round(Number(stakeAmt) * 1e6));
 
     // Arc native USDC (0x3600...) supports ERC-20 interface for approve
-    // Must approve Staking contract to call safeTransferFrom
+    // Must approve PrivARCStaking contract to call safeTransferFrom
     const approveOk = await sendRealTx({
       label: "Approve USDC",
-      description: `Approve ${stakeAmt} USDC for Staking`,
-      buildTx: () => ({ to: CONTRACTS.USDC, value: "0x0", data: buildApproveCalldata(CONTRACTS.Staking, amtWei) }),
+      description: `Approve ${stakeAmt} USDC for PrivARCStaking`,
+      buildTx: () => ({ to: CONTRACTS.USDC, value: "0x0", data: buildApproveCalldata(CONTRACTS.PrivARCStaking, amtWei) }),
     });
 
     if (approveOk) {
       // Pass lk.sec directly — buildStakeCalldata now takes seconds, not days
       const stakeOk = await sendRealTx({
         label: "Stake",
-        description: `Staking ${stakeAmt} USDC (${lock}d lock, ${lk.apy} APY)`,
-        buildTx: () => ({ to: CONTRACTS.Staking, value: "0x0", data: buildStakeCalldata(amtWei, lk.sec) }),
+        description: `PrivARCStaking ${stakeAmt} USDC (${lock}d lock, ${lk.apy} APY)`,
+        buildTx: () => ({ to: CONTRACTS.PrivARCStaking, value: "0x0", data: buildStakeCalldata(amtWei, lk.sec) }),
       });
       if (stakeOk) {
         // Optimistic local update — so the position appears immediately without waiting for chain scan
@@ -4267,7 +4246,7 @@ function StakingPanel({ account, usdcBalance, onArc, notify, refreshBalance }) {
     await sendRealTx({
       label: "Unstake",
       description: `Unstaking ${note.amount.toFixed(2)} USDC`,
-      buildTx: () => ({ to: CONTRACTS.Staking, value: "0x0", data: SEL.unstake + encodeUint256(BigInt(noteIdx)) }),
+      buildTx: () => ({ to: CONTRACTS.PrivARCStaking, value: "0x0", data: SEL.unstake + encodeUint256(BigInt(noteIdx)) }),
     });
     // Optimistic local removal, then refresh from chain
     saveNotes(stakingNotes.filter((_, i) => i !== noteIdx));
@@ -4283,7 +4262,7 @@ function StakingPanel({ account, usdcBalance, onArc, notify, refreshBalance }) {
 
   const claim = async () => {
     setClaiming(true);
-    await sendRealTx({ label:"Claim Rewards", description:"Claiming staking rewards", buildTx: () => ({ to: CONTRACTS.Staking, value: "0x0", data: SEL.claimRewards }) });
+    await sendRealTx({ label:"Claim Rewards", description:"Claiming staking rewards", buildTx: () => ({ to: CONTRACTS.PrivARCStaking, value: "0x0", data: SEL.claimRewards }) });
     setClaiming(false); setRewards(0n);
   };
 
@@ -4354,7 +4333,7 @@ function StakingPanel({ account, usdcBalance, onArc, notify, refreshBalance }) {
             </button>
           ))}
         </div>
-        <ArcBtn label={staking ? "Staking..." : `⟶ STAKE ${lock}d (REAL TX)`} onClick={onArc ? stake : undefined} loading={staking} disabled={!stakeAmt || Number(stakeAmt)<=0 || !onArc} color={onArc ? "#00FFB0" : "#F59E0B"}/>
+        <ArcBtn label={staking ? "PrivARCStaking..." : `⟶ STAKE ${lock}d (REAL TX)`} onClick={onArc ? stake : undefined} loading={staking} disabled={!stakeAmt || Number(stakeAmt)<=0 || !onArc} color={onArc ? "#00FFB0" : "#F59E0B"}/>
       </div>
 
       {/* Claim rewards */}

@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 //  PrivARC OS — Contract Config v12.0.0
 //
-//  Addresses synced with latest.json v2.3.0 — Arc Testnet — 2026-06-15
+//  Addresses synced with latest.json v3.0.0 — Arc Testnet — 2026-07-20
 //  Deployer: 0x1Dc72450B3e2782AcD669D7C27073f2C8F2c9894
 //
 //  ADDRESSES: sourced from VITE_ env vars (Vercel) or hardcoded fallbacks
@@ -11,19 +11,19 @@ export const ARC_CHAIN_ID = 5042002;
 
 // ── Contract addresses ────────────────────────────────────────────────────────
 const _c = {
-  ShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0xA60A36a97A1FbFcd49814a08696EB37671f2d0e1",
+  PrivARCShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0x0CE16A33f3dbd4F903622bBB8bEFf04934A766fc",
   Timelock:            import.meta.env.VITE_TIMELOCK              ?? "0x8DF7C02012EBec968bdEc100F4fEAF772AcAab99",
   Governance:          import.meta.env.VITE_GOVERNANCE            ?? "0x89F08E2BBc963e48986D8A0FfA23858bA643C78A",
-  Staking:             import.meta.env.VITE_STAKING               ?? "0x28f6c47F9cF91ffE8Df0a67C252D711852c9188F",
-  NullifierRegistry:   import.meta.env.VITE_NULLIFIER_REGISTRY    ?? "0xAbaADa4ac464f4D9f9195a874c9121FC0A53b212",
-  MerkleTreeManager:   import.meta.env.VITE_MERKLE_TREE_MANAGER   ?? "0x175C61212679376F0c210C1a5c4aC3A5E87fB372",
-  DepositManager:      import.meta.env.VITE_DEPOSIT_MANAGER       ?? "0xdd31d70c2Ce1B5b33Fe016569FEF99CeC8cAE34D",
-  WithdrawalManager:   import.meta.env.VITE_WITHDRAWAL_MANAGER    ?? "0x1b81a4d05851C423B81344Abe5693428e3914250",
+  PrivARCStaking:             import.meta.env.VITE_STAKING               ?? "0x6e8a19b2CEE1AFb45357259dd532E4C649BF12D2",
+  PrivARCNullifierRegistry:   import.meta.env.VITE_NULLIFIER_REGISTRY    ?? "0x80080E52F72578961eb07fB92282f2A88520e19a",
+  PrivARCMerkleTreeManager:   import.meta.env.VITE_MERKLE_TREE_MANAGER   ?? "0x79A9c0F6218052a035F017eAf48EB01E0BC63f52",
+  PrivARCDepositManager:      import.meta.env.VITE_DEPOSIT_MANAGER       ?? "0x553CC1DC7B66697755E2350a9b0668CD324932E7",
+  WithdrawalManager:   import.meta.env.VITE_WITHDRAWAL_MANAGER    ?? "0x3590b80AE2C0f7876e6B1E35F3eAe2011a7f9919",
   ShieldedTransfer:    import.meta.env.VITE_SHIELDED_TRANSFER     ?? "0xa880603916611a0e624f9A04c7f08b62f0532543",
   PrivateSwap:         import.meta.env.VITE_PRIVATE_SWAP          ?? "0xd16F252FFc0a406dFcF58eBAF7EA49f9e1DF78Eb",
   PrivateBridge:       import.meta.env.VITE_PRIVATE_BRIDGE        ?? "0x1C22eEb6c422BeF73B335e1E5668ec3109839B40",
   EmergencyController: import.meta.env.VITE_EMERGENCY_CONTROLLER  ?? "0xa788E96DcF4dBf348995bc5b8D0C7BbaD8e5e88F",
-  MockVerifierZK:      import.meta.env.VITE_VERIFIER_ZK           ?? "0x83a34C5997c58c36A60855879ae24CC440430181",
+  MockVerifierZK:      import.meta.env.VITE_VERIFIER_ZK           ?? "0x52E476c865b10c7929F9C15338b67d4E2b26117F",
   // ViewKeyRegistry v1.0.0 — deployed 2026-06-20. Confidential-send auto-discovery
   // (real ECDH stealth notes) is feature-gated on this being non-null — see
   // DApp.jsx ensureViewKeyRegistered()/scanStealthNotes().
@@ -36,22 +36,27 @@ export const CONTRACTS = {
   // EURC: official Arc Testnet address not yet published by Circle.
   // Set VITE_EURC_ADDRESS in Vercel env vars once Circle deploys on Arc.
   // Until then bridge panel will show a clear error (cannot approve native USDC).
-  // EURC + cirBTC — real addresses from latest.json v2.3.0 (Arc Testnet, 2026-06-09)
+  // EURC + cirBTC — real addresses from latest.json v3.0.0 (Arc Testnet, 2026-07-20)
   EURC:                import.meta.env.VITE_EURC_ADDRESS   ?? "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
   cirBTC:              import.meta.env.VITE_CIRBTC_ADDRESS ?? "0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF",
   CCTP_TokenMessenger: "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA",
   // Deployed by PrivARC
-  ShieldVault:         _c.ShieldVault,
+  PrivARCShieldVault:         _c.PrivARCShieldVault,
   Timelock:            _c.Timelock,
   Governance:          _c.Governance,
-  Staking:             _c.Staking,
-  NullifierRegistry:   _c.NullifierRegistry,
-  MerkleTreeManager:   _c.MerkleTreeManager,
-  DepositManager:      _c.DepositManager,
+  PrivARCStaking:             _c.PrivARCStaking,
+  PrivARCNullifierRegistry:   _c.PrivARCNullifierRegistry,
+  PrivARCMerkleTreeManager:   _c.PrivARCMerkleTreeManager,
+  PrivARCDepositManager:      _c.PrivARCDepositManager,
   WithdrawalManager:   _c.WithdrawalManager,
   ShieldedTransfer:    _c.ShieldedTransfer,
   PrivateSwap:         _c.PrivateSwap,
-  MockDEXRouter:       import.meta.env.VITE_MOCK_DEX_ROUTER ?? "0x0000000000000000000000000000000000000000",
+  // PrivateSwapAdapter — production router whitelisted in PrivateSwap.
+  // Arc Testnet: simulation mode (no Uniswap V3). Mainnet: Uniswap V3.
+  // Deploy: npx hardhat run scripts/deploy-private-swap-adapter.js --network arc_testnet
+  // TowerSwapAdapter — Tower Exchange (StableFX) router for confidential swaps
+  // Deployed by: npx hardhat run scripts/deploy.js --network arc_testnet
+  TowerSwapAdapter:    import.meta.env.VITE_TOWER_SWAP_ADAPTER ?? "0xc4CdF6A69788DE2Cb18439318Af6AEf9EF23d161",
   PrivateBridge:       _c.PrivateBridge,
   EmergencyController: _c.EmergencyController,
   MockVerifierZK:      _c.MockVerifierZK,
@@ -110,7 +115,7 @@ export const NATIVE_TO_ERC20    = BigInt("1000000000000"); // 10^12
 // Computed with: keccak256(functionSignature).slice(0,4)
 // Struct types are inlined per ABI spec (IModules.sol)
 //
-// IVerifierZK.Proof = (uint256[2],uint256[2][2],uint256[2])
+// IPrivARCVerifierZK.Proof = (uint256[2],uint256[2][2],uint256[2])
 //
 // DepositParams    = (bytes32,address,uint256,(uint256[2],uint256[2][2],uint256[2]),uint256[])
 // deposit(DepositParams) →
@@ -144,7 +149,7 @@ export const SEL = {
   allowance:          "0xdd62ed3e",  // allowance(address,address)
   transfer:           "0xa9059cbb",  // transfer(address,uint256)
 
-  // ShieldVault v2.2 — computed from IModules.sol struct ABI signatures
+  // PrivARCShieldVault v2.2 — computed from IModules.sol struct ABI signatures
   // NOTE: These selectors are computed from the EXACT function signatures.
   // If deployment reverts with "function not found", verify with:
   //   cast sig "deposit((bytes32,address,uint256,(uint256[2],uint256[2][2],uint256[2]),uint256[]))"
@@ -155,11 +160,11 @@ export const SEL = {
   privateSwapExec:    "0x49fa2a6e",  // privateSwapExec(((uint256[2],uint256[2][2],uint256[2]),bytes32,bytes32,bytes32,address,address,uint256,uint256,uint256,address,bytes,uint256[]))
   privateBridgeExec:  "0x8fa6444e",  // privateBridgeExec(((uint256[2],uint256[2][2],uint256[2]),bytes32,bytes32,uint32,address,uint256,bytes32,uint256,uint256[]))
 
-  // ShieldVault views
+  // PrivARCShieldVault views
   totalShielded:      "0x6d7f2685",  // totalShielded(address)
   totalShieldedUSDC:  "0x37b12e9e",  // totalShieldedUSDC()
 
-  // MerkleTreeManager
+  // PrivARCMerkleTreeManager
   nextLeafIndex:      "0x0be4f422",  // nextLeafIndex()
   getLastRoot:        "0xba70f757",  // getLastRoot()
   isKnownRoot:        "0x6d9833e3",  // isKnownRoot(bytes32)
@@ -171,19 +176,19 @@ export const SEL = {
   transfersAllowed:   "0xb0660c3d",  // transfersAllowed()
   adminReset:         "0x8c5b9b00",  // adminReset()
 
-  // DepositManager
+  // PrivARCDepositManager
   isTokenSupported:   "0x75151b63",  // isTokenSupported(address)
   getSupportedTokens: "0xd3c7c2c7",  // getSupportedTokens()
   minDeposit:         "0x3c29f839",  // minDeposit(address)
 
-  // Staking
+  // PrivARCStaking
   stake:              "0x7b0472f0",  // stake(uint256,uint256)
   unstake:            "0x2e17de78",  // unstake(uint256)
   claimRewards:       "0x372500ab",  // claimRewards()
   previewRewards:     "0xf166e920",  // previewRewards(address)
   getUserStakes:      "0x5e0e5b3e",  // getUserStakes(address) → StakePosition[]
 
-  // Protocol fees (ShieldVault v2.4.0)
+  // Protocol fees (PrivARCShieldVault v2.4.0)
   feesCollectedByToken: "0xa2c169a7",  // feesCollectedByToken(address)
   withdrawFees:         "0x164e68de",  // withdrawFees(address)
   protocolFeeBps:       "0x35659fb8",  // protocolFeeBps() — deposit/withdraw
@@ -192,10 +197,10 @@ export const SEL = {
   flatFeeUsdc:          "0xb892df0e",  // flatFeeUsdc() — 6-dec USDC units (renamed from sendFlatFee in v2.8 — now used by deposit/withdraw/swap/bridge for EURC/cirBTC too, not just send)
   treasury:             "0x61d027b3",  // treasury()
 
-  // Protocol fees (Staking v1.1.0)
-  performanceFeeBps:    "0xb9d4e879",  // performanceFeeBps() — Staking contract
+  // Protocol fees (PrivARCStaking v1.1.0)
+  performanceFeeBps:    "0xb9d4e879",  // performanceFeeBps() — PrivARCStaking contract
 
-  // Live protocol stats (ShieldVault v2.5.0) — item 4: real-time dashboard
+  // Live protocol stats (PrivARCShieldVault v2.5.0) — item 4: real-time dashboard
   VERSION:              "0xffa1ad74",  // VERSION() returns (string)
   totalTxCount:         "0x9b4f50e7",  // totalTxCount() returns (uint256)
   totalVolumeByToken:   "0x38caed9f",  // totalVolumeByToken(address) returns (uint256)
@@ -272,7 +277,7 @@ const PROOF_C_Y = "0000000000000000000000000000000000000000000000000000000000000
 // All builders return { data: "0x...", value: "0x..." }
 
 // ─── DEPOSIT ─────────────────────────────────────────────────────────────────
-// ShieldVault.deposit(DepositParams params) payable
+// PrivARCShieldVault.deposit(DepositParams params) payable
 //
 // ABI: deposit((bytes32,address,uint256,(uint256[2],uint256[2][2],uint256[2]),uint256[]))
 //
@@ -339,7 +344,7 @@ export function buildDepositCalldata(commitment, tokenAddress, amount, flatFeeUs
   // Native USDC: msg.value = amount (6-dec) * 1e12 → native wei (18-dec) — covers the
   // deposit itself; the % protocol fee is skimmed from this same amount on-chain.
   // EURC/cirBTC (v2.8): msg.value instead carries the FLAT protocol fee in USDC —
-  // see ShieldVault.sol's v2.8 changelog for why fees are always USDC-denominated.
+  // see PrivARCShieldVault.sol's v2.8 changelog for why fees are always USDC-denominated.
   const isNativeUsdc = tokenAddress.toLowerCase() === NATIVE_USDC.toLowerCase();
   const value = isNativeUsdc
     ? "0x" + (BigInt(amount) * NATIVE_TO_ERC20).toString(16)
@@ -349,7 +354,7 @@ export function buildDepositCalldata(commitment, tokenAddress, amount, flatFeeUs
 }
 
 // ─── WITHDRAW ────────────────────────────────────────────────────────────────
-// ShieldVault.withdraw(WithdrawalParams params)
+// PrivARCShieldVault.withdraw(WithdrawalParams params)
 //
 // ABI: withdraw(((uint256[2],uint256[2][2],uint256[2]),bytes32,bytes32,address,uint256,uint256,address,uint256[]))
 //
@@ -404,7 +409,7 @@ export function buildWithdrawCalldata({ nullifier, root, token, recipient, amoun
 
   // Native USDC withdraw: no msg.value — % fee is skimmed from withdrawAmt on-chain.
   // EURC/cirBTC withdraw (v2.8): msg.value carries the FLAT protocol fee in USDC,
-  // paid alongside the withdrawal request — see ShieldVault.sol's v2.8 changelog.
+  // paid alongside the withdrawal request — see PrivARCShieldVault.sol's v2.8 changelog.
   const isNativeUsdc = token.toLowerCase() === NATIVE_USDC.toLowerCase();
   const value = isNativeUsdc ? "0x0" : "0x" + (BigInt(flatFeeUsdc) * NATIVE_TO_ERC20).toString(16);
 
@@ -412,7 +417,7 @@ export function buildWithdrawCalldata({ nullifier, root, token, recipient, amoun
 }
 
 // ─── SHIELDED SEND ────────────────────────────────────────────────────────────
-// ShieldVault.shieldedSend(TransferParams params)
+// PrivARCShieldVault.shieldedSend(TransferParams params)
 //
 // ABI: shieldedSend((bytes32[],(uint256[2],uint256[2][2],uint256[2]),bytes32,bytes32[],uint256[]))
 //
@@ -500,7 +505,7 @@ export function buildShieldedSendCalldata({ nullifierIn, merkleRoot, commitmentO
 }
 
 // ─── SHIELDED SEND WITH STEALTH NOTE ──────────────────────────────────────────
-// ShieldVault.shieldedSendWithNote(TransferParams params, address recipient, bytes encryptedNote, bytes ephemeralPubKey)
+// PrivARCShieldVault.shieldedSendWithNote(TransferParams params, address recipient, bytes encryptedNote, bytes ephemeralPubKey)
 //
 // ABI: shieldedSendWithNote((bytes32[],(uint256[2],uint256[2][2],uint256[2]),bytes32,bytes32[],uint256[]),address,bytes,bytes)
 //
@@ -512,11 +517,11 @@ export function buildShieldedSendCalldata({ nullifierIn, merkleRoot, commitmentO
 // Then at 0x80: the 17-word TransferParams block (identical encoding to buildShieldedSendCalldata's blob)
 // Then: encryptedNote (length + padded data), then ephemeralPubKey (length + padded data)
 //
-// NOTE: requires ShieldVault v2.3+ deployed (selector 0xd3c9406f). On the currently
+// NOTE: requires PrivARCShieldVault v2.3+ deployed (selector 0xd3c9406f). On the currently
 // deployed v2.2 contract this selector does not exist and the call will revert with 0x.
 // PrivARC OS's primary confidential-send path uses ViewKeyRegistry.emitNote() instead
-// (see buildEmitNoteCalldata below), which works against ShieldVault v2.2 unmodified.
-// This builder is kept for the day ShieldVault is redeployed to v2.3 (atomic single-tx
+// (see buildEmitNoteCalldata below), which works against PrivARCShieldVault v2.2 unmodified.
+// This builder is kept for the day PrivARCShieldVault is redeployed to v2.3 (atomic single-tx
 // fund-move + note-emit). Not currently called by DApp.jsx.
 export function buildShieldedSendWithNoteCalldata({ nullifierIn, merkleRoot, commitmentOut, recipient, encryptedNote, ephemeralPubKey, sendFlatFee }) {
   const block = _encodeTransferParamsBlock({ nullifierIn, merkleRoot, commitmentOut });
@@ -538,7 +543,21 @@ export function buildShieldedSendWithNoteCalldata({ nullifierIn, merkleRoot, com
 }
 
 // ─── PRIVATE SWAP ─────────────────────────────────────────────────────────────
-// ShieldVault.privateSwapExec(SwapParams params)
+// ── PrivateSwapAdapter routeData encoder ──────────────────────────────────
+// routeData passed to PrivateSwapAdapter.fallback():
+//   abi.encode(tokenIn[32], tokenOut[32], amountIn[32], minAmountOut[32], feeTier[32])
+//   feeTier: Uniswap V3 fee (500=0.05%, 3000=0.3%, 10000=1%)
+//   On Arc Testnet simulation mode, feeTier is ignored.
+export function buildSwapAdapterRouteData({ tokenIn, tokenOut, amountIn, minAmountOut, feeTier = 500 }) {
+  return "0x"
+    + tokenIn.slice(2).padStart(64, "0")
+    + tokenOut.slice(2).padStart(64, "0")
+    + BigInt(amountIn).toString(16).padStart(64, "0")
+    + BigInt(minAmountOut).toString(16).padStart(64, "0")
+    + BigInt(feeTier).toString(16).padStart(64, "0");
+}
+
+// PrivARCShieldVault.privateSwapExec(SwapParams params)
 //
 // SwapParams (IModules.sol) — all fields in order:
 //   proof           (uint256[2],uint256[2][2],uint256[2])  → 8 words (static)
@@ -560,6 +579,31 @@ export function buildShieldedSendWithNoteCalldata({ nullifierIn, merkleRoot, com
 // Dynamic: routeData(offset) + publicInputs(offset) = 2 offsets in head
 // Total head = 19 words = 0x260
 // Tail: routeData at 0x260, publicInputs follows
+
+// ── PrivARCShieldVault.privateSwap() — atomic confidential swap ───────────
+// Atomic: funds never touch user wallet.
+// Selector: keccak256("privateSwap(bytes32,bytes32,address,address,uint256,uint256,bytes32,uint256)")
+export function buildAtomicSwapCalldata({
+  nullifier, root, tokenIn, tokenOut,
+  amountIn, minAmountOut, commitmentOut,
+  deadline = BigInt(Math.floor(Date.now()/1000) + 600),
+  flatFeeUsdc = 0n,
+}) {
+  // Selector precomputed for privateSwap(bytes32,bytes32,address,address,uint256,uint256,bytes32,uint256)
+  const sel  = "0xb8c6a5e3";
+  const data = sel
+    + nullifier.slice(2).padStart(64,"0")
+    + root.slice(2).padStart(64,"0")
+    + tokenIn.slice(2).padStart(64,"0")
+    + tokenOut.slice(2).padStart(64,"0")
+    + BigInt(amountIn).toString(16).padStart(64,"0")
+    + BigInt(minAmountOut).toString(16).padStart(64,"0")
+    + commitmentOut.slice(2).padStart(64,"0")
+    + BigInt(deadline).toString(16).padStart(64,"0");
+
+  const value = flatFeeUsdc > 0n ? "0x" + flatFeeUsdc.toString(16) : "0x0";
+  return { data, value };
+}
 
 export function buildPrivateSwapCalldata({ nullifier, merkleRoot, commitmentOut, tokenIn, tokenOut, amountIn, minAmountOut, deadline, dexRouter = "0x0000000000000000000000000000000000000000", routeData = "0x", flatFeeUsdc = 0n }) {
   const outerOff = encodeUint256(0x20n);
@@ -604,7 +648,7 @@ export function buildPrivateSwapCalldata({ nullifier, merkleRoot, commitmentOut,
 
   // Swap landing in native USDC: no msg.value — % fee skimmed from grossOut on-chain.
   // Swap landing in EURC/cirBTC (v2.8): msg.value carries the FLAT protocol fee in
-  // USDC; grossOut is credited in full — see ShieldVault.sol's v2.8 changelog.
+  // USDC; grossOut is credited in full — see PrivARCShieldVault.sol's v2.8 changelog.
   // Fee depends on tokenOUT (what the user receives), not tokenIn.
   const tokenOutIsNativeUsdc = tokenOut.toLowerCase() === NATIVE_USDC.toLowerCase();
   const value = tokenOutIsNativeUsdc ? "0x0" : "0x" + (BigInt(flatFeeUsdc) * NATIVE_TO_ERC20).toString(16);
@@ -613,7 +657,7 @@ export function buildPrivateSwapCalldata({ nullifier, merkleRoot, commitmentOut,
 }
 
 // ─── PRIVATE BRIDGE ───────────────────────────────────────────────────────────
-// ShieldVault.privateBridgeExec(BridgeParams params)
+// PrivARCShieldVault.privateBridgeExec(BridgeParams params)
 //
 // BridgeParams (IModules.sol):
 //   proof               (uint256[2],uint256[2][2],uint256[2])  → 8 words
@@ -657,7 +701,7 @@ export function buildPrivateBridgeCalldata({ nullifier, merkleRoot, destinationD
   // Bridging native USDC: no msg.value — % fee skimmed from the bridged amount
   // on-chain. Bridging EURC/cirBTC (v2.8 — today's actual use case, bridge currently
   // only routes EURC): msg.value carries the FLAT protocol fee in USDC; the full
-  // amount is bridged via CCTP — see ShieldVault.sol's v2.8 changelog.
+  // amount is bridged via CCTP — see PrivARCShieldVault.sol's v2.8 changelog.
   const isNativeUsdc = token.toLowerCase() === NATIVE_USDC.toLowerCase();
   const value = isNativeUsdc ? "0x0" : "0x" + (BigInt(flatFeeUsdc) * NATIVE_TO_ERC20).toString(16);
 
@@ -676,7 +720,7 @@ export function needsApproveBeforeDeposit(tokenAddress) {
 }
 
 // ─── STAKING ─────────────────────────────────────────────────────────────────
-// Staking.sol stake(uint256 amount, uint256 lockDuration) expects lockDuration in SECONDS
+// PrivARCStaking.sol stake(uint256 amount, uint256 lockDuration) expects lockDuration in SECONDS
 // Valid values: 604800 (7d), 2592000 (30d), 7776000 (90d), 15552000 (180d)
 export function buildStakeCalldata(amount, lockSeconds) {
   return SEL.stake + encodeUint256(amount) + encodeUint256(BigInt(lockSeconds));
@@ -685,7 +729,7 @@ export function buildStakeCalldata(amount, lockSeconds) {
 // ─── MERKLE ROOT GETTER ───────────────────────────────────────────────────────
 // For withdraw/send/swap: we need to read the current Merkle root
 export function buildGetLastRootCall() {
-  return SEL.getLastRoot;  // eth_call to MerkleTreeManager
+  return SEL.getLastRoot;  // eth_call to PrivARCMerkleTreeManager
 }
 
 // ─── RANDOM CRYPTO HELPERS ───────────────────────────────────────────────────
@@ -697,9 +741,9 @@ export function randomBytes32() {
 }
 
 // ─── PROTOCOL FEE PREVIEWS ────────────────────────────────────────────────────
-// Mirrors ShieldVault v2.4's on-chain fee math exactly, so the UI can show an
+// Mirrors PrivARCShieldVault v2.4's on-chain fee math exactly, so the UI can show an
 // accurate "you'll pay X in fees" BEFORE the user signs anything. All four rates
-// default to 0 until governance opts in (see ShieldVault.sol v2.4 changelog).
+// default to 0 until governance opts in (see PrivARCShieldVault.sol v2.4 changelog).
 export const MIN_DEPOSIT_FEE = 30_000n; // 0.03 USDC (6-dec) — matches the on-chain constant
 
 // fee = max(amount * bps / 10000, MIN_DEPOSIT_FEE), only if it doesn't consume the whole amount
@@ -757,7 +801,7 @@ export function previewBridgeFee(amountUnits, bridgeFeeBps, isNativeUsdc, flatFe
 }
 
 // Confidential send: flat fee only (no %), paid as native-USDC msg.value alongside
-// shieldedSend/shieldedSendWithNote — see ShieldVault.sol v2.4 changelog for why a
+// shieldedSend/shieldedSendWithNote — see PrivARCShieldVault.sol v2.4 changelog for why a
 // percentage fee isn't possible here without revealing the shielded amount.
 // Also reused as the generic "encode a flat USDC amount as native wei" helper for
 // deposit/withdraw/swap/bridge's EURC/cirBTC side-payment (v2.8).
