@@ -294,17 +294,21 @@ const PROOF_C_Y = "0000000000000000000000000000000000000000000000000000000000000
 export function buildDepositCalldata(commitment, tokenAddress, amount, flatFeeUsdc = 0n) {
   const comm32 = commitment.replace("0x", "").padStart(64, "0");
 
-  const data = SEL.deposit
-    + encodeAddress(tokenAddress)  // token
-    + encodeUint256(amount)        // amount
-    + comm32;                      // commitment
-
-  // Native USDC: msg.value = amount (6-dec) * 1e12 → native wei (18-dec).
-  // On-chain check is `if (msg.value != amount) revert WrongFee()` for native token.
-  // EURC/cirBTC: msg.value carries the FLAT protocol fee in USDC (if any is set).
+  // Native USDC: the vault does `if (msg.value != amount) revert WrongFee()` — an EXACT
+  // equality check in wei. So for native USDC the `amount` param itself must be passed
+  // in native wei (18-dec), matching msg.value bit-for-bit — NOT the 6-dec display amount.
+  // For ERC-20 tokens (EURC/cirBTC), `amount` stays in the token's own decimals (6-dec here)
+  // since it's used directly in safeTransferFrom.
   const isNativeUsdc = tokenAddress.toLowerCase() === NATIVE_USDC.toLowerCase();
+  const amountForCalldata = isNativeUsdc ? BigInt(amount) * NATIVE_TO_ERC20 : BigInt(amount);
+
+  const data = SEL.deposit
+    + encodeAddress(tokenAddress)          // token
+    + encodeUint256(amountForCalldata)     // amount — wei for native USDC, else raw units
+    + comm32;                              // commitment
+
   const value = isNativeUsdc
-    ? "0x" + (BigInt(amount) * NATIVE_TO_ERC20).toString(16)
+    ? "0x" + amountForCalldata.toString(16)                              // must equal calldata amount exactly
     : "0x" + (BigInt(flatFeeUsdc) * NATIVE_TO_ERC20).toString(16);
 
   return { data, value };
