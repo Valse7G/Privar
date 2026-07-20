@@ -153,12 +153,21 @@ export const SEL = {
   // NOTE: These selectors are computed from the EXACT function signatures.
   // If deployment reverts with "function not found", verify with:
   //   cast sig "deposit((bytes32,address,uint256,(uint256[2],uint256[2][2],uint256[2]),uint256[]))"
-  deposit:            "0xbd673975",  // deposit((bytes32,address,uint256,(uint256[2],uint256[2][2],uint256[2]),uint256[]))
-  withdraw:           "0x3dd75908",  // withdraw(((uint256[2],uint256[2][2],uint256[2]),bytes32,bytes32,address,address,uint256,uint256,address,uint256[]))
-  shieldedSend:       "0x5635a2e7",  // shieldedSend((bytes32[],(uint256[2],uint256[2][2],uint256[2]),bytes32,bytes32[],uint256[]))
-  shieldedSendWithNote:"0xd3c9406f", // shieldedSendWithNote(TransferParams,address,bytes,bytes) — ECIES stealth note
-  privateSwapExec:    "0x49fa2a6e",  // privateSwapExec(((uint256[2],uint256[2][2],uint256[2]),bytes32,bytes32,bytes32,address,address,uint256,uint256,uint256,address,bytes,uint256[]))
-  privateBridgeExec:  "0x8fa6444e",  // privateBridgeExec(((uint256[2],uint256[2][2],uint256[2]),bytes32,bytes32,uint32,address,uint256,bytes32,uint256,uint256[]))
+  // PrivARCShieldVault v3.0.0 — simplified ABI, NO ZK proof structs anymore.
+  // Selectors verified against contracts/core/PrivARCShieldVault.sol (v3.0.0).
+  // Sanity-checked keccak256 impl against known selectors (balanceOf, transfer, approve).
+  deposit:            "0x26b3293f",  // deposit(address,uint256,bytes32)
+  withdraw:            "0x842dcc9e",  // withdraw(bytes32,bytes32,address,address,uint256,address,uint256)
+  shieldedSend:        "0xfc70b4ba",  // shieldedSend(bytes32,bytes32,bytes32,bytes) — encryptedNote now inline, not payable
+  privateSwap:         "0x4ac0a154",  // privateSwap(bytes32,bytes32,address,address,uint256,uint256,bytes32,uint256) — not payable
+
+  // ── DEPRECATED (v2.x struct-based ABI, does NOT exist on v3.0.0 vault) ──────
+  // Kept only so old references don't hard-crash; DO NOT call these against the
+  // currently deployed ShieldVault — every call will revert with empty data (0x),
+  // exactly like the "failed to call deposit" tx on ArcScan.
+  shieldedSendWithNote:"0xd3c9406f",  // OBSOLETE — folded into shieldedSend() in v3.0.0
+  privateSwapExec:     "0x49fa2a6e",  // OBSOLETE — replaced by privateSwap() in v3.0.0
+  privateBridgeExec:  "0x8fa6444e",  // still used — PrivateBridge is a separate contract, unaffected by this migration
 
   // PrivARCShieldVault views
   totalShielded:      "0x6d7f2685",  // totalShielded(address)
@@ -277,74 +286,22 @@ const PROOF_C_Y = "0000000000000000000000000000000000000000000000000000000000000
 // All builders return { data: "0x...", value: "0x..." }
 
 // ─── DEPOSIT ─────────────────────────────────────────────────────────────────
-// PrivARCShieldVault.deposit(DepositParams params) payable
+// PrivARCShieldVault.deposit(address token, uint256 amount, bytes32 commitment) payable
 //
-// ABI: deposit((bytes32,address,uint256,(uint256[2],uint256[2][2],uint256[2]),uint256[]))
-//
-// Layout (struct wraps in a dynamic tuple, so offset 0x20 first):
-//   [sel]
-//   [0x00] offset to struct = 0x0000..0020  (struct starts at word 1)
-//   --- struct fields ---
-//   [0x20] commitment     bytes32
-//   [0x40] token          address (padded)
-//   [0x60] amount         uint256
-//   --- proof.a (uint256[2]) ---
-//   [0x80] proof.a[0]
-//   [0xa0] proof.a[1]
-//   --- proof.b (uint256[2][2]) ---
-//   [0xc0] proof.b[0][0]
-//   [0xe0] proof.b[0][1]
-//   [0x100] proof.b[1][0]
-//   [0x120] proof.b[1][1]
-//   --- proof.c (uint256[2]) ---
-//   [0x140] proof.c[0]
-//   [0x160] proof.c[1]
-//   --- publicInputs offset (relative to struct start) ---
-//   [0x180] offset = 0x0000..0180  (publicInputs array starts at offset 0x180 from struct start = absolute 0x1a0)
-//           Wait — the struct has static fields up to proof.c.
-//           Static fields: bytes32(1) + address(1) + uint256(1) + uint256[2](2) + uint256[2][2](4) + uint256[2](2) = 11 words = 0x160
-//           Dynamic field: publicInputs → offset stored at position 11*32 = 0x160 from struct start
-//           The offset VALUE = 0x160 (where the array begins, relative to start of struct encoding)
-//   [0x180] length of publicInputs = 1
-//   [0x1a0] publicInputs[0] = commitment (as uint256)
+// ABI: deposit(address,uint256,bytes32) — v3.0.0, no struct, no ZK proof.
+// Layout: [sel][token][amount][commitment] — 3 static words, no offsets needed.
 
 export function buildDepositCalldata(commitment, tokenAddress, amount, flatFeeUsdc = 0n) {
-  const comm32  = commitment.replace("0x", "").padStart(64, "0");
-  const amt32   = encodeUint256(amount);
-  const tok32   = encodeAddress(tokenAddress);
-
-  // ABI offset to publicInputs from struct start:
-  // Head = 12 words: commitment(1) + token(1) + amount(1) + proof(8) + THIS_OFFSET_FIELD(1) = 12
-  // Offset field is AT position 11×32 = 0x160
-  // Dynamic data starts AFTER the offset field = at 12×32 = 0x180
-  const dynOff  = encodeUint256(0x180n);  // ← was 0x160 (pointed to offset field itself → revert)
-  const pubLen  = encodeUint256(1n);
-  const pubVal  = comm32; // publicInputs[0] = commitment
-
-  // Outer ABI: function takes 1 parameter (struct) → head = offset to struct = 0x20
-  const outerOff = encodeUint256(0x20n);
+  const comm32 = commitment.replace("0x", "").padStart(64, "0");
 
   const data = SEL.deposit
-    + outerOff          // offset to struct tuple
-    + comm32            // DepositParams.commitment
-    + tok32             // DepositParams.token
-    + amt32             // DepositParams.amount
-    + PROOF_A_X         // proof.a[0]
-    + PROOF_A_Y         // proof.a[1]
-    + PROOF_B_X0        // proof.b[0][0]
-    + PROOF_B_X1        // proof.b[0][1]
-    + PROOF_B_Y0        // proof.b[1][0]
-    + PROOF_B_Y1        // proof.b[1][1]
-    + PROOF_C_X         // proof.c[0]
-    + PROOF_C_Y         // proof.c[1]
-    + dynOff            // offset to publicInputs within struct (0x160)
-    + pubLen            // publicInputs.length = 1
-    + pubVal;           // publicInputs[0]
+    + encodeAddress(tokenAddress)  // token
+    + encodeUint256(amount)        // amount
+    + comm32;                      // commitment
 
-  // Native USDC: msg.value = amount (6-dec) * 1e12 → native wei (18-dec) — covers the
-  // deposit itself; the % protocol fee is skimmed from this same amount on-chain.
-  // EURC/cirBTC (v2.8): msg.value instead carries the FLAT protocol fee in USDC —
-  // see PrivARCShieldVault.sol's v2.8 changelog for why fees are always USDC-denominated.
+  // Native USDC: msg.value = amount (6-dec) * 1e12 → native wei (18-dec).
+  // On-chain check is `if (msg.value != amount) revert WrongFee()` for native token.
+  // EURC/cirBTC: msg.value carries the FLAT protocol fee in USDC (if any is set).
   const isNativeUsdc = tokenAddress.toLowerCase() === NATIVE_USDC.toLowerCase();
   const value = isNativeUsdc
     ? "0x" + (BigInt(amount) * NATIVE_TO_ERC20).toString(16)
@@ -354,62 +311,24 @@ export function buildDepositCalldata(commitment, tokenAddress, amount, flatFeeUs
 }
 
 // ─── WITHDRAW ────────────────────────────────────────────────────────────────
-// PrivARCShieldVault.withdraw(WithdrawalParams params)
-//
-// ABI: withdraw(((uint256[2],uint256[2][2],uint256[2]),bytes32,bytes32,address,uint256,uint256,address,uint256[]))
-//
-// WithdrawalParams fields in order (IModules.sol):
-//   proof          (uint256[2],uint256[2][2],uint256[2])  → 8 static words
-//   root           bytes32
-//   nullifier      bytes32
-//   token          address
-//   recipient      address
-//   amount         uint256
-//   relayerFee     uint256
-//   relayer        address
-//   publicInputs   uint256[]    ← dynamic
-//
-// Static fields: 8 (proof) + 1 + 1 + 1 + 1 + 1 + 1 + 1 = 15 words
-// Offset field for publicInputs is at position 15×32 = 0x1e0
-// Dynamic data starts AFTER offset field = at 16×32 = 0x200
+// PrivARCShieldVault.withdraw(
+//   bytes32 nullifier, bytes32 root, address token, address recipient,
+//   uint256 amount,    address relayer, uint256 relayerFee
+// ) payable — v3.0.0, no struct, no ZK proof.
+// NOTE the arg order: relayer comes BEFORE relayerFee on-chain (v2.x struct had it reversed).
 
 export function buildWithdrawCalldata({ nullifier, root, token, recipient, amount, relayerFee = 0n, relayer = "0x0000000000000000000000000000000000000000", flatFeeUsdc = 0n }) {
-  const dynOff   = encodeUint256(0x200n);  // ← was 0x1e0 (pointed to offset field itself → revert)
-  const outerOff = encodeUint256(0x20n);
-
-  // publicInputs = [root, nullifier, recipient (as uint256), amount, relayerFee]
-  const pubInputs = [
-    encodeBytes32(root),
-    encodeBytes32(nullifier),
-    encodeAddress(recipient),
-    encodeUint256(amount),
-    encodeUint256(relayerFee),
-  ];
-
   const data = SEL.withdraw
-    + outerOff            // outer offset to struct
-    + PROOF_A_X           // proof.a[0]
-    + PROOF_A_Y           // proof.a[1]
-    + PROOF_B_X0          // proof.b[0][0]
-    + PROOF_B_X1          // proof.b[0][1]
-    + PROOF_B_Y0          // proof.b[1][0]
-    + PROOF_B_Y1          // proof.b[1][1]
-    + PROOF_C_X           // proof.c[0]
-    + PROOF_C_Y           // proof.c[1]
-    + encodeBytes32(root)         // root
-    + encodeBytes32(nullifier)    // nullifier
-    + encodeAddress(token)        // token
-    + encodeAddress(recipient)    // recipient
-    + encodeUint256(amount)       // amount
-    + encodeUint256(relayerFee)   // relayerFee
-    + encodeAddress(relayer)      // relayer
-    + dynOff                      // offset to publicInputs (from struct start)
-    + encodeUint256(BigInt(pubInputs.length))
-    + pubInputs.join("");
+    + encodeBytes32(nullifier)
+    + encodeBytes32(root)
+    + encodeAddress(token)
+    + encodeAddress(recipient)
+    + encodeUint256(amount)
+    + encodeAddress(relayer)
+    + encodeUint256(relayerFee);
 
   // Native USDC withdraw: no msg.value — % fee is skimmed from withdrawAmt on-chain.
-  // EURC/cirBTC withdraw (v2.8): msg.value carries the FLAT protocol fee in USDC,
-  // paid alongside the withdrawal request — see PrivARCShieldVault.sol's v2.8 changelog.
+  // EURC/cirBTC withdraw: msg.value carries the FLAT protocol fee in USDC, if set.
   const isNativeUsdc = token.toLowerCase() === NATIVE_USDC.toLowerCase();
   const value = isNativeUsdc ? "0x0" : "0x" + (BigInt(flatFeeUsdc) * NATIVE_TO_ERC20).toString(16);
 
@@ -417,129 +336,36 @@ export function buildWithdrawCalldata({ nullifier, root, token, recipient, amoun
 }
 
 // ─── SHIELDED SEND ────────────────────────────────────────────────────────────
-// PrivARCShieldVault.shieldedSend(TransferParams params)
+// PrivARCShieldVault.shieldedSend(bytes32 nullifier, bytes32 root, bytes32 commitmentOut, bytes encryptedNote)
+// v3.0.0: NOT payable, no ZK proof, encryptedNote is now a REQUIRED inline argument
+// (the old two-step shieldedSend + separate ViewKeyRegistry.emitNote is merged into one call).
 //
-// ABI: shieldedSend((bytes32[],(uint256[2],uint256[2][2],uint256[2]),bytes32,bytes32[],uint256[]))
-//
-// TransferParams fields (IModules.sol):
-//   inputNullifiers  bytes32[]     ← dynamic (offset at pos 0)
-//   proof            (uint256[2],uint256[2][2],uint256[2]) → 8 static words (offset at pos 1)
-//   merkleRoot       bytes32
-//   outputCommitments bytes32[]    ← dynamic (offset at pos 3)
-//   publicInputs     uint256[]     ← dynamic (offset at pos 4)
-//
-// Static head of struct: 5 words (5 offsets for 2 static + 3 dynamic fields)
-// Wait — proof is a static tuple (fixed size). But bytes32[] are dynamic.
-// ABI rule: if any field is dynamic, ALL fields use offset encoding.
-// So the struct head has 5 words (one per field, all offsets):
-//   [0] offset to inputNullifiers
-//   [1] offset to proof tuple        ← even static tuples use an offset if struct is dynamic
-//   [2] merkleRoot (bytes32 = static, encoded inline as 32-byte value)
-//
-// Actually re-read the ABI spec:
-// When a STRUCT contains dynamic types, the struct itself is dynamic.
-// Encoding: head (fixed-size or offset for each member) + tail (dynamic data)
-// Static members (bytes32, uint256, address) are encoded inline in the head.
-// Dynamic members (bytes32[], uint256[]) are encoded as an offset + data in the tail.
-// The "proof" tuple is STATIC (all fixed-size), so encoded inline.
-//
-// Head layout (offsets are from start of struct encoding):
-//   [0x00]  offset to inputNullifiers (dynamic)
-//   [0x20]  proof.a[0]   \
-//   [0x40]  proof.a[1]    |
-//   [0x60]  proof.b[0][0] |  proof inlined (8 words)
-//   [0x80]  proof.b[0][1] |
-//   [0xa0]  proof.b[1][0] |
-//   [0xc0]  proof.b[1][1] |
-//   [0xe0]  proof.c[0]   |
-//   [0x100] proof.c[1]   /
-//   [0x120] merkleRoot  (bytes32, static)
-//   [0x140] offset to outputCommitments (dynamic)
-//   [0x160] offset to publicInputs (dynamic)
-//   ---- tail ----
-//   [0x180] inputNullifiers.length = 1
-//   [0x1a0] inputNullifiers[0] = nullifierIn
-//   [0x1c0] outputCommitments.length = 1
-//   [0x1e0] outputCommitments[0] = commitmentOut
-//   [0x200] publicInputs.length = 0
+// ABI: shieldedSend(bytes32,bytes32,bytes32,bytes)
+// 4 args, 1 dynamic (encryptedNote). Head = 4 words (0x80):
+//   [0x00] nullifier      (static)
+//   [0x20] root           (static)
+//   [0x40] commitmentOut  (static)
+//   [0x60] offset to encryptedNote (= 0x80, right after head)
+//   [0x80] encryptedNote length + padded data
 
-// Encodes the IShieldedTransfer.TransferParams struct body (head + tail, 17 words /
-// 0x220 bytes), WITHOUT the leading "offset to struct" word. Internal offsets inside
-// this blob are relative to the blob's own start, so this same blob is reusable both
-// as the sole argument (buildShieldedSendCalldata) and as one of several arguments
-// (buildShieldedSendWithNoteCalldata) — only the outer offset word differs per caller.
-function _encodeTransferParamsBlock({ nullifierIn, merkleRoot, commitmentOut }) {
-  // Head = 3 dynamic offsets (inputNullifiers, outputCommitments, publicInputs) + 8 proof words + 1 merkleRoot = 12 words = 0x180
-  const offNullIn  = encodeUint256(0x180n);  // inputNullifiers array (from struct start)
-  const offCmtOut  = encodeUint256(0x1c0n);  // outputCommitments (from struct start)
-  const offPubIn   = encodeUint256(0x200n);  // publicInputs (from struct start)
+export function buildShieldedSendCalldata({ nullifier, root, commitmentOut, encryptedNote = "0x" }) {
+  const offEncNote = encodeUint256(0x80n);
 
-  return (
-    offNullIn                       // [0x00] offset to inputNullifiers
-    + PROOF_A_X                     // [0x20] proof.a[0]
-    + PROOF_A_Y                     // [0x40] proof.a[1]
-    + PROOF_B_X0                    // [0x60] proof.b[0][0]
-    + PROOF_B_X1                    // [0x80] proof.b[0][1]
-    + PROOF_B_Y0                    // [0xa0] proof.b[1][0]
-    + PROOF_B_Y1                    // [0xc0] proof.b[1][1]
-    + PROOF_C_X                     // [0xe0] proof.c[0]
-    + PROOF_C_Y                     // [0x100] proof.c[1]
-    + encodeBytes32(merkleRoot)     // [0x120] merkleRoot (static)
-    + offCmtOut                     // [0x140] offset to outputCommitments
-    + offPubIn                      // [0x160] offset to publicInputs
-    // tail:
-    + encodeUint256(1n)             // [0x180] inputNullifiers.length = 1
-    + encodeBytes32(nullifierIn)    // [0x1a0] inputNullifiers[0]
-    + encodeUint256(1n)             // [0x1c0] outputCommitments.length = 1
-    + encodeBytes32(commitmentOut)  // [0x1e0] outputCommitments[0]
-    + encodeUint256(0n)             // [0x200] publicInputs.length = 0
-  );
-  // Total: 17 words = 0x220 bytes
-}
-const TRANSFER_PARAMS_BLOCK_SIZE = 0x220; // bytes
-
-export function buildShieldedSendCalldata({ nullifierIn, merkleRoot, commitmentOut, sendFlatFee }) {
-  const outerOff = encodeUint256(0x20n);
-  const block = _encodeTransferParamsBlock({ nullifierIn, merkleRoot, commitmentOut });
-  return { data: SEL.shieldedSend + outerOff + block, value: sendFeeValueHex(sendFlatFee) };
-}
-
-// ─── SHIELDED SEND WITH STEALTH NOTE ──────────────────────────────────────────
-// PrivARCShieldVault.shieldedSendWithNote(TransferParams params, address recipient, bytes encryptedNote, bytes ephemeralPubKey)
-//
-// ABI: shieldedSendWithNote((bytes32[],(uint256[2],uint256[2][2],uint256[2]),bytes32,bytes32[],uint256[]),address,bytes,bytes)
-//
-// 4 top-level args. Head = 4 words (0x80):
-//   [0x00] offset to params (= 0x80, right after this head)
-//   [0x20] recipient address (static, inlined)
-//   [0x40] offset to encryptedNote
-//   [0x60] offset to ephemeralPubKey
-// Then at 0x80: the 17-word TransferParams block (identical encoding to buildShieldedSendCalldata's blob)
-// Then: encryptedNote (length + padded data), then ephemeralPubKey (length + padded data)
-//
-// NOTE: requires PrivARCShieldVault v2.3+ deployed (selector 0xd3c9406f). On the currently
-// deployed v2.2 contract this selector does not exist and the call will revert with 0x.
-// PrivARC OS's primary confidential-send path uses ViewKeyRegistry.emitNote() instead
-// (see buildEmitNoteCalldata below), which works against PrivARCShieldVault v2.2 unmodified.
-// This builder is kept for the day PrivARCShieldVault is redeployed to v2.3 (atomic single-tx
-// fund-move + note-emit). Not currently called by DApp.jsx.
-export function buildShieldedSendWithNoteCalldata({ nullifierIn, merkleRoot, commitmentOut, recipient, encryptedNote, ephemeralPubKey, sendFlatFee }) {
-  const block = _encodeTransferParamsBlock({ nullifierIn, merkleRoot, commitmentOut });
-
-  const offParams = encodeUint256(0x80n); // right after the 4-word head
-  const offEncNote = encodeUint256(BigInt(0x80 + TRANSFER_PARAMS_BLOCK_SIZE));
-  const offEphPub  = encodeUint256(BigInt(0x80 + TRANSFER_PARAMS_BLOCK_SIZE + encodedBytesSize(encryptedNote)));
-
-  const data = SEL.shieldedSendWithNote
-    + offParams
-    + encodeAddress(recipient)
+  const data = SEL.shieldedSend
+    + encodeBytes32(nullifier)
+    + encodeBytes32(root)
+    + encodeBytes32(commitmentOut)
     + offEncNote
-    + offEphPub
-    + block
-    + encodeBytes(encryptedNote)
-    + encodeBytes(ephemeralPubKey);
+    + encodeBytes(encryptedNote);
 
-  return { data, value: sendFeeValueHex(sendFlatFee) };
+  // Not payable on v3.0.0 — do not attach msg.value or the tx will revert.
+  return { data, value: "0x0" };
+}
+
+// Old field name `nullifierIn`/`merkleRoot` kept as an alias so existing call sites
+// (e.g. DApp.jsx built against the v2.x builder) don't need renaming immediately.
+export function buildShieldedSendCalldataLegacyArgs({ nullifierIn, merkleRoot, commitmentOut, encryptedNote }) {
+  return buildShieldedSendCalldata({ nullifier: nullifierIn, root: merkleRoot, commitmentOut, encryptedNote });
 }
 
 // ─── PRIVATE SWAP ─────────────────────────────────────────────────────────────
@@ -580,18 +406,15 @@ export function buildSwapAdapterRouteData({ tokenIn, tokenOut, amountIn, minAmou
 // Total head = 19 words = 0x260
 // Tail: routeData at 0x260, publicInputs follows
 
-// ── PrivARCShieldVault.privateSwap() — atomic confidential swap ───────────
-// Atomic: funds never touch user wallet.
-// Selector: keccak256("privateSwap(bytes32,bytes32,address,address,uint256,uint256,bytes32,uint256)")
+// ── PrivARCShieldVault.privateSwap() — atomic confidential swap (v3.0.0) ──
+// This IS the v3.0.0 vault's actual swap function. NOT payable — no flatFeeUsdc/value.
+// Selector verified: keccak256("privateSwap(bytes32,bytes32,address,address,uint256,uint256,bytes32,uint256)")
 export function buildAtomicSwapCalldata({
   nullifier, root, tokenIn, tokenOut,
   amountIn, minAmountOut, commitmentOut,
   deadline = BigInt(Math.floor(Date.now()/1000) + 600),
-  flatFeeUsdc = 0n,
 }) {
-  // Selector precomputed for privateSwap(bytes32,bytes32,address,address,uint256,uint256,bytes32,uint256)
-  const sel  = "0xb8c6a5e3";
-  const data = sel
+  const data = SEL.privateSwap
     + nullifier.slice(2).padStart(64,"0")
     + root.slice(2).padStart(64,"0")
     + tokenIn.slice(2).padStart(64,"0")
@@ -601,10 +424,14 @@ export function buildAtomicSwapCalldata({
     + commitmentOut.slice(2).padStart(64,"0")
     + BigInt(deadline).toString(16).padStart(64,"0");
 
-  const value = flatFeeUsdc > 0n ? "0x" + flatFeeUsdc.toString(16) : "0x0";
-  return { data, value };
+  // Not payable on v3.0.0 — do not attach msg.value or the tx will revert.
+  return { data, value: "0x0" };
 }
 
+// ── DEPRECATED — v2.x struct-based ABI (privateSwapExec), does NOT exist on the
+// v3.0.0 vault. Calling this against the currently deployed contract will revert
+// with empty data (0x), same failure mode as the "failed to call deposit" tx.
+// Use buildAtomicSwapCalldata() instead — it targets the real v3.0.0 privateSwap().
 export function buildPrivateSwapCalldata({ nullifier, merkleRoot, commitmentOut, tokenIn, tokenOut, amountIn, minAmountOut, deadline, dexRouter = "0x0000000000000000000000000000000000000000", routeData = "0x", flatFeeUsdc = 0n }) {
   const outerOff = encodeUint256(0x20n);
 
