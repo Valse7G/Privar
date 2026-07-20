@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, createContext, useContext, useMemo } from "react";
 import {
   CONTRACTS, TOKENS, TOKEN_LIST, SEL, CCTP_DOMAINS,
-  NATIVE_USDC, NATIVE_TO_ERC20,
+  NATIVE_USDC, NATIVE_TO_ERC20, ARC_CHAIN_ID,
   encodeAddress, encodeUint256, encodeBytes32,
   decodeUint256, decodeUint8, formatToken,
   buildDepositCalldata, buildWithdrawCalldata,
@@ -2970,6 +2970,7 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
 
   const routerOk = (CONTRACTS.LiFiPrivacyAdapter && CONTRACTS.LiFiPrivacyAdapter !== "0x0000000000000000000000000000000000000000")
                 || (CONTRACTS.TowerSwapAdapter   && CONTRACTS.TowerSwapAdapter   !== "0x0000000000000000000000000000000000000000");
+  const usingLiFi = CONTRACTS.LiFiPrivacyAdapter && CONTRACTS.LiFiPrivacyAdapter !== "0x0000000000000000000000000000000000000000";
 
   return (
     <div style={{ animation:"fi .3s ease" }}>
@@ -2977,15 +2978,15 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       <NotOnArcWarning/>
       {!routerOk && (
         <div style={{ background:"rgba(248,113,113,.08)", border:"1px solid rgba(248,113,113,.25)", borderRadius:4, padding:"8px 12px", marginBottom:10, fontSize:8, color:"#fca5a5", fontFamily:"monospace", lineHeight:1.7 }}>
-          ⚠ <strong style={{ color:"#f87171" }}>PrivateSwapAdapter non déployé</strong><br/>
-          <code>npx hardhat run scripts/deploy-private-swap-adapter.js --network arc_testnet</code><br/>
-          puis <code>VITE_PRIVATE_SWAP_ADAPTER=0x...</code> dans Vercel Dashboard
+          ⚠ <strong style={{ color:"#f87171" }}>Aucun swapRouter déployé</strong><br/>
+          <code>npx hardhat run scripts/deploy-lifi.js --network arc_testnet</code><br/>
+          puis <code>VITE_LIFI_ADAPTER=0x...</code> dans Vercel Dashboard
         </div>
       )}
       <div style={{ background:"rgba(0,255,176,.04)", border:"1px solid rgba(0,255,176,.1)", borderRadius:4, padding:"8px 12px", marginBottom:10, fontSize:8, color:"#64748b", fontFamily:"monospace", lineHeight:1.7 }}>
         <span style={{ color:"#00FFB0", fontWeight:700 }}>1 tx : </span>
-        PrivARCShieldVault.privateSwapExec → PrivateSwap → PrivateSwapAdapter → note shieldée
-        <br/><span style={{ color:"#334155" }}>Testnet: simulation · Mainnet: Uniswap V3</span>
+        PrivARCShieldVault.privateSwapWithRoute → LiFiPrivacyAdapter → LI.FI Diamond → note shieldée
+        <br/><span style={{ color:"#334155" }}>Route cotée en direct via l'API LI.FI · fallback TowerSwapAdapter (simulation)</span>
       </div>
       <ShieldedWallet bals={bals} actionableFilter={["USDC","EURC","cirBTC"]}
         onMax={(sym, val, _raw, dec) => { setFr(sym); if (sym===to) setTo(TK.find(t=>t!==sym)||"EURC"); setAmount(val.toFixed(dec===8?5:2)); }}
@@ -3015,7 +3016,7 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
           </div>
         </div>
       )}
-      <IG items={[["Privacy","✓ PrivARCShieldVault","1 tx"],["Adapter","PrivateSwapAdapter","Uni V3 ready"],["Disponible",tkFr.bal.toFixed(tkFr.dec===8?5:2)+" "+fr,"shieldé"]]}/>
+      <IG items={[["Privacy","✓ PrivARCShieldVault","1 tx"],["Adapter", usingLiFi ? "LiFiPrivacyAdapter" : "TowerSwapAdapter", usingLiFi ? "LI.FI" : "simulation"],["Disponible",tkFr.bal.toFixed(tkFr.dec===8?5:2)+" "+fr,"shieldé"]]}/>
       {tkFr.bal <= 0 && (
         <div style={{ background:"rgba(245,158,11,.06)", border:"1px solid rgba(245,158,11,.2)", borderRadius:4, padding:"8px 12px", marginBottom:12, fontSize:9, color:"#F59E0B", fontFamily:"monospace" }}>
           ⚠ Solde shieldé {fr} à zéro. Shieldez des {fr} d'abord.
