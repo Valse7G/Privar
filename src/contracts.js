@@ -450,10 +450,14 @@ export function buildAtomicSwapCalldata({
   // 18-dec wei, not the 6-dec ERC-20 display unit, or msg.value ends up
   // 10^12 times too small (confirmed via ArcScan trace — see /areas/privarc.md).
   // Symmetrically, minAmountOut must match if tokenOut is native.
-  const tokenInIsNative  = tokenIn.toLowerCase()  === NATIVE_USDC.toLowerCase();
-  const tokenOutIsNative = tokenOut.toLowerCase() === NATIVE_USDC.toLowerCase();
-  const amountInForCalldata     = tokenInIsNative  ? BigInt(amountIn) * NATIVE_TO_ERC20     : BigInt(amountIn);
-  const minAmountOutForCalldata = tokenOutIsNative ? BigInt(minAmountOut) * NATIVE_TO_ERC20  : BigInt(minAmountOut);
+  // Symmetric note: amountOut/minAmountOut are NEVER scaled — ShieldVault
+  // always reads amountOut via balanceOf() delta (the 6-dec ERC20 view),
+  // even for native USDC, so minAmountOut must stay in that same 6-dec
+  // space. Only amountIn needs scaling, because it ALSO doubles as
+  // msg.value (18-dec) when tokenIn is native.
+  const tokenInIsNative      = tokenIn.toLowerCase()  === NATIVE_USDC.toLowerCase();
+  const amountInForCalldata  = tokenInIsNative ? BigInt(amountIn) * NATIVE_TO_ERC20 : BigInt(amountIn);
+  const minAmountOutForCalldata = BigInt(minAmountOut);
 
   const data = SEL.privateSwap
     + nullifier.slice(2).padStart(64,"0")
@@ -483,10 +487,12 @@ export function buildSwapWithRouteCalldata({
 }) {
   // Same native/ERC-20 decimal conversion as buildAtomicSwapCalldata above —
   // amountIn/minAmountOut travel as msg.value and SwapParams fields verbatim.
-  const tokenInIsNative  = tokenIn.toLowerCase()  === NATIVE_USDC.toLowerCase();
-  const tokenOutIsNative = tokenOut.toLowerCase() === NATIVE_USDC.toLowerCase();
-  const amountInForCalldata     = tokenInIsNative  ? BigInt(amountIn) * NATIVE_TO_ERC20    : BigInt(amountIn);
-  const minAmountOutForCalldata = tokenOutIsNative ? BigInt(minAmountOut) * NATIVE_TO_ERC20 : BigInt(minAmountOut);
+  // Same reasoning as buildAtomicSwapCalldata: only amountIn is scaled
+  // (it doubles as msg.value); minAmountOut stays in the 6-dec ERC20 view
+  // space that ShieldVault always compares amountOut against.
+  const tokenInIsNative     = tokenIn.toLowerCase() === NATIVE_USDC.toLowerCase();
+  const amountInForCalldata = tokenInIsNative ? BigInt(amountIn) * NATIVE_TO_ERC20 : BigInt(amountIn);
+  const minAmountOutForCalldata = BigInt(minAmountOut);
 
   const offRoute = encodeUint256(0x120n); // 9 head words × 32 = 0x120
   const data = SEL.privateSwapWithRoute
