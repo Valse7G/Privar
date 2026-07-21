@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 //  PrivARC OS — Contract Config v12.1.0
 //
-//  Addresses synced with latest.json v3.0.0 + LI.FI adapters — Arc Testnet — 2026-07-20
+//  Addresses synced with latest.json v3.0.0 + LI.FI adapters — Arc Testnet — 2026-07-21
 //  Deployer: 0x1Dc72450B3e2782AcD669D7C27073f2C8F2c9894
 //
 //  ADDRESSES: sourced from VITE_ env vars (Vercel) or hardcoded fallbacks
@@ -28,9 +28,10 @@ const _c = {
   // (real ECDH stealth notes) is feature-gated on this being non-null — see
   // DApp.jsx ensureViewKeyRegistered()/scanStealthNotes().
   ViewKeyRegistry:     import.meta.env.VITE_VIEW_KEY_REGISTRY     ?? "0x590D1FDC3FbD4CAb151cb7E1557D9C4ecEa2C24b",
-  // LI.FI privacy adapters v3.2 — deployed 2026-07-20, see /areas/privarc.md
-  LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0xBEA02a6599cC0d90DefE7563DEc6Ed7eBdb54675",
-  LiFiPrivacyBridge:   import.meta.env.VITE_LIFI_BRIDGE           ?? "0x974366d465bc137d34E2a26acC945E2d43B2A1dD",
+  // LI.FI privacy adapters v3.2.1 — redeployed 2026-07-21 (routeData ABI fix:
+  // now (target, callValue, calldata) — see /areas/privarc.md).
+  LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0x1B3599f6092FD9B49E98d6BB19248cd8524381be",
+  LiFiPrivacyBridge:   import.meta.env.VITE_LIFI_BRIDGE           ?? "0x7064adD1B591d35D4A3B9aF73a587E92ED9AB407",
   LiFiDiamond:         import.meta.env.VITE_LIFI_DIAMOND          ?? "0xFf70F4A1d11995621854F3692acF286d8aCd04b2",
 };
 
@@ -480,14 +481,31 @@ export function buildSwapWithRouteCalldata({
 
 // ── LI.FI routeData encoder ───────────────────────────────────────────────
 // Matches LiFiPrivacyAdapter.executeSwap() / LiFiPrivacyBridge.privateBridge()'s
-// `abi.decode(routeData, (address target, bytes calldata_))`. `target` MUST be
-// the allowlisted LI.FI Diamond (CONTRACTS.LiFiDiamond) or the adapter reverts
-// with RouteTargetMismatch — this is what stops a route from redirecting funds
-// through an arbitrary contract.
-export function encodeLiFiRouteData(diamondAddress, txCalldataHex) {
-  const addr   = encodeAddress(diamondAddress);
-  const offset = encodeUint256(0x40n);
-  return "0x" + addr + offset + encodeBytes(txCalldataHex);
+// `abi.decode(routeData, (address target, uint256 callValue, bytes calldata_))`.
+// `target` MUST be the allowlisted LI.FI Diamond (CONTRACTS.LiFiDiamond) or the
+// adapter reverts with RouteTargetMismatch. `callValue` MUST be LI.FI's own
+// `quote.transactionRequest.value` — NOT assumed to equal fromAmount, since
+// some routes pull tokenIn via allowance even when tokenIn is Arc's native
+// USDC (LI.FI doesn't always know a chain's "native" token is gas-native).
+export function encodeLiFiRouteData(diamondAddress, callValue, txCalldataHex) {
+  const addr    = encodeAddress(diamondAddress);
+  const value   = encodeUint256(BigInt(callValue || 0));
+  const offset  = encodeUint256(0x60n); // 3 head words (addr, value, offset) × 32
+  return "0x" + addr + value + offset + encodeBytes(txCalldataHex);
+}
+
+// ── LI.FI supported destinations (from Arc Testnet) ───────────────────────
+// LI.FI's testnet routing only supports a curated subset of chains as a
+// `toChain` — passing an arbitrary chain ID (even a real, well-known one
+// like Ethereum Sepolia) can fail with a schema-validation 400. Rather than
+// hardcode a guessed list, ask LI.FI which chains are actually reachable
+// from Arc Testnet right now.
+export async function fetchLiFiDestinations(fromChain = ARC_CHAIN_ID) {
+  const res = await fetch(`https://li.quest/v1/connections?fromChain=${fromChain}`);
+  if (!res.ok) throw new Error(`LI.FI connections failed (${res.status})`);
+  const body = await res.json();
+  const ids = new Set((body?.connections || []).map(c => c.toChainId).filter(Boolean));
+  return ids; // Set<number> of reachable destination chain IDs
 }
 
 // ── LI.FI quote fetch (li.quest public API — no key required for quotes) ──

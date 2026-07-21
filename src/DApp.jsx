@@ -8,7 +8,7 @@ import {
   buildShieldedSendCalldata, buildPrivateSwapCalldata, buildPrivateBridgeCalldata,
   buildSwapAdapterRouteData, buildAtomicSwapCalldata,
   buildSwapWithRouteCalldata, buildLiFiBridgeCalldata,
-  encodeLiFiRouteData, fetchLiFiQuote,
+  encodeLiFiRouteData, fetchLiFiQuote, fetchLiFiDestinations,
   buildApproveCalldata, buildStakeCalldata, needsApproveBeforeDeposit,
   randomBytes32, buildGetLastRootCall,
   buildRegisterViewKeyCalldata, buildHasViewKeyCall, buildGetViewKeyCall,
@@ -2872,7 +2872,7 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
           fromAmount: amountBig.toString(),
           fromAddress: CONTRACTS.LiFiPrivacyAdapter,
         });
-        routeData = encodeLiFiRouteData(quote.transactionRequest.to, quote.transactionRequest.data);
+        routeData = encodeLiFiRouteData(quote.transactionRequest.to, quote.transactionRequest.value, quote.transactionRequest.data);
         // Prefer LI.FI's own slippage-protected minimum over our local estimate.
         if (quote?.estimate?.toAmountMin) {
           outAmountBig = BigInt(quote.estimate.toAmount);
@@ -3456,6 +3456,22 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
   const bals = shieldedBals;
   const ch   = CH.find(c=>c.domainId===destId) || CH[0];
 
+  // ── LI.FI reachable destinations ────────────────────────────────────────
+  // The CCTP-era chain list above is a hint, not a guarantee — LI.FI's
+  // testnet routing only supports a curated subset of chains as `toChain`,
+  // and an unsupported one fails with a schema-validation 400 at quote time.
+  // Ask LI.FI directly which of these are actually reachable from Arc right
+  // now, and grey out the rest instead of hardcoding an assumption.
+  const [reachable, setReachable] = useState(null); // null = not yet checked
+  useEffect(() => {
+    let cancelled = false;
+    fetchLiFiDestinations(ARC_CHAIN_ID)
+      .then(ids => { if (!cancelled) setReachable(ids); })
+      .catch(() => { if (!cancelled) setReachable(new Set()); }); // fail open below
+    return () => { cancelled = true; };
+  }, []);
+  const isReachable = (c) => !reachable || reachable.size === 0 || reachable.has(c.chainId);
+
   const BRIDGE_TOKENS = {
     USDC:   { sym:"USDC",   addr: NATIVE_USDC,      dec:6, bal: bals?.usdc ?? 0, color:"#00FFB0" },
     EURC:   { sym:"EURC",   addr: CONTRACTS.EURC,   dec:6, bal: bals?.eurc ?? 0, color:"#60a5fa" },
@@ -3466,6 +3482,10 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
   const bridge = async () => {
     if (!amount || Number(amount) <= 0 || !onArc) return;
     if (tk.bal <= 0) { notify("Bridge", `Solde shieldé ${token} insuffisant.`, "error"); return; }
+    if (!isReachable(ch)) {
+      notify("Bridge", `${ch.name} n'est pas (encore) atteignable via LI.FI depuis Arc Testnet.`, "error");
+      return;
+    }
 
     const bridgeAddr = CONTRACTS.LiFiPrivacyBridge;
     if (!bridgeAddr || bridgeAddr === "0x0000000000000000000000000000000000000000") {
@@ -3519,7 +3539,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
         fromAmount: amountBig.toString(),
         fromAddress: bridgeAddr, toAddress: recipientAddr,
       });
-      routeData = encodeLiFiRouteData(quote.transactionRequest.to, quote.transactionRequest.data);
+      routeData = encodeLiFiRouteData(quote.transactionRequest.to, quote.transactionRequest.value, quote.transactionRequest.data);
     } catch (e) {
       notify("Bridge", `Route LI.FI indisponible: ${e.message}`, "error");
       setLoading(false); setStep(""); return;
@@ -3577,15 +3597,26 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
         protocolStats={protocolStats}/>
 
       <div style={{ marginBottom:12 }}>
-        <div style={{ fontSize:8, color:"#64748b", letterSpacing:".14em", fontFamily:"monospace", marginBottom:7 }}>DESTINATION</div>
+        <div style={{ fontSize:8, color:"#64748b", letterSpacing:".14em", fontFamily:"monospace", marginBottom:7 }}>
+          DESTINATION {reachable === null && <span style={{ color:"#475569" }}>· vérification LI.FI…</span>}
+        </div>
         <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:5 }}>
-          {CH.map(c=>(
-            <button key={c.domainId} onClick={()=>setDestId(c.domainId)}
-              style={{ background:destId===c.domainId?"rgba(0,255,176,.08)":"rgba(0,0,0,.35)", border:`1px solid ${destId===c.domainId?"rgba(0,255,176,.4)":"rgba(0,255,176,.1)"}`, borderRadius:5, padding:"8px 4px", cursor:"pointer", textAlign:"center" }}>
-              <div style={{ fontSize:15, marginBottom:2 }}>{c.icon}</div>
-              <div style={{ fontSize:7, color:destId===c.domainId?"#00FFB0":"#94a3b8", fontFamily:"monospace" }}>{c.name}</div>
-            </button>
-          ))}
+          {CH.map(c=>{
+            const ok = isReachable(c);
+            return (
+              <button key={c.domainId} onClick={()=> ok && setDestId(c.domainId)} disabled={!ok}
+                style={{
+                  background:destId===c.domainId?"rgba(0,255,176,.08)":"rgba(0,0,0,.35)",
+                  border:`1px solid ${destId===c.domainId?"rgba(0,255,176,.4)":"rgba(0,255,176,.1)"}`,
+                  borderRadius:5, padding:"8px 4px", textAlign:"center",
+                  cursor: ok ? "pointer" : "not-allowed", opacity: ok ? 1 : .35,
+                }}>
+                <div style={{ fontSize:15, marginBottom:2 }}>{c.icon}</div>
+                <div style={{ fontSize:7, color:destId===c.domainId?"#00FFB0":"#94a3b8", fontFamily:"monospace" }}>{c.name}</div>
+                {!ok && <div style={{ fontSize:6, color:"#f87171", fontFamily:"monospace", marginTop:2 }}>indisponible</div>}
+              </button>
+            );
+          })}
         </div>
       </div>
 
