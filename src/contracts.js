@@ -28,10 +28,11 @@ const _c = {
   // (real ECDH stealth notes) is feature-gated on this being non-null — see
   // DApp.jsx ensureViewKeyRegistered()/scanStealthNotes().
   ViewKeyRegistry:     import.meta.env.VITE_VIEW_KEY_REGISTRY     ?? "0x590D1FDC3FbD4CAb151cb7E1557D9C4ecEa2C24b",
-  // LI.FI privacy adapters v3.2.1 — redeployed 2026-07-21 (routeData ABI fix:
-  // now (target, callValue, calldata) — see /areas/privarc.md).
-  LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0x1B3599f6092FD9B49E98d6BB19248cd8524381be",
-  LiFiPrivacyBridge:   import.meta.env.VITE_LIFI_BRIDGE           ?? "0x7064adD1B591d35D4A3B9aF73a587E92ED9AB407",
+  // LI.FI privacy adapters v3.2.2 — redeployed 2026-07-21 (unconditional
+  // approve fix: Diamond pulls tokenIn via transferFrom even for Arc's
+  // native USDC — see /areas/privarc.md).
+  LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0x94721591696bf444d691045fe8d749403a8e1c0b",
+  LiFiPrivacyBridge:   import.meta.env.VITE_LIFI_BRIDGE           ?? "0xbE54B789B1b868CC7c89EAD971422F24646B51EA",
   LiFiDiamond:         import.meta.env.VITE_LIFI_DIAMOND          ?? "0xFf70F4A1d11995621854F3692acF286d8aCd04b2",
 };
 

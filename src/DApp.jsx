@@ -3462,15 +3462,19 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
   // and an unsupported one fails with a schema-validation 400 at quote time.
   // Ask LI.FI directly which of these are actually reachable from Arc right
   // now, and grey out the rest instead of hardcoding an assumption.
-  const [reachable, setReachable] = useState(null); // null = not yet checked
+  const [reachable, setReachable] = useState(null);   // null = not yet checked
+  const [fetchFailed, setFetchFailed] = useState(false); // true = API itself errored (fail open)
   useEffect(() => {
     let cancelled = false;
     fetchLiFiDestinations(ARC_CHAIN_ID)
-      .then(ids => { if (!cancelled) setReachable(ids); })
-      .catch(() => { if (!cancelled) setReachable(new Set()); }); // fail open below
+      .then(ids => { if (!cancelled) setReachable(ids); })          // even an empty Set is real info
+      .catch(() => { if (!cancelled) { setReachable(new Set()); setFetchFailed(true); } });
     return () => { cancelled = true; };
   }, []);
-  const isReachable = (c) => !reachable || reachable.size === 0 || reachable.has(c.chainId);
+  // Fail open ONLY when the LI.FI API call itself errored — an empty-but-
+  // successful response means LI.FI genuinely has no reachable destination
+  // from Arc right now, which is real information, not a glitch to paper over.
+  const isReachable = (c) => reachable === null || fetchFailed || reachable.has(c.chainId);
 
   const BRIDGE_TOKENS = {
     USDC:   { sym:"USDC",   addr: NATIVE_USDC,      dec:6, bal: bals?.usdc ?? 0, color:"#00FFB0" },
@@ -3599,6 +3603,9 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
       <div style={{ marginBottom:12 }}>
         <div style={{ fontSize:8, color:"#64748b", letterSpacing:".14em", fontFamily:"monospace", marginBottom:7 }}>
           DESTINATION {reachable === null && <span style={{ color:"#475569" }}>· vérification LI.FI…</span>}
+          {reachable !== null && !fetchFailed && reachable.size === 0 && (
+            <span style={{ color:"#f87171" }}>· LI.FI ne rapporte aucune destination atteignable depuis Arc pour l'instant</span>
+          )}
         </div>
         <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:5 }}>
           {CH.map(c=>{
