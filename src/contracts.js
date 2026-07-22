@@ -194,7 +194,7 @@ export const SEL = {
   totalShieldedUSDC:  "0x37b12e9e",  // totalShieldedUSDC()
 
   // PrivARCMerkleTreeManager
-  nextLeafIndex:      "0x0be4f422",  // nextLeafIndex()
+  nextIndex:          "0xfc7e9c6f",  // nextIndex() — was wrongly called nextLeafIndex() (0x0be4f422), a function that doesn't exist on PrivARCMerkleTreeManager
   getLastRoot:        "0xba70f757",  // getLastRoot()
   isKnownRoot:        "0x6d9833e3",  // isKnownRoot(bytes32)
 
@@ -224,13 +224,14 @@ export const SEL = {
   swapFeeBps:           "0x2ffdaf89",  // swapFeeBps()
   bridgeFeeBps:         "0x4f6aa42b",  // bridgeFeeBps()
   flatFeeUsdc:          "0xb892df0e",  // flatFeeUsdc() — 6-dec USDC units (renamed from sendFlatFee in v2.8 — now used by deposit/withdraw/swap/bridge for EURC/cirBTC too, not just send)
-  treasury:             "0x61d027b3",  // treasury()
+  treasury:             "0x61d027b3",  // treasury() — NOT a real function on this contract, kept only so old callers don't crash on undefined; use feeRecipient below instead
+  feeRecipient:         "0x46904840",  // feeRecipient() — the real getter for where fees go
 
   // Protocol fees (PrivARCStaking v1.1.0)
   performanceFeeBps:    "0xb9d4e879",  // performanceFeeBps() — PrivARCStaking contract
 
   // Live protocol stats (PrivARCShieldVault v2.5.0) — item 4: real-time dashboard
-  VERSION:              "0xffa1ad74",  // VERSION() returns (string)
+  VERSION:              "0x54fd4d50",  // version() returns (string) — was wrongly calling VERSION() (0xffa1ad74, uppercase), which doesn't exist; PrivARCShieldVault only has lowercase version()
   totalTxCount:         "0x9b4f50e7",  // totalTxCount() returns (uint256)
   totalVolumeByToken:   "0x38caed9f",  // totalVolumeByToken(address) returns (uint256)
 
