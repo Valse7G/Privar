@@ -1595,7 +1595,7 @@ function get24hDelta(vaultAddr, current) {
 function useProtocolStats(onArc) {
   const [stats, setStats] = useState({
     shieldedUsdc:null, shieldedEurc:null, shieldedBtc:null, leafCount:null,
-    pauseState:null, depositsAllowed:null, tokenSupport:{},
+    pauseState:null, depositsAllowed:null, vaultPaused:null, tokenSupport:{},
     version:null, totalTxCount:null,
     volumeUsdc:null, volumeEurc:null, volumeBtc:null,
     feesUsdc:null, feesEurc:null, feesBtc:null,
@@ -1638,10 +1638,14 @@ function useProtocolStats(onArc) {
           () => call(CONTRACTS.EURC,  SEL.balanceOf + encodeAddress(CONTRACTS.PrivARCShieldVault)),
           () => call(CONTRACTS.cirBTC,SEL.balanceOf + encodeAddress(CONTRACTS.PrivARCShieldVault)),
           () => call(CONTRACTS.PrivARCMerkleTreeManager,   SEL.nextIndex),
-          // NOTE: was calling EmergencyController.pauseState()/depositsAllowed()
-          // — that contract's source isn't even in this repo, so its ABI is
-          // unverifiable. PrivARCShieldVault has its own public `paused` bool
-          // (confirmed in source) — reading that directly is far more reliable.
+          // RESTORED: EmergencyController IS a real, separately-deployed contract
+          // (0xa788E9...) still live from the v2.x deployment — its source just
+          // wasn't included in the v3.1/v3.2 zip, which wrongly looked like it
+          // didn't exist. Confirmed against v2.8 archive: pauseState()/
+          // depositsAllowed() selectors were correct all along. ShieldVault.paused()
+          // is a SEPARATE pause layer (the vault's own admin pause) — showing both.
+          () => call(CONTRACTS.EmergencyController, SEL.pauseState),
+          () => call(CONTRACTS.EmergencyController, SEL.depositsAllowed),
           () => call(CONTRACTS.PrivARCShieldVault, SEL.paused),
           () => call(CONTRACTS.PrivARCShieldVault, SEL.supportedTokens + encodeAddress(CONTRACTS.USDC)),
           () => call(CONTRACTS.PrivARCShieldVault, SEL.supportedTokens + encodeAddress(CONTRACTS.EURC)),
@@ -1665,7 +1669,7 @@ function useProtocolStats(onArc) {
         );
       const v = (i) => results[i].status === "fulfilled" ? results[i].value : null;
       const [
-        su, se, sb, leaf, pause, tUsdc, tEurc, tBtc,
+        su, se, sb, leaf, pause, depsOk, vaultPaused, tUsdc, tEurc, tBtc,
         ver, protoFeeBpsRes, flatFeeUsdcRes,
       ] = results.map((_, i) => v(i));
 
@@ -1682,9 +1686,8 @@ function useProtocolStats(onArc) {
           // null was being interpreted as "paused" by the UI (null !== 0). A transient
           // RPC hiccup should never visually flip the vault into "paused".
           pauseState:      pause != null ? decodeUint8(pause) : prev.pauseState,
-          // depositsAllowed derived from the same paused() read — kept as its
-          // own field since AnalyticsPanel's "Vault Status" reads this name.
-          depositsAllowed: pause != null ? decodeUint8(pause) === 0 : prev.depositsAllowed,
+          depositsAllowed: depsOk != null ? decodeUint8(depsOk) !== 0 : prev.depositsAllowed,
+          vaultPaused:     vaultPaused != null ? decodeUint8(vaultPaused) !== 0 : prev.vaultPaused,
           tokenSupport: {
             [CONTRACTS.USDC]:   tUsdc != null && tUsdc !== "0x" ? BigInt(tUsdc) === 1n : prev.tokenSupport[CONTRACTS.USDC],
             [CONTRACTS.EURC]:   tEurc != null && tEurc !== "0x" ? BigInt(tEurc) === 1n : prev.tokenSupport[CONTRACTS.EURC],
@@ -1768,46 +1771,55 @@ const EV2 = {
   FeeUpdated:  "0x8d6ad40ad37637106f0ca2d682205c774e73f8cf7789162ce1c0b6ac0791a484",
 };
 
-async function fetchLogsChunked(address, topics, chunkBlocks = 100000, maxChunks = 15) {
-  const latest = parseInt(await rpcCall("eth_blockNumber", []), 16);
-  let logs = [];
-  let to = latest;
-  for (let i = 0; i < maxChunks && to >= 0; i++) {
-    const from = Math.max(0, to - chunkBlocks + 1);
-    try {
-      const res = await rpcCall("eth_getLogs", [{
-        address, topics,
-        fromBlock: "0x" + from.toString(16),
-        toBlock:   "0x" + to.toString(16),
-      }]);
-      logs = logs.concat(res || []);
-    } catch {
-      // Provider rejected the range (too wide) — retry this window once, halved.
-      const mid = from + Math.floor((to - from) / 2);
-      try {
-        const res = await rpcCall("eth_getLogs", [{
-          address, topics,
-          fromBlock: "0x" + mid.toString(16),
-          toBlock:   "0x" + to.toString(16),
-        }]);
-        logs = logs.concat(res || []);
-      } catch {}
-    }
-    if (from === 0) break;
-    to = from - 1;
+async function fetchLogsRange(address, topics, fromBlock, toBlock, depth = 0) {
+  if (fromBlock > toBlock) return [];
+  try {
+    const res = await rpcCall("eth_getLogs", [{
+      address, topics,
+      fromBlock: "0x" + fromBlock.toString(16),
+      toBlock:   "0x" + toBlock.toString(16),
+    }]);
+    return res || [];
+  } catch (e) {
+    // Provider rejected this range (too wide, or too many results) — split in
+    // half and retry both halves in parallel. Depth-capped so a genuinely
+    // broken RPC fails fast instead of hammering it with 2^n requests.
+    if (depth >= 10 || fromBlock === toBlock) return [];
+    const mid = fromBlock + Math.floor((toBlock - fromBlock) / 2);
+    const [a, b] = await Promise.all([
+      fetchLogsRange(address, topics, fromBlock, mid, depth + 1),
+      fetchLogsRange(address, topics, mid + 1, toBlock, depth + 1),
+    ]);
+    return a.concat(b);
   }
-  return logs;
+}
+
+// blocksBack default covers a very wide window (Arc Testnet produces blocks
+// roughly every ~1s, so this is generous) — the recursive splitter above
+// means this is cheap when the RPC's real range limit is small, since only
+// the windows that actually contain matching logs cost more than 1 request.
+async function fetchLogsChunked(address, topics, blocksBack = 2_000_000) {
+  const latest = parseInt(await rpcCall("eth_blockNumber", []), 16);
+  const from = Math.max(0, latest - blocksBack);
+  return fetchLogsRange(address, topics, from, latest);
 }
 
 const topicToAddress = (t) => "0x" + t.slice(-40);
 const dataWord = (data, i) => "0x" + data.slice(2 + i * 64, 2 + i * 64 + 64);
 
 function useOnChainActivity(onArc) {
-  const [activity, setActivity] = useState({
-    loading: false, ready: false,
-    totalTxCount: null,
-    volumeUsdc: null, volumeEurc: null, volumeBtc: null,
-    feesUsdc: null,
+  const cacheKey = `privarc_onchain_activity_${(CONTRACTS.PrivARCShieldVault||"").toLowerCase()}`;
+  const loadCache = () => {
+    try {
+      const raw = localStorage.getItem(cacheKey);
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  };
+  const [activity, setActivity] = useState(() => {
+    const c = loadCache();
+    return c
+      ? { loading:false, ready:true, totalTxCount:c.totalTxCount, volumeUsdc:c.volumeUsdc, volumeEurc:c.volumeEurc, volumeBtc:c.volumeBtc, feesUsdc:c.feesUsdc }
+      : { loading:false, ready:false, totalTxCount:null, volumeUsdc:null, volumeEurc:null, volumeBtc:null, feesUsdc:null };
   });
 
   const run = useCallback(async () => {
@@ -1815,16 +1827,27 @@ function useOnChainActivity(onArc) {
     setActivity(prev => ({ ...prev, loading: true }));
     try {
       const vault = CONTRACTS.PrivARCShieldVault;
+      const cache = loadCache();
+      // Incremental scan: only look at blocks since the last successful run
+      // for THIS vault address. Cache resets automatically on redeploy since
+      // the key includes the vault address.
+      const latest = parseInt(await rpcCall("eth_blockNumber", []), 16);
+      const fromBlock = cache ? cache.lastBlock + 1 : null;
+
+      const scanFrom = async (topics) => fromBlock != null
+        ? fetchLogsRange(vault, topics, fromBlock, latest)
+        : fetchLogsChunked(vault, topics);
+
       const [depLogs, wdLogs, swapLogs, feeLogs] = await Promise.all([
-        fetchLogsChunked(vault, [EV2.Deposited]),
-        fetchLogsChunked(vault, [EV2.Withdrawn]),
-        fetchLogsChunked(vault, [EV2.PrivateSwap]),
+        scanFrom([EV2.Deposited]),
+        scanFrom([EV2.Withdrawn]),
+        scanFrom([EV2.PrivateSwap]),
+        // Fee history always needs full context to know the bps active at
+        // each NEW deposit — but it's a small, infrequent event (admin-only
+        // rate changes), so re-scanning it in full each time is cheap.
         fetchLogsChunked(vault, [EV2.FeeUpdated]),
       ]);
 
-      // bps-over-time: sorted ascending by block, each entry {block, bps}.
-      // Constructor sets protocolFeeBps=0 implicitly (no FeeUpdated emitted
-      // at deploy) so deposits before the first FeeUpdated used bps=0.
       const bpsHistory = feeLogs
         .map(l => ({ block: parseInt(l.blockNumber, 16), bps: Number(BigInt(dataWord(l.data, 0))) }))
         .sort((a, b) => a.block - b.block);
@@ -1834,14 +1857,32 @@ function useOnChainActivity(onArc) {
         return bps;
       };
 
-      let volUsdcNet = 0n, volEurc = 0n, volBtc = 0n;
-      let feesNative = 0n; // accrued protocol fees, native 18-dec units
-
       const tokenLower = {
         usdc: NATIVE_USDC.toLowerCase(),
         eurc: (CONTRACTS.EURC || "").toLowerCase(),
         btc:  (CONTRACTS.cirBTC || "").toLowerCase(),
       };
+
+      let volUsdcNet = 0n, volEurc = 0n, volBtc = 0n;
+      let feesNative = 0n;
+
+      // Flat-fee tx lookups run in PARALLEL (was one-by-one in a for-loop,
+      // a major source of the reported slowness) — collect the ones needed
+      // first, then fire them all at once.
+      const flatFeeTxHashes = [];
+      for (const log of depLogs) {
+        if (topicToAddress(log.topics[2]).toLowerCase() !== tokenLower.usdc) flatFeeTxHashes.push(log.transactionHash);
+      }
+      for (const log of wdLogs) {
+        if (topicToAddress(log.topics[2]).toLowerCase() !== tokenLower.usdc) flatFeeTxHashes.push(log.transactionHash);
+      }
+      const txValues = {};
+      await Promise.all(flatFeeTxHashes.map(async (h) => {
+        try {
+          const tx = await rpcCall("eth_getTransactionByHash", [h]);
+          if (tx?.value && tx.value !== "0x0") txValues[h] = BigInt(tx.value);
+        } catch {}
+      }));
 
       for (const log of depLogs) {
         const token = topicToAddress(log.topics[2]).toLowerCase();
@@ -1850,18 +1891,11 @@ function useOnChainActivity(onArc) {
         if (token === tokenLower.usdc) {
           volUsdcNet += net;
           const bps = bpsAt(block);
-          if (bps > 0) {
-            const gross = net * 10000n / BigInt(10000 - bps);
-            feesNative += (gross - net);
-          }
+          if (bps > 0) feesNative += (net * 10000n / BigInt(10000 - bps)) - net;
         } else {
           if (token === tokenLower.eurc) volEurc += net;
           if (token === tokenLower.btc)  volBtc  += net;
-          // Flat fee (if any) was paid as msg.value on this same tx.
-          try {
-            const tx = await rpcCall("eth_getTransactionByHash", [log.transactionHash]);
-            if (tx?.value && tx.value !== "0x0") feesNative += BigInt(tx.value);
-          } catch {}
+          if (txValues[log.transactionHash]) feesNative += txValues[log.transactionHash];
         }
       }
 
@@ -1873,21 +1907,15 @@ function useOnChainActivity(onArc) {
         } else {
           if (token === tokenLower.eurc) volEurc += amount;
           if (token === tokenLower.btc)  volBtc  += amount;
-          try {
-            const tx = await rpcCall("eth_getTransactionByHash", [log.transactionHash]);
-            if (tx?.value && tx.value !== "0x0") feesNative += BigInt(tx.value);
-          } catch {}
+          if (txValues[log.transactionHash]) feesNative += txValues[log.transactionHash];
         }
       }
 
       for (const log of swapLogs) {
-        // PrivateSwap: tokenIn/tokenOut/amountIn/amountOut all non-indexed (data words 0-3)
         const tokenIn  = topicToAddress("0x" + dataWord(log.data, 0).slice(-40)).toLowerCase();
         const tokenOut = topicToAddress("0x" + dataWord(log.data, 1).slice(-40)).toLowerCase();
         const amountIn  = BigInt(dataWord(log.data, 2));
         const amountOut = BigInt(dataWord(log.data, 3));
-        // No fee charged on swaps (confirmed in source) — count volume only,
-        // split across whichever side is native/EURC/cirBTC.
         if (tokenIn  === tokenLower.usdc) volUsdcNet += amountIn;
         if (tokenIn  === tokenLower.eurc) volEurc    += amountIn;
         if (tokenIn  === tokenLower.btc)  volBtc     += amountIn;
@@ -1896,14 +1924,42 @@ function useOnChainActivity(onArc) {
         if (tokenOut === tokenLower.btc)  volBtc     += amountOut;
       }
 
-      setActivity({
+      // Merge with cached totals (BigInt-safe via strings) for the incremental case.
+      const prevTotals = cache ? {
+        txCount: cache.totalTxCount,
+        volUsdc: BigInt(cache._volUsdcNativeRaw || "0"),
+        volEurc: BigInt(cache._volEurcRaw || "0"),
+        volBtc:  BigInt(cache._volBtcRaw  || "0"),
+        fees:    BigInt(cache._feesNativeRaw || "0"),
+      } : { txCount: 0, volUsdc: 0n, volEurc: 0n, volBtc: 0n, fees: 0n };
+
+      const totalVolUsdcNative = prevTotals.volUsdc + volUsdcNet;
+      const totalVolEurc       = prevTotals.volEurc + volEurc;
+      const totalVolBtc        = prevTotals.volBtc  + volBtc;
+      const totalFeesNative    = prevTotals.fees    + feesNative;
+      const totalTxCount       = prevTotals.txCount + depLogs.length + wdLogs.length + swapLogs.length;
+
+      const result = {
         loading: false, ready: true,
-        totalTxCount: depLogs.length + wdLogs.length + swapLogs.length,
-        volumeUsdc: nativeToUsdc6(volUsdcNet), // native-scale in, 6-dec out
-        volumeEurc: volEurc, // already 6-dec (EURC's own decimals)
-        volumeBtc:  volBtc,  // already 8-dec (cirBTC's own decimals)
-        feesUsdc:   nativeToUsdc6(feesNative),
-      });
+        totalTxCount,
+        volumeUsdc: Number(nativeToUsdc6(totalVolUsdcNative)),
+        volumeEurc: Number(totalVolEurc),
+        volumeBtc:  Number(totalVolBtc),
+        feesUsdc:   Number(nativeToUsdc6(totalFeesNative)),
+      };
+      setActivity(result);
+      try {
+        localStorage.setItem(cacheKey, JSON.stringify({
+          lastBlock: latest,
+          totalTxCount,
+          volumeUsdc: result.volumeUsdc, volumeEurc: result.volumeEurc, volumeBtc: result.volumeBtc,
+          feesUsdc: result.feesUsdc,
+          _volUsdcNativeRaw: totalVolUsdcNative.toString(),
+          _volEurcRaw: totalVolEurc.toString(),
+          _volBtcRaw: totalVolBtc.toString(),
+          _feesNativeRaw: totalFeesNative.toString(),
+        }));
+      } catch {}
     } catch (e) {
       console.warn("on-chain activity reconstruction failed:", e);
       setActivity(prev => ({ ...prev, loading: false }));
@@ -2851,7 +2907,13 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
   // FIX: null (never successfully fetched) is NOT the same as "paused" — a transient
   // RPC failure used to display as 🔴 PAUSED even though the vault was fine and
   // deposits/withdrawals kept succeeding. Three explicit states now: unknown/active/paused.
-  const vaultState = ps?.pauseState == null ? "unknown" : ps.pauseState === 0 ? "active" : "paused";
+  // Two independent pause layers: EmergencyController's circuit breaker
+  // (pauseState: 0=ACTIVE/1=PAUSED/2=EMERGENCY) and ShieldVault's own admin
+  // pause flag. The vault is only really "active" if neither is engaged.
+  const vaultState = (ps?.pauseState == null && ps?.vaultPaused == null) ? "unknown"
+    : (ps?.vaultPaused === true || (ps?.pauseState != null && ps.pauseState > 0))
+      ? (ps?.pauseState === 2 ? "emergency" : "paused")
+      : "active";
   const leafCnt  = ps?.leafCount != null ? ps.leafCount.toString() : "—";
 
   // ── Item 4: USD-blended protocol-wide totals across ALL tokens ─────────────
@@ -2894,8 +2956,8 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
           { l:"TVL EURC",    v:tvlEurc,  c:"#4ade80" },
           { l:"TVL cirBTC",  v:tvlBtc,   c:"#F7931A" },
           { l:"COMMITMENTS (tree, all-time)", v:leafCnt,  c:"#a78bfa" },
-          { l:"VAULT",       v: vaultState==="active" ? "🟢 ACTIVE" : vaultState==="paused" ? "🔴 PAUSED" : "⚪ —",
-                              c: vaultState==="active" ? "#4ade80"   : vaultState==="paused" ? "#f87171"   : "#64748b" },
+          { l:"VAULT",       v: vaultState==="active" ? "🟢 ACTIVE" : vaultState==="emergency" ? "⛔ EMERGENCY" : vaultState==="paused" ? "🔴 PAUSED" : "⚪ —",
+                              c: vaultState==="active" ? "#4ade80"   : vaultState==="emergency" ? "#dc2626" : vaultState==="paused" ? "#f87171"   : "#64748b" },
           { l:"VERSION",     v:ps?.version ? "v"+ps.version : "—", c:"#64748b" },
           { l:"PROTOCOL TXS",  v: onChainActivity?.ready ? onChainActivity.totalTxCount.toString() : (onChainActivity?.loading ? "loading…" : "—"), c:"#38bdf8" },
           { l:"VOLUME (TOTAL)", v:protocolVolumeUsd, c:"#facc15" },
