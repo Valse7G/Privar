@@ -232,6 +232,8 @@ export const SEL = {
 
   // Live protocol stats (PrivARCShieldVault v2.5.0) — item 4: real-time dashboard
   VERSION:              "0x54fd4d50",  // version() returns (string) — was wrongly calling VERSION() (0xffa1ad74, uppercase), which doesn't exist; PrivARCShieldVault only has lowercase version()
+  paused:               "0x5c975abb",  // paused() — real public bool on PrivARCShieldVault, used instead of the unverifiable EmergencyController.pauseState()
+  supportedTokens:      "0x68c4ac26",  // supportedTokens(address) — real public mapping on PrivARCShieldVault; PrivARCDepositManager.isTokenSupported(address) does NOT exist (only a tokens(address) struct getter)
   totalTxCount:         "0x9b4f50e7",  // totalTxCount() returns (uint256)
   totalVolumeByToken:   "0x38caed9f",  // totalVolumeByToken(address) returns (uint256)
 

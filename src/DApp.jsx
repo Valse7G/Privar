@@ -1237,6 +1237,7 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
   ];
 
   const protocolStats = useProtocolStats(onArc);
+  const onChainActivity = useOnChainActivity(onArc);
 
   // Load wallet-scoped tx history when account connects — cross-device: rebuild from chain
   useEffect(() => {
@@ -1295,7 +1296,7 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
     return () => clearInterval(id);
   }, [account?.address, onArc, recomputeShielded, sendViewKeyTx, notify]);
 
-  const panelProps = { account, balance, usdcBalance, onArc, notify, refreshBalance, txHistory, loadingBal, prices, changes, change24h, lastUpdate, priceError, setPanel, protocolStats, shieldedBals, recomputeShielded };
+  const panelProps = { account, balance, usdcBalance, onArc, notify, refreshBalance, txHistory, loadingBal, prices, changes, change24h, lastUpdate, priceError, setPanel, protocolStats, onChainActivity, shieldedBals, recomputeShielded };
   // Expose address + recompute for ShieldedWallet stale-notes purge button
   useEffect(() => { window._privarcAccount = account?.address || ""; }, [account?.address]);
   useEffect(() => { window._privarcRecomputeShielded = recomputeShielded; }, [recomputeShielded]);
@@ -1637,11 +1638,14 @@ function useProtocolStats(onArc) {
           () => call(CONTRACTS.EURC,  SEL.balanceOf + encodeAddress(CONTRACTS.PrivARCShieldVault)),
           () => call(CONTRACTS.cirBTC,SEL.balanceOf + encodeAddress(CONTRACTS.PrivARCShieldVault)),
           () => call(CONTRACTS.PrivARCMerkleTreeManager,   SEL.nextIndex),
-          () => call(CONTRACTS.EmergencyController, SEL.pauseState),
-          () => call(CONTRACTS.EmergencyController, SEL.depositsAllowed),
-          () => call(CONTRACTS.PrivARCDepositManager, SEL.isTokenSupported + encodeAddress(CONTRACTS.USDC)),
-          () => call(CONTRACTS.PrivARCDepositManager, SEL.isTokenSupported + encodeAddress(CONTRACTS.EURC)),
-          () => call(CONTRACTS.PrivARCDepositManager, SEL.isTokenSupported + encodeAddress(CONTRACTS.cirBTC)),
+          // NOTE: was calling EmergencyController.pauseState()/depositsAllowed()
+          // — that contract's source isn't even in this repo, so its ABI is
+          // unverifiable. PrivARCShieldVault has its own public `paused` bool
+          // (confirmed in source) — reading that directly is far more reliable.
+          () => call(CONTRACTS.PrivARCShieldVault, SEL.paused),
+          () => call(CONTRACTS.PrivARCShieldVault, SEL.supportedTokens + encodeAddress(CONTRACTS.USDC)),
+          () => call(CONTRACTS.PrivARCShieldVault, SEL.supportedTokens + encodeAddress(CONTRACTS.EURC)),
+          () => call(CONTRACTS.PrivARCShieldVault, SEL.supportedTokens + encodeAddress(CONTRACTS.cirBTC)),
           () => call(CONTRACTS.PrivARCShieldVault, SEL.VERSION),
           () => call(CONTRACTS.PrivARCShieldVault, SEL.protocolFeeBps),
           () => call(CONTRACTS.PrivARCShieldVault, SEL.flatFeeUsdc),
@@ -1661,7 +1665,7 @@ function useProtocolStats(onArc) {
         );
       const v = (i) => results[i].status === "fulfilled" ? results[i].value : null;
       const [
-        su, se, sb, leaf, pause, depsOk, tUsdc, tEurc, tBtc,
+        su, se, sb, leaf, pause, tUsdc, tEurc, tBtc,
         ver, protoFeeBpsRes, flatFeeUsdcRes,
       ] = results.map((_, i) => v(i));
 
@@ -1678,7 +1682,9 @@ function useProtocolStats(onArc) {
           // null was being interpreted as "paused" by the UI (null !== 0). A transient
           // RPC hiccup should never visually flip the vault into "paused".
           pauseState:      pause != null ? decodeUint8(pause) : prev.pauseState,
-          depositsAllowed: depsOk != null ? decodeUint8(depsOk) !== 0 : prev.depositsAllowed,
+          // depositsAllowed derived from the same paused() read — kept as its
+          // own field since AnalyticsPanel's "Vault Status" reads this name.
+          depositsAllowed: pause != null ? decodeUint8(pause) === 0 : prev.depositsAllowed,
           tokenSupport: {
             [CONTRACTS.USDC]:   tUsdc != null && tUsdc !== "0x" ? BigInt(tUsdc) === 1n : prev.tokenSupport[CONTRACTS.USDC],
             [CONTRACTS.EURC]:   tEurc != null && tEurc !== "0x" ? BigInt(tEurc) === 1n : prev.tokenSupport[CONTRACTS.EURC],
@@ -1734,6 +1740,178 @@ function useProtocolStats(onArc) {
     return () => clearInterval(id);
   }, [onArc]);
   return stats;
+}
+
+// ── On-chain activity reconstruction (tx count / volume / fees) ────────────
+// PrivARCShieldVault v3.0.0 has no totalTxCount()/totalVolumeByToken()/
+// feesCollectedByToken() and no FeeCollected event — see useProtocolStats
+// above. But it DOES emit Deposited/Withdrawn/PrivateSwap/FeeUpdated, which
+// is everything needed to reconstruct these numbers exactly:
+//   - Deposited(commitment, token, amount=NET, leafIndex, root)
+//   - Withdrawn(nullifier, token, recipient, amount=GROSS)
+//   - PrivateSwap(nullifierIn, commitmentOut, tokenIn, tokenOut, amountIn, amountOut)
+//   - FeeUpdated(feeBps, flatFee, recipient) — bps-over-time history
+// Fee model (confirmed against PrivARCShieldVault.sol source):
+//   - NATIVE_USDC deposit only: net = amount - amount*bps/10000. The event
+//     records NET, so gross = net*10000/(10000-bps), fee = gross-net —
+//     using whichever bps was active at that block (from FeeUpdated history).
+//   - ERC-20 ops (deposit AND withdraw): flatFeeUsdc paid as msg.value on
+//     that same tx — fetched via eth_getTransactionByHash(log.transactionHash).
+//   - Native withdraw: NO fee at all (confirmed in source).
+//   - Swap: NO fee charged at all currently (confirmed in source).
+// All fee/volume figures for native USDC come out in 18-dec native-wei —
+// convert with nativeToUsdc6() before display.
+const EV2 = {
+  Deposited:   "0xe758dd586554a30e85101e8e9ab611091d9230b7233f0f6a9736488e55d9d9e7",
+  Withdrawn:   "0xa6786aab7dbbc48b4b0387488b407bd81448030ab207b50bea7dbb5fbc1cd9eb",
+  PrivateSwap: "0x74f456940527970034820942ae07de9832d81b3e080c4ae3883cc944038d179a",
+  FeeUpdated:  "0x8d6ad40ad37637106f0ca2d682205c774e73f8cf7789162ce1c0b6ac0791a484",
+};
+
+async function fetchLogsChunked(address, topics, chunkBlocks = 100000, maxChunks = 15) {
+  const latest = parseInt(await rpcCall("eth_blockNumber", []), 16);
+  let logs = [];
+  let to = latest;
+  for (let i = 0; i < maxChunks && to >= 0; i++) {
+    const from = Math.max(0, to - chunkBlocks + 1);
+    try {
+      const res = await rpcCall("eth_getLogs", [{
+        address, topics,
+        fromBlock: "0x" + from.toString(16),
+        toBlock:   "0x" + to.toString(16),
+      }]);
+      logs = logs.concat(res || []);
+    } catch {
+      // Provider rejected the range (too wide) — retry this window once, halved.
+      const mid = from + Math.floor((to - from) / 2);
+      try {
+        const res = await rpcCall("eth_getLogs", [{
+          address, topics,
+          fromBlock: "0x" + mid.toString(16),
+          toBlock:   "0x" + to.toString(16),
+        }]);
+        logs = logs.concat(res || []);
+      } catch {}
+    }
+    if (from === 0) break;
+    to = from - 1;
+  }
+  return logs;
+}
+
+const topicToAddress = (t) => "0x" + t.slice(-40);
+const dataWord = (data, i) => "0x" + data.slice(2 + i * 64, 2 + i * 64 + 64);
+
+function useOnChainActivity(onArc) {
+  const [activity, setActivity] = useState({
+    loading: false, ready: false,
+    totalTxCount: null,
+    volumeUsdc: null, volumeEurc: null, volumeBtc: null,
+    feesUsdc: null,
+  });
+
+  const run = useCallback(async () => {
+    if (!onArc || !CONTRACTS.PrivARCShieldVault) return;
+    setActivity(prev => ({ ...prev, loading: true }));
+    try {
+      const vault = CONTRACTS.PrivARCShieldVault;
+      const [depLogs, wdLogs, swapLogs, feeLogs] = await Promise.all([
+        fetchLogsChunked(vault, [EV2.Deposited]),
+        fetchLogsChunked(vault, [EV2.Withdrawn]),
+        fetchLogsChunked(vault, [EV2.PrivateSwap]),
+        fetchLogsChunked(vault, [EV2.FeeUpdated]),
+      ]);
+
+      // bps-over-time: sorted ascending by block, each entry {block, bps}.
+      // Constructor sets protocolFeeBps=0 implicitly (no FeeUpdated emitted
+      // at deploy) so deposits before the first FeeUpdated used bps=0.
+      const bpsHistory = feeLogs
+        .map(l => ({ block: parseInt(l.blockNumber, 16), bps: Number(BigInt(dataWord(l.data, 0))) }))
+        .sort((a, b) => a.block - b.block);
+      const bpsAt = (block) => {
+        let bps = 0;
+        for (const h of bpsHistory) { if (h.block <= block) bps = h.bps; else break; }
+        return bps;
+      };
+
+      let volUsdcNet = 0n, volEurc = 0n, volBtc = 0n;
+      let feesNative = 0n; // accrued protocol fees, native 18-dec units
+
+      const tokenLower = {
+        usdc: NATIVE_USDC.toLowerCase(),
+        eurc: (CONTRACTS.EURC || "").toLowerCase(),
+        btc:  (CONTRACTS.cirBTC || "").toLowerCase(),
+      };
+
+      for (const log of depLogs) {
+        const token = topicToAddress(log.topics[2]).toLowerCase();
+        const net   = BigInt(dataWord(log.data, 0));
+        const block = parseInt(log.blockNumber, 16);
+        if (token === tokenLower.usdc) {
+          volUsdcNet += net;
+          const bps = bpsAt(block);
+          if (bps > 0) {
+            const gross = net * 10000n / BigInt(10000 - bps);
+            feesNative += (gross - net);
+          }
+        } else {
+          if (token === tokenLower.eurc) volEurc += net;
+          if (token === tokenLower.btc)  volBtc  += net;
+          // Flat fee (if any) was paid as msg.value on this same tx.
+          try {
+            const tx = await rpcCall("eth_getTransactionByHash", [log.transactionHash]);
+            if (tx?.value && tx.value !== "0x0") feesNative += BigInt(tx.value);
+          } catch {}
+        }
+      }
+
+      for (const log of wdLogs) {
+        const token = topicToAddress(log.topics[2]).toLowerCase();
+        const amount = BigInt(dataWord(log.data, 0));
+        if (token === tokenLower.usdc) {
+          volUsdcNet += amount; // native withdraw: no fee at all
+        } else {
+          if (token === tokenLower.eurc) volEurc += amount;
+          if (token === tokenLower.btc)  volBtc  += amount;
+          try {
+            const tx = await rpcCall("eth_getTransactionByHash", [log.transactionHash]);
+            if (tx?.value && tx.value !== "0x0") feesNative += BigInt(tx.value);
+          } catch {}
+        }
+      }
+
+      for (const log of swapLogs) {
+        // PrivateSwap: tokenIn/tokenOut/amountIn/amountOut all non-indexed (data words 0-3)
+        const tokenIn  = topicToAddress("0x" + dataWord(log.data, 0).slice(-40)).toLowerCase();
+        const tokenOut = topicToAddress("0x" + dataWord(log.data, 1).slice(-40)).toLowerCase();
+        const amountIn  = BigInt(dataWord(log.data, 2));
+        const amountOut = BigInt(dataWord(log.data, 3));
+        // No fee charged on swaps (confirmed in source) — count volume only,
+        // split across whichever side is native/EURC/cirBTC.
+        if (tokenIn  === tokenLower.usdc) volUsdcNet += amountIn;
+        if (tokenIn  === tokenLower.eurc) volEurc    += amountIn;
+        if (tokenIn  === tokenLower.btc)  volBtc     += amountIn;
+        if (tokenOut === tokenLower.usdc) volUsdcNet += amountOut;
+        if (tokenOut === tokenLower.eurc) volEurc    += amountOut;
+        if (tokenOut === tokenLower.btc)  volBtc     += amountOut;
+      }
+
+      setActivity({
+        loading: false, ready: true,
+        totalTxCount: depLogs.length + wdLogs.length + swapLogs.length,
+        volumeUsdc: nativeToUsdc6(volUsdcNet), // native-scale in, 6-dec out
+        volumeEurc: volEurc, // already 6-dec (EURC's own decimals)
+        volumeBtc:  volBtc,  // already 8-dec (cirBTC's own decimals)
+        feesUsdc:   nativeToUsdc6(feesNative),
+      });
+    } catch (e) {
+      console.warn("on-chain activity reconstruction failed:", e);
+      setActivity(prev => ({ ...prev, loading: false }));
+    }
+  }, [onArc]);
+
+  useEffect(() => { run(); }, [run]);
+  return { ...activity, refresh: run };
 }
 
 // ── Shielded balances hook ────────────────────────────────────────────────────
@@ -2518,7 +2696,7 @@ function useTxSend({ account, onArc, notify, refreshBalance }) {
   return { sendRealTx };
 }
 
-function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, protocolStats, prices, recomputeShielded }) {
+function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, protocolStats, onChainActivity, prices, recomputeShielded }) {
   const [amount, setAmount] = useState("");
   const [tokenIdx, setTokenIdx] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -2559,9 +2737,9 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
     // addToken() was not called on PrivARCDepositManager after deployment.
     // We check this BEFORE sending the tx to give a clear error.
     try {
-      const isSupportedData = SEL.isTokenSupported + encodeAddress(token.address);
+      const isSupportedData = SEL.supportedTokens + encodeAddress(token.address);
       const res = await rpcCall("eth_call", [
-        { to: CONTRACTS.PrivARCDepositManager, data: isSupportedData },
+        { to: CONTRACTS.PrivARCShieldVault, data: isSupportedData },
         "latest",
       ]);
       // Returns bool: 0x00...01 = true, 0x00...00 = false
@@ -2688,10 +2866,10 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
     const b = Number(btcUnits  || 0) / 1e8 * btcUsd;
     return u + e + b;
   };
-  const volTotal  = blendedUsd(ps?.volumeUsdc, ps?.volumeEurc, ps?.volumeBtc);
-  const feesTotal = blendedUsd(ps?.feesUsdc,   ps?.feesEurc,   ps?.feesBtc);
-  const protocolVolumeUsd = volTotal  != null ? "$"+volTotal.toLocaleString(undefined,{maximumFractionDigits:2})  : "—";
-  const protocolFeesUsd   = feesTotal != null ? "$"+feesTotal.toLocaleString(undefined,{maximumFractionDigits:2}) : "—";
+  const volTotal  = onChainActivity?.ready ? (Number(onChainActivity.volumeUsdc||0) + Number(onChainActivity.volumeEurc||0)/1e6 + (Number(onChainActivity.volumeBtc||0)/1e8)*btcUsd) : null;
+  const feesTotal = onChainActivity?.ready ? Number(onChainActivity.feesUsdc||0) : null;
+  const protocolVolumeUsd = volTotal  != null ? "$"+volTotal.toLocaleString(undefined,{maximumFractionDigits:2})  : (onChainActivity?.loading ? "loading…" : "—");
+  const protocolFeesUsd   = feesTotal != null ? "$"+feesTotal.toLocaleString(undefined,{maximumFractionDigits:4}) : (onChainActivity?.loading ? "loading…" : "—");
 
   // Token registration status — if false, deposit will revert TokenNotSupported
   const tokenSupport  = ps?.tokenSupport || {};
@@ -2719,7 +2897,7 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
           { l:"VAULT",       v: vaultState==="active" ? "🟢 ACTIVE" : vaultState==="paused" ? "🔴 PAUSED" : "⚪ —",
                               c: vaultState==="active" ? "#4ade80"   : vaultState==="paused" ? "#f87171"   : "#64748b" },
           { l:"VERSION",     v:ps?.version ? "v"+ps.version : "—", c:"#64748b" },
-          { l:"PROTOCOL TXS",  v:ps?.totalTxCount != null ? ps.totalTxCount.toString() : "—", c:"#38bdf8" },
+          { l:"PROTOCOL TXS",  v: onChainActivity?.ready ? onChainActivity.totalTxCount.toString() : (onChainActivity?.loading ? "loading…" : "—"), c:"#38bdf8" },
           { l:"VOLUME (TOTAL)", v:protocolVolumeUsd, c:"#facc15" },
           { l:"FEES COLLECTED", v:protocolFeesUsd,   c:"#fb923c" },
         ].map(s=>(
@@ -2734,9 +2912,9 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
         that survives PrivARCShieldVault redeploys by design (preserves the privacy set across
         versions), so it does NOT reset like the other stats above. TVL is read directly via
         each token's balanceOf(vault) — the real on-chain holdings, survives redeploys the same
-        way. PROTOCOL TXS / VOLUME (TOTAL) / FEES COLLECTED show "—" permanently on v3.0.0: this
-        contract has no totalTxCount()/totalVolumeByToken()/feesCollectedByToken() — those
-        counters simply aren't implemented here, not a loading state.
+        way. PROTOCOL TXS / VOLUME (TOTAL) / FEES COLLECTED are reconstructed client-side from
+        Deposited/Withdrawn/PrivateSwap event logs (this contract has no totalTxCount()/
+        totalVolumeByToken()/feesCollectedByToken() of its own) — see Analytics tab to refresh.
       </div>
       {/* Token selector + amount */}
       <div style={{ background:"rgba(0,0,0,.35)", border:"1px solid rgba(0,255,176,.12)", borderRadius:5, padding:"13px 15px", marginBottom:12 }}>
@@ -3672,7 +3850,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
   );
 }
 
-function AnalyticsPanel({ protocolStats, txHistory, account, onArc, prices }) {
+function AnalyticsPanel({ protocolStats, txHistory, account, onArc, prices, onChainActivity }) {
   const ps = protocolStats || {};
 
   // Safe numeric helpers
@@ -3933,29 +4111,16 @@ function AnalyticsPanel({ protocolStats, txHistory, account, onArc, prices }) {
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:8 }}>
         {mkSpk(tvlHistory, "#00FFB0", "SHIELDED TVL (USDC)", v => "$"+(isFinite(Number(v))?Number(v).toFixed(2):"0"), tvlUsdc)}
         <div style={{ background:"rgba(0,0,0,.4)", border:"1px solid rgba(14,165,233,.1)", borderRadius:5, padding:"11px 13px" }}>
-          <div style={{ fontSize:7, color:"#64748b", letterSpacing:".15em", fontFamily:"monospace", marginBottom:6 }}>LAST 24H ON-CHAIN</div>
+          <div style={{ fontSize:7, color:"#64748b", letterSpacing:".15em", fontFamily:"monospace", marginBottom:6 }}>ALL-TIME ON-CHAIN (reconstructed)</div>
           {(() => {
             const btcUsd = prices?.WBTC || 0;
-            // FIX: u/e are raw on-chain 6-decimal integers (2 USDC = 2_000_000) and b is
-            // raw 8-decimal — this used to sum them directly with no /1e6 or /1e8, so a
-            // genuine $12 of volume displayed as $12,000,000. Same shape as the working
-            // blendedUsd() in ShieldPanel — just wasn't applied here.
-            const blend = (u,e,b) => (u==null && e==null && b==null) ? null
-              : (Number(u||0)/1e6) + (Number(e||0)/1e6) + (Number(b||0)/1e8)*btcUsd;
-            const vol24  = blend(ps.volumeUsdc24h, ps.volumeEurc24h, ps.volumeBtc24h);
-            const fees24 = blend(ps.feesUsdc24h,   ps.feesEurc24h,   ps.feesBtc24h);
-            // Honest about partial coverage: until 24h of local snapshot history has
-            // accumulated (fresh deploy, or first time this ships), the delta covers
-            // whatever window IS available, not a true 24h — labeled accordingly
-            // instead of silently presenting a partial window as "24h".
-            const covMs = ps.snapshotCoverage;
-            const fullDay = covMs != null && covMs >= 23.5 * 3600 * 1000;
-            const covLabel = covMs == null ? "" : fullDay ? "" :
-              covMs < 3600000 ? ` (last ${Math.round(covMs/60000)}m)` : ` (last ${(covMs/3600000).toFixed(1)}h)`;
+            const oc = onChainActivity || {};
+            const vol = oc.ready ? (Number(oc.volumeUsdc||0) + Number(oc.volumeEurc||0)/1e6 + (Number(oc.volumeBtc||0)/1e8)*btcUsd) : null;
+            const fees = oc.ready ? Number(oc.feesUsdc||0) : null;
             return [
-              { l:"TX COUNT"+covLabel, v: ps.tx24h != null ? String(ps.tx24h) : (isConnected?"non suivi (v3.0.0)":"—"), c:"#0EA5E9" },
-              { l:"VOLUME"+covLabel,   v: vol24  != null ? "$"+vol24.toLocaleString(undefined,{maximumFractionDigits:2})  : (isConnected?"non suivi (v3.0.0)":"—"), c:"#00FFB0" },
-              { l:"FEES"+covLabel,     v: fees24 != null ? "$"+fees24.toLocaleString(undefined,{maximumFractionDigits:4}) : (isConnected?"non suivi (v3.0.0)":"—"), c:"#fbbf24" },
+              { l:"TX COUNT", v: oc.ready ? String(oc.totalTxCount) : (oc.loading?"loading…":(isConnected?"—":"—")), c:"#0EA5E9" },
+              { l:"VOLUME",   v: vol  != null ? "$"+vol.toLocaleString(undefined,{maximumFractionDigits:2})  : (oc.loading?"loading…":"—"), c:"#00FFB0" },
+              { l:"FEES",     v: fees != null ? "$"+fees.toLocaleString(undefined,{maximumFractionDigits:4}) : (oc.loading?"loading…":"—"), c:"#fbbf24" },
             ];
           })().map(s=>(
             <div key={s.l} style={{ display:"flex", justifyContent:"space-between", marginBottom:5 }}>
@@ -3963,7 +4128,10 @@ function AnalyticsPanel({ protocolStats, txHistory, account, onArc, prices }) {
               <span style={{ fontSize:10, color:s.c, fontFamily:"monospace", fontWeight:700 }}>{s.v}</span>
             </div>
           ))}
-          <div style={{ fontSize:7, color:"#1e3a2a", fontFamily:"monospace", marginTop:4 }}>Delta vs. local snapshot history · updates every 10s</div>
+          <div style={{ fontSize:7, color:"#1e3a2a", fontFamily:"monospace", marginTop:4 }}>
+            Reconstructed from Deposited/Withdrawn/PrivateSwap event logs (this contract has no
+            built-in counters) · <span style={{ cursor:"pointer", textDecoration:"underline" }} onClick={()=>onChainActivity?.refresh?.()}>refresh</span>
+          </div>
         </div>
       </div>
 
@@ -3974,19 +4142,11 @@ function AnalyticsPanel({ protocolStats, txHistory, account, onArc, prices }) {
           <div style={{ fontSize:7, color:"#64748b", fontFamily:"monospace" }}>{feeRateLabel} · live</div>
         </div>
         {(() => {
-          // combinedTx is permanently null now: ps.totalTxCount has no on-chain
-          // source on this contract, and PrivARCStaking has no totalTxCount()
-          // either (stakingTxCount stays null the same way) — not a loading state.
-          const combinedTx = ps.totalTxCount != null
-            ? Number(ps.totalTxCount) + (stakingTxCount || 0)
-            : null;
+          const oc = onChainActivity || {};
+          const combinedTx = oc.ready ? oc.totalTxCount + (stakingTxCount || 0) : null;
           return [
-            { l:"Total Tx (vault + staking)",  v: combinedTx!=null ? String(combinedTx) : "non suivi (v3.0.0)", c:"#0EA5E9" },
-            // FeeCollected event this used to decode doesn't exist on v3.0.0
-            // either (only FeeUpdated, for admin rate changes) — fees24/
-            // allTimeFees are always 0 here, which reads as "$0.0000" and
-            // could be mistaken for "no fees charged". Label it plainly.
-            { l:"Fees Collected (USDC)", v: "non suivi (v3.0.0)", c:"#fbbf24" },
+            { l:"Total Tx (vault + staking)",  v: combinedTx!=null ? String(combinedTx) : (oc.loading?"loading…":"—"), c:"#0EA5E9" },
+            { l:"Fees Collected (USDC)", v: oc.ready ? "$"+Number(oc.feesUsdc||0).toLocaleString(undefined,{maximumFractionDigits:4}) : (oc.loading?"loading…":"—"), c:"#fbbf24" },
             { l:"Fee Rate (deposit/withdraw)", v: feeRateLabel,                                                       c:"#64748b" },
             { l:"Treasury",             v: feeConfig.treasury ? feeConfig.treasury.slice(0,6)+"…"+feeConfig.treasury.slice(-4) : "loading…", c:"#64748b" },
           ];
@@ -3997,12 +4157,13 @@ function AnalyticsPanel({ protocolStats, txHistory, account, onArc, prices }) {
           </div>
         ))}
         <div style={{ fontSize:7, color:"#1e3a2a", fontFamily:"monospace", marginTop:6, lineHeight:1.5 }}>
-          "Total Tx" and "Fees Collected" show "non suivi (v3.0.0)": this PrivARCShieldVault
-          version has no totalTxCount(), feesCollectedByToken(address), or FeeCollected event
-          — only a FeeUpdated event for admin rate changes. Public (non-shielded) sends aren't
-          counted either way — they never touch a PrivARC contract, so they're indistinguishable
-          on-chain from any other wallet transfer. Treasury/fee rate above ARE live
-          (feeRecipient()/protocolFeeBps()). Updates every 30s.
+          "Total Tx" and "Fees Collected" are reconstructed from Deposited/Withdrawn/PrivateSwap
+          event logs + FeeUpdated history (bps-over-time) — this PrivARCShieldVault version has
+          no totalTxCount()/feesCollectedByToken()/FeeCollected event of its own, so there's
+          nothing to read directly; this is computed client-side instead. Public (non-shielded)
+          sends aren't counted either way — they never touch a PrivARC contract, so they're
+          indistinguishable on-chain from any other wallet transfer. Treasury/fee rate above ARE
+          read live (feeRecipient()/protocolFeeBps()).
         </div>
       </div>
 
