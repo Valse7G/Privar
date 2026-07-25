@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 //  PrivARC OS — Contract Config v12.1.0
 //
-//  Addresses synced with latest.json v3.0.0 + LI.FI adapters — Arc Testnet — 2026-07-21
+//  Addresses synced with latest.json v3.0.0 (v3.3 contract, full core redeploy) — Arc Testnet — 2026-07-25
 //  Deployer: 0x1Dc72450B3e2782AcD669D7C27073f2C8F2c9894
 //
 //  ADDRESSES: sourced from VITE_ env vars (Vercel) or hardcoded fallbacks
@@ -11,28 +11,27 @@ export const ARC_CHAIN_ID = 5042002;
 
 // ── Contract addresses ────────────────────────────────────────────────────────
 const _c = {
-  PrivARCShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0x8e6933Da376D53CE8A5fD61f6b5f67B9B64DC89E",
+  PrivARCShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0x6B0c68EB4b58d448dcDc80192b04bec1860e9f61",
   Timelock:            import.meta.env.VITE_TIMELOCK              ?? "0x8DF7C02012EBec968bdEc100F4fEAF772AcAab99",
   Governance:          import.meta.env.VITE_GOVERNANCE            ?? "0x89F08E2BBc963e48986D8A0FfA23858bA643C78A",
-  PrivARCStaking:             import.meta.env.VITE_STAKING               ?? "0xFf59d163f836844eA05186616Dd93E0d4BBdEE69",
-  PrivARCNullifierRegistry:   import.meta.env.VITE_NULLIFIER_REGISTRY    ?? "0x18Bff21dFB1f28F7E146d575D29a1D1F3c12a16e",
-  PrivARCMerkleTreeManager:   import.meta.env.VITE_MERKLE_TREE_MANAGER   ?? "0xeF118A6FEdd6C20AD3203B33455323e2C919C7d5",
-  PrivARCDepositManager:      import.meta.env.VITE_DEPOSIT_MANAGER       ?? "0xF1164b3340780614e6dd9E15b9895Cb8eb2168d6",
-  WithdrawalManager:   import.meta.env.VITE_WITHDRAWAL_MANAGER    ?? "0xEa50F28A1b7a80bF8784E9917C56fBD33751290D",
+  PrivARCStaking:             import.meta.env.VITE_STAKING               ?? "0x747EEa551e7D25Fd541530398135b729c1AC1219",
+  PrivARCNullifierRegistry:   import.meta.env.VITE_NULLIFIER_REGISTRY    ?? "0xdbe1bC2891790e1Ce56877Ca2e99f40e707B9E16",
+  PrivARCMerkleTreeManager:   import.meta.env.VITE_MERKLE_TREE_MANAGER   ?? "0xb710d852f16bA3B0AB7480e8CDbD006cECF7a05C",
+  PrivARCDepositManager:      import.meta.env.VITE_DEPOSIT_MANAGER       ?? "0x680a5792A594112690af799e913983Bad2a11fCd",
+  WithdrawalManager:   import.meta.env.VITE_WITHDRAWAL_MANAGER    ?? "0x746a17aDe5Dfd1d608000533A6277833DD47612E",
   ShieldedTransfer:    import.meta.env.VITE_SHIELDED_TRANSFER     ?? "0xa880603916611a0e624f9A04c7f08b62f0532543",
   PrivateSwap:         import.meta.env.VITE_PRIVATE_SWAP          ?? "0xd16F252FFc0a406dFcF58eBAF7EA49f9e1DF78Eb",
   PrivateBridge:       import.meta.env.VITE_PRIVATE_BRIDGE        ?? "0x1C22eEb6c422BeF73B335e1E5668ec3109839B40",
   EmergencyController: import.meta.env.VITE_EMERGENCY_CONTROLLER  ?? "0xa788E96DcF4dBf348995bc5b8D0C7BbaD8e5e88F",
-  MockVerifierZK:      import.meta.env.VITE_VERIFIER_ZK           ?? "0x472335061E184d43D0f56C4a9A576195eA045Ec5",
+  MockVerifierZK:      import.meta.env.VITE_VERIFIER_ZK           ?? "0xf3210F5b8e91c389E98955a621AaA34fBeD459B7",
   // ViewKeyRegistry v1.0.0 — deployed 2026-06-20. Confidential-send auto-discovery
   // (real ECDH stealth notes) is feature-gated on this being non-null — see
   // DApp.jsx ensureViewKeyRegistered()/scanStealthNotes().
   ViewKeyRegistry:     import.meta.env.VITE_VIEW_KEY_REGISTRY     ?? "0x590D1FDC3FbD4CAb151cb7E1557D9C4ecEa2C24b",
-  // LI.FI privacy adapters v3.2.2 — redeployed 2026-07-21 (unconditional
-  // approve fix: Diamond pulls tokenIn via transferFrom even for Arc's
-  // native USDC — see /areas/privarc.md).
-  LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0x94721591696bf444d691045fe8d749403a8e1c0b",
-  LiFiPrivacyBridge:   import.meta.env.VITE_LIFI_BRIDGE           ?? "0xbE54B789B1b868CC7c89EAD971422F24646B51EA",
+  // LI.FI privacy adapters v3.3 — redeployed 2026-07-25 alongside the full
+  // core (v3.3 fee/metrics model — see /areas/privarc.md).
+  LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0x2747eC05d14c286118a52D57d90538a23CAB6289",
+  LiFiPrivacyBridge:   import.meta.env.VITE_LIFI_BRIDGE           ?? "0xf252fc4aC6A54D62e167868B1C100C50344ECF31",
   LiFiDiamond:         import.meta.env.VITE_LIFI_DIAMOND          ?? "0xFf70F4A1d11995621854F3692acF286d8aCd04b2",
 };
 
@@ -65,7 +64,7 @@ export const CONTRACTS = {
   // NOTE: as of the v3.2 LI.FI deployment, ShieldVault.swapRouter() points to
   // LiFiPrivacyAdapter, NOT this address — TowerSwapAdapter is kept deployed
   // only as a documented rollback target (see scripts/deploy-lifi.js).
-  TowerSwapAdapter:    import.meta.env.VITE_TOWER_SWAP_ADAPTER ?? "0xcb7BeafC503f57F72FaB15A37968ACb54223Bd2D",
+  TowerSwapAdapter:    import.meta.env.VITE_TOWER_SWAP_ADAPTER ?? "0x762483223c10530E9C0e0c5719309228daB95116",
   PrivateBridge:       _c.PrivateBridge,
   EmergencyController: _c.EmergencyController,
   MockVerifierZK:      _c.MockVerifierZK,
@@ -224,8 +223,8 @@ export const SEL = {
   swapFeeBps:           "0x2ffdaf89",  // swapFeeBps()
   bridgeFeeBps:         "0x4f6aa42b",  // bridgeFeeBps()
   flatFeeUsdc:          "0xb892df0e",  // flatFeeUsdc() — 6-dec USDC units (renamed from sendFlatFee in v2.8 — now used by deposit/withdraw/swap/bridge for EURC/cirBTC too, not just send)
-  treasury:             "0x61d027b3",  // treasury() — NOT a real function on this contract, kept only so old callers don't crash on undefined; use feeRecipient below instead
-  feeRecipient:         "0x46904840",  // feeRecipient() — the real getter for where fees go
+  treasury:             "0x61d027b3",  // treasury() — v3.3: real again (restored, see /areas/privarc.md)
+  feeRecipient:         "0x46904840",  // feeRecipient() — legacy fee-rate-setter recipient; treasury() is where withdrawFees() actually pays out
 
   // Protocol fees (PrivARCStaking v1.1.0)
   performanceFeeBps:    "0xb9d4e879",  // performanceFeeBps() — PrivARCStaking contract
