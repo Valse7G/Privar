@@ -1683,7 +1683,7 @@ function useProtocolStats(onArc) {
 
       setStats(prev => {
         const next = {
-          shieldedUsdc:    su   != null ? decodeUint256(su)   : prev.shieldedUsdc,
+          shieldedUsdc:    su   != null ? nativeToUsdc6(decodeUint256(su)) : prev.shieldedUsdc,
           shieldedEurc:    se   != null ? decodeUint256(se)   : prev.shieldedEurc,
           shieldedBtc:     sb   != null ? decodeUint256(sb)   : prev.shieldedBtc,
           leafCount:       leaf != null ? decodeUint256(leaf) : prev.leafCount,
@@ -3187,7 +3187,7 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       ? buildSwapWithRouteCalldata({
           nullifier, root: merkleRoot, tokenIn: tkFr.addr, tokenOut: tkTo.addr,
           amountIn: amountBig, minAmountOut: minOut,
-          commitmentOut, deadline, routeData,
+          commitmentOut, deadline, routeData, flatFeeUsdc,
         })
       : buildAtomicSwapCalldata({
           nullifier, root: merkleRoot, tokenIn: tkFr.addr, tokenOut: tkTo.addr,

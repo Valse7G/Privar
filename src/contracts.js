@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 //  PrivARC OS — Contract Config v12.1.0
 //
-//  Addresses synced with latest.json v3.0.0 (v3.3 contract, full core redeploy) — Arc Testnet — 2026-07-25
+//  Addresses synced with latest.json v3.0.0 (v3.3 contract, WrongFee/TVL fix redeploy) — Arc Testnet — 2026-07-25
 //  Deployer: 0x1Dc72450B3e2782AcD669D7C27073f2C8F2c9894
 //
 //  ADDRESSES: sourced from VITE_ env vars (Vercel) or hardcoded fallbacks
@@ -11,27 +11,27 @@ export const ARC_CHAIN_ID = 5042002;
 
 // ── Contract addresses ────────────────────────────────────────────────────────
 const _c = {
-  PrivARCShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0x6B0c68EB4b58d448dcDc80192b04bec1860e9f61",
+  PrivARCShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0x4F8569CC8CaD8228fA4A3E493f9dcFebcDfeb43b",
   Timelock:            import.meta.env.VITE_TIMELOCK              ?? "0x8DF7C02012EBec968bdEc100F4fEAF772AcAab99",
   Governance:          import.meta.env.VITE_GOVERNANCE            ?? "0x89F08E2BBc963e48986D8A0FfA23858bA643C78A",
-  PrivARCStaking:             import.meta.env.VITE_STAKING               ?? "0x747EEa551e7D25Fd541530398135b729c1AC1219",
-  PrivARCNullifierRegistry:   import.meta.env.VITE_NULLIFIER_REGISTRY    ?? "0xdbe1bC2891790e1Ce56877Ca2e99f40e707B9E16",
-  PrivARCMerkleTreeManager:   import.meta.env.VITE_MERKLE_TREE_MANAGER   ?? "0xb710d852f16bA3B0AB7480e8CDbD006cECF7a05C",
-  PrivARCDepositManager:      import.meta.env.VITE_DEPOSIT_MANAGER       ?? "0x680a5792A594112690af799e913983Bad2a11fCd",
-  WithdrawalManager:   import.meta.env.VITE_WITHDRAWAL_MANAGER    ?? "0x746a17aDe5Dfd1d608000533A6277833DD47612E",
+  PrivARCStaking:             import.meta.env.VITE_STAKING               ?? "0xc43ffaC60e797DCb2C9eEcFba199696E75d90168",
+  PrivARCNullifierRegistry:   import.meta.env.VITE_NULLIFIER_REGISTRY    ?? "0xabCC5DD1943A1C9F25FDD86AC422373F87A93ea5",
+  PrivARCMerkleTreeManager:   import.meta.env.VITE_MERKLE_TREE_MANAGER   ?? "0xe300f445DdE5387A1a1Fa606A0901114d15682f9",
+  PrivARCDepositManager:      import.meta.env.VITE_DEPOSIT_MANAGER       ?? "0x69Aa71BA7D1d65997715d0f287C6381490773d9a",
+  WithdrawalManager:   import.meta.env.VITE_WITHDRAWAL_MANAGER    ?? "0x1a2d739287cEAa7d4136Ebc7C1aECEc00647a076",
   ShieldedTransfer:    import.meta.env.VITE_SHIELDED_TRANSFER     ?? "0xa880603916611a0e624f9A04c7f08b62f0532543",
   PrivateSwap:         import.meta.env.VITE_PRIVATE_SWAP          ?? "0xd16F252FFc0a406dFcF58eBAF7EA49f9e1DF78Eb",
   PrivateBridge:       import.meta.env.VITE_PRIVATE_BRIDGE        ?? "0x1C22eEb6c422BeF73B335e1E5668ec3109839B40",
   EmergencyController: import.meta.env.VITE_EMERGENCY_CONTROLLER  ?? "0xa788E96DcF4dBf348995bc5b8D0C7BbaD8e5e88F",
-  MockVerifierZK:      import.meta.env.VITE_VERIFIER_ZK           ?? "0xf3210F5b8e91c389E98955a621AaA34fBeD459B7",
+  MockVerifierZK:      import.meta.env.VITE_VERIFIER_ZK           ?? "0x6dcC80c09f789cd2a3403834465B3d66372606D6",
   // ViewKeyRegistry v1.0.0 — deployed 2026-06-20. Confidential-send auto-discovery
   // (real ECDH stealth notes) is feature-gated on this being non-null — see
   // DApp.jsx ensureViewKeyRegistered()/scanStealthNotes().
   ViewKeyRegistry:     import.meta.env.VITE_VIEW_KEY_REGISTRY     ?? "0x590D1FDC3FbD4CAb151cb7E1557D9C4ecEa2C24b",
   // LI.FI privacy adapters v3.3 — redeployed 2026-07-25 alongside the full
-  // core (v3.3 fee/metrics model — see /areas/privarc.md).
-  LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0x2747eC05d14c286118a52D57d90538a23CAB6289",
-  LiFiPrivacyBridge:   import.meta.env.VITE_LIFI_BRIDGE           ?? "0xf252fc4aC6A54D62e167868B1C100C50344ECF31",
+  // core (WrongFee() swap fix + TVL native-scaling fix — see /areas/privarc.md).
+  LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0x0703963ce37a485CFd6F9657dAA7361B07DCf39D",
+  LiFiPrivacyBridge:   import.meta.env.VITE_LIFI_BRIDGE           ?? "0x58d00F418Fc05426ed8d09028E7A97c3d8Cf3E7b",
   LiFiDiamond:         import.meta.env.VITE_LIFI_DIAMOND          ?? "0xFf70F4A1d11995621854F3692acF286d8aCd04b2",
 };
 
@@ -445,21 +445,22 @@ export function buildAtomicSwapCalldata({
   nullifier, root, tokenIn, tokenOut,
   amountIn, minAmountOut, commitmentOut,
   deadline = BigInt(Math.floor(Date.now()/1000) + 600),
+  flatFeeUsdc = 0n,
 }) {
-  // PrivARCShieldVault._privateSwap forwards `amountIn` VERBATIM as both
-  // msg.value (native branch) and SwapParams.amountIn — same convention as
-  // buildDepositCalldata: for native USDC, the amount must be in native
-  // 18-dec wei, not the 6-dec ERC-20 display unit, or msg.value ends up
-  // 10^12 times too small (confirmed via ArcScan trace — see /areas/privarc.md).
-  // Symmetrically, minAmountOut must match if tokenOut is native.
-  // Symmetric note: amountOut/minAmountOut are NEVER scaled — ShieldVault
-  // always reads amountOut via balanceOf() delta (the 6-dec ERC20 view),
-  // even for native USDC, so minAmountOut must stay in that same 6-dec
-  // space. Only amountIn needs scaling, because it ALSO doubles as
-  // msg.value (18-dec) when tokenIn is native.
+  // amountIn is forwarded VERBATIM as SwapParams.amountIn — same convention
+  // as buildDepositCalldata: for native USDC, in native 18-dec wei, not the
+  // 6-dec ERC-20 display unit. It is NEVER sent as msg.value though: for a
+  // native tokenIn, that amount is drawn from the vault's OWN existing
+  // balance (funded by the original deposit) — the caller's EOA never holds
+  // it. msg.value only ever needs to cover the flat USDC fee, and only when
+  // tokenOut isn't native (v3.3 fee model — see ShieldVault.sol).
   const tokenInIsNative      = tokenIn.toLowerCase()  === NATIVE_USDC.toLowerCase();
+  const tokenOutIsNative     = tokenOut.toLowerCase() === NATIVE_USDC.toLowerCase();
   const amountInForCalldata  = tokenInIsNative ? BigInt(amountIn) * NATIVE_TO_ERC20 : BigInt(amountIn);
   const minAmountOutForCalldata = BigInt(minAmountOut);
+  const value = (!tokenOutIsNative && flatFeeUsdc > 0n)
+    ? "0x" + (BigInt(flatFeeUsdc) * NATIVE_TO_ERC20).toString(16)
+    : "0x0";
 
   const data = SEL.privateSwap
     + nullifier.slice(2).padStart(64,"0")
@@ -471,8 +472,7 @@ export function buildAtomicSwapCalldata({
     + commitmentOut.slice(2).padStart(64,"0")
     + BigInt(deadline).toString(16).padStart(64,"0");
 
-  // Not payable on v3.0.0 — do not attach msg.value or the tx will revert.
-  return { data, value: "0x0" };
+  return { data, value };
 }
 
 // ── PrivARCShieldVault.privateSwapWithRoute() — v3.2, forwards routeData ──
@@ -486,15 +486,19 @@ export function buildSwapWithRouteCalldata({
   amountIn, minAmountOut, commitmentOut,
   deadline = BigInt(Math.floor(Date.now()/1000) + 600),
   routeData = "0x",
+  flatFeeUsdc = 0n,
 }) {
-  // Same native/ERC-20 decimal conversion as buildAtomicSwapCalldata above —
-  // amountIn/minAmountOut travel as msg.value and SwapParams fields verbatim.
-  // Same reasoning as buildAtomicSwapCalldata: only amountIn is scaled
-  // (it doubles as msg.value); minAmountOut stays in the 6-dec ERC20 view
-  // space that ShieldVault always compares amountOut against.
-  const tokenInIsNative     = tokenIn.toLowerCase() === NATIVE_USDC.toLowerCase();
+  // Same reasoning as buildAtomicSwapCalldata above: amountIn is scaled for
+  // the calldata field but NEVER sent as msg.value for a native tokenIn
+  // (drawn from the vault's own balance). msg.value only covers the flat
+  // USDC fee when landing in a non-native tokenOut.
+  const tokenInIsNative     = tokenIn.toLowerCase()  === NATIVE_USDC.toLowerCase();
+  const tokenOutIsNative    = tokenOut.toLowerCase() === NATIVE_USDC.toLowerCase();
   const amountInForCalldata = tokenInIsNative ? BigInt(amountIn) * NATIVE_TO_ERC20 : BigInt(amountIn);
   const minAmountOutForCalldata = BigInt(minAmountOut);
+  const value = (!tokenOutIsNative && flatFeeUsdc > 0n)
+    ? "0x" + (BigInt(flatFeeUsdc) * NATIVE_TO_ERC20).toString(16)
+    : "0x0";
 
   const offRoute = encodeUint256(0x120n); // 9 head words × 32 = 0x120
   const data = SEL.privateSwapWithRoute
@@ -509,7 +513,7 @@ export function buildSwapWithRouteCalldata({
     + offRoute
     + encodeBytes(routeData);
 
-  return { data, value: "0x0" };
+  return { data, value };
 }
 
 // ── LI.FI routeData encoder ───────────────────────────────────────────────
