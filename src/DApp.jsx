@@ -1751,7 +1751,11 @@ function useProtocolStats(onArc) {
       }
     };
     fetch();
-    const id = setInterval(fetch, 10000);
+    // Was 10s — 23 eth_call requests every 10s is heavy sustained load on a
+    // public testnet RPC, likely the cause of the intermittent stat
+    // failures/staleness reported (values working one moment, stuck
+    // "loading…" the next). 30s cuts steady-state request volume by 3x.
+    const id = setInterval(fetch, 30000);
     return () => clearInterval(id);
   }, [onArc]);
   return stats;
@@ -2857,7 +2861,15 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
       flatFeeUsdc = flatRes && flatRes !== "0x" ? BigInt(flatRes) : 0n;
       const preview = previewDepositFee(amountBig, bps, isNativeUsdc, flatFeeUsdc);
       depositFee = preview.fee; netAmount = preview.net;
-    } catch { /* fee read failed — assume 0, matches default deploy state */ }
+    } catch (e) {
+      // Silently assuming 0 here used to be safe (flatFeeUsdc was always 0 in
+      // practice). Now that it's a real nonzero fee, defaulting to 0 builds a
+      // tx with msg.value=0 that the contract WILL reject with WrongFee() —
+      // guaranteed wasted gas. Abort instead of guessing.
+      notify("Shield", "Impossible de lire les frais actuels (réseau lent) — réessayez.", "error");
+      setLoading(false);
+      return;
+    }
 
     // Step 3: Build deposit calldata
     // For native USDC: value = amount * 1e12 (wei), no ERC-20 transferFrom
@@ -3179,7 +3191,10 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     try {
       const flatRes = await rpcCall("eth_call",[{ to:CONTRACTS.PrivARCShieldVault, data:SEL.flatFeeUsdc },"latest"]);
       flatFeeUsdc = flatRes && flatRes !== "0x" ? BigInt(flatRes) : 0n;
-    } catch {}
+    } catch (e) {
+      notify("Swap", "Impossible de lire les frais actuels (réseau lent) — réessayez.", "error");
+      setLoading(false); return;
+    }
 
     // Build calldata for PrivARCShieldVault.privateSwap() / privateSwapWithRoute()
     // Atomic: ShieldVault spends nullifier → swapRouter.executeSwap() → re-shield
@@ -3604,9 +3619,10 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
         flatFeeUsdc  = feeRes && feeRes !== "0x" ? BigInt(feeRes) : 0n;
         withdrawFee  = flatFeeUsdc;
       }
-    } catch {}
-
-    // Pass flatFeeUsdc so buildWithdrawCalldata can compute correct msg.value
+    } catch (e) {
+      notify("Withdraw", "Impossible de lire les frais actuels (réseau lent) — réessayez.", "error");
+      setLoading(false); return;
+    }
     const { data, value: txValue } = buildWithdrawCalldata({
       nullifier, root,
       token:       tk.addr,
@@ -3812,7 +3828,10 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
     try {
       const feeRes = await rpcCall("eth_call", [{ to: CONTRACTS.PrivARCShieldVault, data: SEL.flatFeeUsdc }, "latest"]);
       flatFeeUsdc = feeRes && feeRes !== "0x" ? BigInt(feeRes) : 0n;
-    } catch {}
+    } catch (e) {
+      notify("Bridge", "Impossible de lire les frais actuels (réseau lent) — réessayez.", "error");
+      setLoading(false); setStep(""); return;
+    }
 
     // 5. Atomic unshield + LI.FI bridge — ONE transaction, targeting
     // LiFiPrivacyBridge directly (NOT PrivARCShieldVault).
