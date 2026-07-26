@@ -103,6 +103,23 @@ async function rpcCall(method, params = []) {
   return window.ethereum.request({ method, params });
 }
 
+// For read-only checks that GATE whether a transaction can proceed (Merkle
+// root, current fee rates) — a single transient RPC/wallet-provider blip on
+// a shaky mobile connection shouldn't abort the whole action. Retries a few
+// times with a short delay before giving up for real.
+async function rpcCallWithRetry(method, params = [], attempts = 3, delayMs = 900) {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await rpcCall(method, params);
+    } catch (e) {
+      lastErr = e;
+      if (i < attempts - 1) await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
+  throw lastErr;
+}
+
 // Read native USDC balance (gas token, 18 dec)
 async function getNativeBalance(address) {
   const raw = await rpcCall("eth_getBalance", [address, "latest"]);
@@ -2854,8 +2871,8 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
     let depositFee = 0n, netAmount = amountBig, flatFeeUsdc = 0n;
     try {
       const [bpsRes, flatRes] = await Promise.all([
-        rpcCall("eth_call", [{ to: CONTRACTS.PrivARCShieldVault, data: SEL.protocolFeeBps }, "latest"]),
-        rpcCall("eth_call", [{ to: CONTRACTS.PrivARCShieldVault, data: SEL.flatFeeUsdc },   "latest"]),
+        rpcCallWithRetry("eth_call", [{ to: CONTRACTS.PrivARCShieldVault, data: SEL.protocolFeeBps }, "latest"]),
+        rpcCallWithRetry("eth_call", [{ to: CONTRACTS.PrivARCShieldVault, data: SEL.flatFeeUsdc },   "latest"]),
       ]);
       const bps = bpsRes && bpsRes !== "0x" ? BigInt(bpsRes) : 0n;
       flatFeeUsdc = flatRes && flatRes !== "0x" ? BigInt(flatRes) : 0n;
@@ -3160,7 +3177,7 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     // Read Merkle root
     let merkleRoot;
     try {
-      const res = await rpcCall("eth_call",[{ to:CONTRACTS.PrivARCMerkleTreeManager, data:buildGetLastRootCall() },"latest"]);
+      const res = await rpcCallWithRetry("eth_call",[{ to:CONTRACTS.PrivARCMerkleTreeManager, data:buildGetLastRootCall() },"latest"]);
       merkleRoot = (res && res !== "0x" && res.length >= 66) ? res : null;
     } catch { merkleRoot = null; }
     if (!merkleRoot) {
@@ -3189,7 +3206,7 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     // on this contract (single unified protocolFeeBps applies everywhere).
     let flatFeeUsdc = 0n;
     try {
-      const flatRes = await rpcCall("eth_call",[{ to:CONTRACTS.PrivARCShieldVault, data:SEL.flatFeeUsdc },"latest"]);
+      const flatRes = await rpcCallWithRetry("eth_call",[{ to:CONTRACTS.PrivARCShieldVault, data:SEL.flatFeeUsdc },"latest"]);
       flatFeeUsdc = flatRes && flatRes !== "0x" ? BigInt(flatRes) : 0n;
     } catch (e) {
       notify("Swap", "Impossible de lire les frais actuels (réseau lent) — réessayez.", "error");
@@ -3357,7 +3374,7 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
 
     let merkleRoot;
     try {
-      const res = await rpcCall("eth_call", [{ to: CONTRACTS.PrivARCMerkleTreeManager, data: buildGetLastRootCall() }, "latest"]);
+      const res = await rpcCallWithRetry("eth_call", [{ to: CONTRACTS.PrivARCMerkleTreeManager, data: buildGetLastRootCall() }, "latest"]);
       merkleRoot = (res && res !== "0x" && res.length >= 66) ? res : null;
     } catch { merkleRoot = null; }
     if (!merkleRoot) {
@@ -3403,7 +3420,7 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     // behavior exactly when unset.
     let sendFee = 0n;
     try {
-      const feeRes = await rpcCall("eth_call", [{ to: CONTRACTS.PrivARCShieldVault, data: SEL.flatFeeUsdc }, "latest"]);
+      const feeRes = await rpcCallWithRetry("eth_call", [{ to: CONTRACTS.PrivARCShieldVault, data: SEL.flatFeeUsdc }, "latest"]);
       sendFee = feeRes && feeRes !== "0x" ? BigInt(feeRes) : 0n;
     } catch { /* fee read failed — assume 0, matches default deploy state */ }
 
@@ -3592,7 +3609,7 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
 
     let root;
     try {
-      const res = await rpcCall("eth_call", [{ to: CONTRACTS.PrivARCMerkleTreeManager, data: buildGetLastRootCall() }, "latest"]);
+      const res = await rpcCallWithRetry("eth_call", [{ to: CONTRACTS.PrivARCMerkleTreeManager, data: buildGetLastRootCall() }, "latest"]);
       root = (res && res !== "0x" && res.length >= 66) ? res : null;
     } catch { root = null; }
     if (!root) {
@@ -3610,12 +3627,12 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
     let withdrawFee = 0n;
     try {
       if (tk.isNative) {
-        const feeRes = await rpcCall("eth_call", [{ to: CONTRACTS.PrivARCShieldVault, data: SEL.protocolFeeBps }, "latest"]);
+        const feeRes = await rpcCallWithRetry("eth_call", [{ to: CONTRACTS.PrivARCShieldVault, data: SEL.protocolFeeBps }, "latest"]);
         const bps = feeRes && feeRes !== "0x" ? BigInt(feeRes) : 0n;
         withdrawFee = previewWithdrawFee(amountBig, bps, true, 0n).fee;
         // flatFeeUsdc stays 0n for native USDC — fee is skimmed on-chain, no msg.value needed
       } else {
-        const feeRes = await rpcCall("eth_call", [{ to: CONTRACTS.PrivARCShieldVault, data: SEL.flatFeeUsdc }, "latest"]);
+        const feeRes = await rpcCallWithRetry("eth_call", [{ to: CONTRACTS.PrivARCShieldVault, data: SEL.flatFeeUsdc }, "latest"]);
         flatFeeUsdc  = feeRes && feeRes !== "0x" ? BigInt(feeRes) : 0n;
         withdrawFee  = flatFeeUsdc;
       }
@@ -3781,7 +3798,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
     setStep("Étape 1/3 — Lecture du Merkle root…");
     let root;
     try {
-      const res = await rpcCall("eth_call", [{ to: CONTRACTS.PrivARCMerkleTreeManager, data: buildGetLastRootCall() }, "latest"]);
+      const res = await rpcCallWithRetry("eth_call", [{ to: CONTRACTS.PrivARCMerkleTreeManager, data: buildGetLastRootCall() }, "latest"]);
       root = (res && res !== "0x" && res.length >= 66) ? res : null;
     } catch { root = null; }
     if (!root) {
@@ -3826,7 +3843,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
     // 4. Protocol fee (flat USDC side-payment, EURC/cirBTC only — same model as withdraw())
     let flatFeeUsdc = 0n;
     try {
-      const feeRes = await rpcCall("eth_call", [{ to: CONTRACTS.PrivARCShieldVault, data: SEL.flatFeeUsdc }, "latest"]);
+      const feeRes = await rpcCallWithRetry("eth_call", [{ to: CONTRACTS.PrivARCShieldVault, data: SEL.flatFeeUsdc }, "latest"]);
       flatFeeUsdc = feeRes && feeRes !== "0x" ? BigInt(feeRes) : 0n;
     } catch (e) {
       notify("Bridge", "Impossible de lire les frais actuels (réseau lent) — réessayez.", "error");
