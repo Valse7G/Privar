@@ -1457,26 +1457,6 @@ function OverviewPanel({ account, usdcBalance, loadingBal, onArc, setPanel, pric
         </button>
       </div>
 
-      {/* Network info */}
-      <div style={{ background:"rgba(0,0,0,.3)", border:"1px solid rgba(0,255,176,.1)", borderRadius:5, padding:"12px 14px", marginBottom:14 }}>
-        <div style={{ fontSize:8, color:"#64748b", letterSpacing:".18em", fontFamily:"monospace", marginBottom:8 }}>ARC TESTNET — NETWORK INFO</div>
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap:6 }}>
-          {[
-            ["Chain ID",   "5042002"],
-            ["RPC",        ARC_TESTNET.rpcUrl],
-            ["Gas Token",  "USDC (ERC-20, 6 dec)"],
-            ["Explorer",   "testnet.arcscan.app"],
-            ["Faucet",     "faucet.circle.com"],
-            ["Finality",   "< 1 second"],
-          ].map(([k,v])=>(
-            <div key={k} style={{ display:"flex", gap:8 }}>
-              <span style={{ fontSize:8, color:"#64748b", fontFamily:"monospace", flexShrink:0, minWidth:70 }}>{k}:</span>
-              <span style={{ fontSize:8, color:"#4ade80", fontFamily:"monospace", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{v}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-
       {/* Live prices — real CoinGecko */}
       <div style={{ background:"rgba(0,0,0,.3)", border:"1px solid rgba(0,255,176,.1)", borderRadius:5, padding:"10px 13px", marginBottom:14 }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
@@ -1700,10 +1680,10 @@ function useProtocolStats(onArc) {
 
       setStats(prev => {
         const next = {
-          shieldedUsdc:    su   != null ? nativeToUsdc6(decodeUint256(su)) : prev.shieldedUsdc,
-          shieldedEurc:    se   != null ? decodeUint256(se)   : prev.shieldedEurc,
-          shieldedBtc:     sb   != null ? decodeUint256(sb)   : prev.shieldedBtc,
-          leafCount:       leaf != null ? decodeUint256(leaf) : prev.leafCount,
+          shieldedUsdc:    su   != null ? Number(nativeToUsdc6(decodeUint256(su))) : prev.shieldedUsdc,
+          shieldedEurc:    se   != null ? Number(decodeUint256(se))   : prev.shieldedEurc,
+          shieldedBtc:     sb   != null ? Number(decodeUint256(sb))   : prev.shieldedBtc,
+          leafCount:       leaf != null ? Number(decodeUint256(leaf)) : prev.leafCount,
           // pauseState specifically: keep previous value rather than null on failure —
           // null was being interpreted as "paused" by the UI (null !== 0). A transient
           // RPC hiccup should never visually flip the vault into "paused".
@@ -1724,18 +1704,18 @@ function useProtocolStats(onArc) {
           // NATIVE_USDC are stored in native 18-dec units (consistent with
           // how amount/fee flow through deposit()/withdraw()/swap()) — scale
           // down to 6-dec for display with nativeToUsdc6().
-          totalTxCount: txCount != null ? decodeUint256(txCount) : prev.totalTxCount,
-          volumeUsdc: volU != null ? nativeToUsdc6(decodeUint256(volU)) : prev.volumeUsdc,
-          volumeEurc: volE != null ? decodeUint256(volE) : prev.volumeEurc,
-          volumeBtc:  volB != null ? decodeUint256(volB) : prev.volumeBtc,
-          feesUsdc:   feeU != null ? nativeToUsdc6(decodeUint256(feeU)) : prev.feesUsdc,
-          feesEurc:   feeE != null ? decodeUint256(feeE) : prev.feesEurc,
-          feesBtc:    feeB != null ? decodeUint256(feeB) : prev.feesBtc,
+          totalTxCount: txCount != null ? Number(decodeUint256(txCount)) : prev.totalTxCount,
+          volumeUsdc: volU != null ? Number(nativeToUsdc6(decodeUint256(volU))) : prev.volumeUsdc,
+          volumeEurc: volE != null ? Number(decodeUint256(volE)) : prev.volumeEurc,
+          volumeBtc:  volB != null ? Number(decodeUint256(volB)) : prev.volumeBtc,
+          feesUsdc:   feeU != null ? Number(nativeToUsdc6(decodeUint256(feeU))) : prev.feesUsdc,
+          feesEurc:   feeE != null ? Number(decodeUint256(feeE)) : prev.feesEurc,
+          feesBtc:    feeB != null ? Number(decodeUint256(feeB)) : prev.feesBtc,
           // Fee rates — plain uint256, bps.
           protocolFeeBps: protoFeeBpsRes   != null ? Number(decodeUint256(protoFeeBpsRes))   : prev.protocolFeeBps,
           swapFeeBps:     swapFeeBpsRes    != null ? Number(decodeUint256(swapFeeBpsRes))    : prev.swapFeeBps,
           bridgeFeeBps:   bridgeFeeBpsRes  != null ? Number(decodeUint256(bridgeFeeBpsRes))  : prev.bridgeFeeBps,
-          flatFeeUsdc:    flatFeeUsdcRes   != null ? decodeUint256(flatFeeUsdcRes)            : prev.flatFeeUsdc,
+          flatFeeUsdc:    flatFeeUsdcRes   != null ? Number(decodeUint256(flatFeeUsdcRes))    : prev.flatFeeUsdc,
           treasury:       treasuryRes      != null && treasuryRes !== "0x" ? "0x" + treasuryRes.slice(-40) : prev.treasury,
         };
 
@@ -2883,7 +2863,7 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
       // practice). Now that it's a real nonzero fee, defaulting to 0 builds a
       // tx with msg.value=0 that the contract WILL reject with WrongFee() —
       // guaranteed wasted gas. Abort instead of guessing.
-      notify("Shield", "Impossible de lire les frais actuels (réseau lent) — réessayez.", "error");
+      notify("Shield", "Could not read current fees (slow network) — please retry.", "error");
       setLoading(false);
       return;
     }
@@ -3014,14 +2994,6 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
           </div>
         ))}
       </div>
-      <div style={{ fontSize:7, color:"#1e3a2a", fontFamily:"monospace", marginTop:-6, marginBottom:10, lineHeight:1.5 }}>
-        Commitments comes from PrivARCMerkleTreeManager — shared, persistent infrastructure
-        that survives PrivARCShieldVault redeploys by design (preserves the privacy set across
-        versions), so it does NOT reset like the other stats above. TVL/PROTOCOL TXS/VOLUME
-        (TOTAL)/FEES COLLECTED are read live from the vault (v3.3 restored these — deposit/
-        withdraw/swap all update totalShieldedByToken/totalTxCount/totalVolumeByToken/
-        feesCollectedByToken directly) and DO reset on a fresh redeploy, same as before v3.0.
-      </div>
       {/* Token selector + amount */}
       <div style={{ background:"rgba(0,0,0,.35)", border:"1px solid rgba(0,255,176,.12)", borderRadius:5, padding:"13px 15px", marginBottom:12 }}>
         <div style={{ fontSize:9, color:"#64748b", fontFamily:"monospace", letterSpacing:".12em", marginBottom:6 }}>TOKEN</div>
@@ -3054,7 +3026,7 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
           // deposited token, since there's no on-chain price feed to convert one to
           // the other. The deposited amount itself is always credited in full.
           const flat = ps?.flatFeeUsdc;
-          const feeLabel = flat == null ? "loading…" : flat === 0n ? "Free" : `${formatToken(flat, 6)} USDC`;
+          const feeLabel = flat == null ? "loading…" : Number(flat) === 0 ? "Free" : `${formatToken(flat, 6)} USDC`;
           return <IG items={[["Protocol Fee", feeLabel, "paid in USDC, separate"], ["Gas","USDC","Arc Testnet"], ["Privacy","ZK proof","On-chain"]]}/>;
         })()}
       </div>
@@ -3126,7 +3098,7 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
   const swap = async () => {
     if (!amount || !q || !onArc) return;
     if (fr === to) { notify("Swap","Sélectionnez deux tokens différents.","error"); return; }
-    if (tkFr.bal <= 0) { notify("Swap",`Solde shieldé ${fr} insuffisant.`,"error"); return; }
+    if (tkFr.bal <= 0) { notify("Swap",`Insufficient shielded ${fr} balance.`,"error"); return; }
 
     // Atomic swap via PrivARCShieldVault.privateSwap() / privateSwapWithRoute()
     // Funds NEVER touch user wallet — atomically re-shielded after swap.
@@ -3138,7 +3110,7 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     if (!usingLiFi) {
       const swapAdapter = CONTRACTS.TowerSwapAdapter;
       if (!swapAdapter || swapAdapter === "0x0000000000000000000000000000000000000000") {
-        notify("Swap","Aucun swapRouter configuré (ni LiFiPrivacyAdapter, ni TowerSwapAdapter).","error");
+        notify("Swap","No swapRouter configured (neither LiFiPrivacyAdapter nor TowerSwapAdapter).","error");
         return;
       }
     }
@@ -3169,7 +3141,7 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
           minOut       = BigInt(quote.estimate.toAmountMin);
         }
       } catch (e) {
-        notify("Swap", `Route LI.FI indisponible: ${e.message}`, "error");
+        notify("Swap", `LI.FI route unavailable: ${e.message}`, "error");
         setLoading(false); return;
       }
     }
@@ -3181,7 +3153,7 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       merkleRoot = (res && res !== "0x" && res.length >= 66) ? res : null;
     } catch { merkleRoot = null; }
     if (!merkleRoot) {
-      notify("Swap","Impossible de lire le Merkle root.","error");
+      notify("Swap","Could not read the Merkle root.","error");
       setLoading(false); return;
     }
 
@@ -3195,7 +3167,7 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       );
     }
     if (!note) {
-      notify("Swap",`Aucune note ${fr} shieldée trouvée.`,"error");
+      notify("Swap",`No shielded ${fr} note found.`,"error");
       setLoading(false); return;
     }
 
@@ -3209,7 +3181,7 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       const flatRes = await rpcCallWithRetry("eth_call",[{ to:CONTRACTS.PrivARCShieldVault, data:SEL.flatFeeUsdc },"latest"]);
       flatFeeUsdc = flatRes && flatRes !== "0x" ? BigInt(flatRes) : 0n;
     } catch (e) {
-      notify("Swap", "Impossible de lire les frais actuels (réseau lent) — réessayez.", "error");
+      notify("Swap", "Could not read current fees (slow network) — please retry.", "error");
       setLoading(false); return;
     }
 
@@ -3292,21 +3264,21 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
           <TS v={to} onChange={v => { setTo(v); if (v===fr) setFr(TK.find(t=>t!==v)||"USDC"); setQ(null); }} exclude={fr}/>
         </div>
       </div>
-      <OsField label={`MONTANT (${fr})`} value={amount} onChange={e=>setAmount(e.target.value)}
+      <OsField label={`AMOUNT (${fr})`} value={amount} onChange={e=>setAmount(e.target.value)}
         placeholder={tkFr.dec===8?"0.00000":"0.00"} icon="⇄" suffix={fr}/>
       {q && (
         <div style={{ background:"rgba(0,255,176,.04)", border:"1px solid rgba(0,255,176,.12)", borderRadius:4, padding:"9px 12px", marginBottom:10, fontFamily:"monospace" }}>
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
-            <span style={{ fontSize:8, color:"#64748b" }}>VOUS RECEVEZ (estimé)</span>
+            <span style={{ fontSize:8, color:"#64748b" }}>YOU RECEIVE (estimated)</span>
             <span style={{ fontSize:11, color:"#00FFB0", fontWeight:700 }}>{q.out} {to}</span>
           </div>
           <div style={{ display:"flex", justifyContent:"space-between" }}>
-            <span style={{ fontSize:7, color:"#475569" }}>Taux</span>
+            <span style={{ fontSize:7, color:"#475569" }}>Rate</span>
             <span style={{ fontSize:7, color:"#94a3b8" }}>1 {fr} ≈ {q.rate} {to}</span>
           </div>
         </div>
       )}
-      <IG items={[["Privacy","✓ PrivARCShieldVault","1 tx"],["Adapter", usingLiFi ? "LiFiPrivacyAdapter" : "TowerSwapAdapter", usingLiFi ? "LI.FI" : "simulation"],["Disponible",tkFr.bal.toFixed(tkFr.dec===8?5:2)+" "+fr,"shieldé"]]}/>
+      <IG items={[["Privacy","✓ PrivARCShieldVault","1 tx"],["Adapter", usingLiFi ? "LiFiPrivacyAdapter" : "TowerSwapAdapter", usingLiFi ? "LI.FI" : "simulation"],["Available",tkFr.bal.toFixed(tkFr.dec===8?5:2)+" "+fr,"shielded"]]}/>
       {tkFr.bal <= 0 && (
         <div style={{ background:"rgba(245,158,11,.06)", border:"1px solid rgba(245,158,11,.2)", borderRadius:4, padding:"8px 12px", marginBottom:12, fontSize:9, color:"#F59E0B", fontFamily:"monospace" }}>
           ⚠ Solde shieldé {fr} à zéro. Shieldez des {fr} d'abord.
@@ -3637,7 +3609,7 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
         withdrawFee  = flatFeeUsdc;
       }
     } catch (e) {
-      notify("Withdraw", "Impossible de lire les frais actuels (réseau lent) — réessayez.", "error");
+      notify("Withdraw", "Could not read current fees (slow network) — please retry.", "error");
       setLoading(false); return;
     }
     const { data, value: txValue } = buildWithdrawCalldata({
@@ -3776,9 +3748,9 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
 
   const bridge = async () => {
     if (!amount || Number(amount) <= 0 || !onArc) return;
-    if (tk.bal <= 0) { notify("Bridge", `Solde shieldé ${token} insuffisant.`, "error"); return; }
+    if (tk.bal <= 0) { notify("Bridge", `Insufficient shielded ${token} balance.`, "error"); return; }
     if (!isReachable(ch)) {
-      notify("Bridge", `${ch.name} n'est pas (encore) atteignable via LI.FI depuis Arc Testnet.`, "error");
+      notify("Bridge", `${ch.name} isn't (yet) reachable via LI.FI from Arc Testnet.`, "error");
       return;
     }
 
@@ -3802,7 +3774,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
       root = (res && res !== "0x" && res.length >= 66) ? res : null;
     } catch { root = null; }
     if (!root) {
-      notify("Bridge", "Impossible de lire le Merkle root.", "error");
+      notify("Bridge", "Could not read the Merkle root.", "error");
       setLoading(false); setStep(""); return;
     }
 
@@ -3816,7 +3788,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
       );
     }
     if (!note) {
-      notify("Bridge", `Aucune note ${token} shieldée trouvée.`, "error");
+      notify("Bridge", `No shielded ${token} note found.`, "error");
       setLoading(false); setStep(""); return;
     }
 
@@ -3836,7 +3808,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
       });
       routeData = encodeLiFiRouteData(quote.transactionRequest.to, quote.transactionRequest.value, quote.transactionRequest.data);
     } catch (e) {
-      notify("Bridge", `Route LI.FI indisponible: ${e.message}`, "error");
+      notify("Bridge", `LI.FI route unavailable: ${e.message}`, "error");
       setLoading(false); setStep(""); return;
     }
 
@@ -3846,7 +3818,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
       const feeRes = await rpcCallWithRetry("eth_call", [{ to: CONTRACTS.PrivARCShieldVault, data: SEL.flatFeeUsdc }, "latest"]);
       flatFeeUsdc = feeRes && feeRes !== "0x" ? BigInt(feeRes) : 0n;
     } catch (e) {
-      notify("Bridge", "Impossible de lire les frais actuels (réseau lent) — réessayez.", "error");
+      notify("Bridge", "Could not read current fees (slow network) — please retry.", "error");
       setLoading(false); setStep(""); return;
     }
 
@@ -3872,9 +3844,9 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
       if (remaining > 0n) updated.push({ ...note, amount: remaining.toString(), commitment: randomBytes32() });
       saveNotes(account?.address, updated);
       recomputeShielded?.();
-      notify("Bridge ✓", `${amount} ${token} → ${ch.name} — arrivée dans 1-5 min.`, "success");
+      notify("Bridge ✓", `${amount} ${token} → ${ch.name} — arriving in 1-5 min.`, "success");
     } else {
-      notify("Bridge", "Bridge LI.FI échoué.", "error");
+      notify("Bridge", "LI.FI bridge failed.", "error");
     }
 
     setAmount(""); setRecipient(""); setLoading(false); setStep("");
@@ -3896,9 +3868,9 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
 
       <div style={{ marginBottom:12 }}>
         <div style={{ fontSize:8, color:"#64748b", letterSpacing:".14em", fontFamily:"monospace", marginBottom:7 }}>
-          DESTINATION {reachable === null && <span style={{ color:"#475569" }}>· vérification LI.FI…</span>}
+          DESTINATION {reachable === null && <span style={{ color:"#475569" }}>· checking LI.FI…</span>}
           {reachable !== null && !fetchFailed && reachable.size === 0 && (
-            <span style={{ color:"#f87171" }}>· LI.FI ne rapporte aucune destination atteignable depuis Arc pour l'instant</span>
+            <span style={{ color:"#f87171" }}>· LI.FI reports no reachable destination from Arc right now</span>
           )}
         </div>
         <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:5 }}>
@@ -3921,16 +3893,16 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
         </div>
       </div>
 
-      <OsField label={`MONTANT (${token})`} value={amount} onChange={e=>setAmount(e.target.value)}
+      <OsField label={`AMOUNT (${token})`} value={amount} onChange={e=>setAmount(e.target.value)}
         placeholder={tk.dec===8?"0.00000":"0.00"} icon="⟺" suffix={token}/>
 
       <div style={{ marginBottom:10 }}>
         <div style={{ fontSize:8, color:"#64748b", letterSpacing:".14em", fontFamily:"monospace", marginBottom:5 }}>
-          DESTINATAIRE SUR {ch?.name?.toUpperCase()} (laisser vide = votre adresse)
+          RECIPIENT ON {ch?.name?.toUpperCase()} (leave blank = your own address)
         </div>
         <div style={{ background:"rgba(0,0,0,.35)", border:"1px solid rgba(0,255,176,.15)", borderRadius:3 }}>
           <input value={recipient} onChange={e=>setRecipient(e.target.value)}
-            placeholder={`${account?.address?.slice(0,6)||"0x1dc7"}…${account?.address?.slice(-4)||"9894"} (vous-même)`}
+            placeholder={`${account?.address?.slice(0,6)||"0x1dc7"}…${account?.address?.slice(-4)||"9894"} (yourself)`}
             style={{ width:"100%", background:"transparent", border:"none", outline:"none", padding:"10px 12px", color:"#ffffff", fontSize:9, fontFamily:"monospace" }}/>
         </div>
       </div>
@@ -3942,9 +3914,9 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
       )}
 
       <IG items={[
-        ["Token",   token,    "sélectionné"],
+        ["Token",   token,    "selected"],
         ["Vers",    ch?.name, "LI.FI"],
-        ["Privacy", "✓ LiFiPrivacyBridge", "1 tx atomique"],
+        ["Privacy", "✓ LiFiPrivacyBridge", "1 atomic tx"],
       ]}/>
 
       {tk.bal <= 0 && (
@@ -4245,7 +4217,7 @@ function AnalyticsPanel({ protocolStats, txHistory, account, onArc, prices, onCh
             </div>
           ))}
           <div style={{ fontSize:7, color:"#1e3a2a", fontFamily:"monospace", marginTop:4 }}>
-            Read live from PrivARCShieldVault (v3.3) · <span style={{ cursor:"pointer", textDecoration:"underline" }} onClick={()=>onChainActivity?.refresh?.()}>cross-check</span>
+            <span style={{ cursor:"pointer", textDecoration:"underline" }} onClick={()=>onChainActivity?.refresh?.()}>Refresh</span>
           </div>
         </div>
       </div>
@@ -4259,7 +4231,7 @@ function AnalyticsPanel({ protocolStats, txHistory, account, onArc, prices, onCh
         {(() => {
           const oc = onChainActivity || {};
           const vaultTx = ps?.totalTxCount ?? (oc.ready ? oc.totalTxCount : null);
-          const combinedTx = vaultTx != null ? vaultTx + (stakingTxCount || 0) : null;
+          const combinedTx = vaultTx != null ? Number(vaultTx) + Number(stakingTxCount || 0) : null;
           const feesUsd = ps?.feesUsdc != null ? Number(ps.feesUsdc)/1e6 : (oc.ready ? Number(oc.feesUsdc||0) : null);
           return [
             { l:"Total Tx (vault + staking)",  v: combinedTx!=null ? String(combinedTx) : (oc.loading?"loading…":"—"), c:"#0EA5E9" },
@@ -4273,14 +4245,6 @@ function AnalyticsPanel({ protocolStats, txHistory, account, onArc, prices, onCh
             <span style={{ fontSize:9, color:s.c, fontFamily:"monospace", fontWeight:600 }}>{s.v}</span>
           </div>
         ))}
-        <div style={{ fontSize:7, color:"#1e3a2a", fontFamily:"monospace", marginTop:6, lineHeight:1.5 }}>
-          "Total Tx" and "Fees Collected" are read live from PrivARCShieldVault (v3.3 restores
-          totalTxCount()/feesCollectedByToken(), ported from the earlier v2.8 design). All fees —
-          deposit, withdraw, swap, bridge — always land in feesCollectedByToken[USDC] only, never
-          fragmented per-asset. Public (non-shielded) sends aren't counted either way — they never
-          touch a PrivARC contract, so they're indistinguishable on-chain from any other wallet
-          transfer. Claimable via withdrawFees(USDC), paid to Treasury below.
-        </div>
       </div>
 
       {/* Arc Testnet info */}
