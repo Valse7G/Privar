@@ -1606,11 +1606,16 @@ function useProtocolStats(onArc) {
     feesUsdc24h:null, feesEurc24h:null, feesBtc24h:null,
     snapshotCoverage: null, // ms of history actually available (< 24h until the window fills up)
   });
-  useEffect(() => {
+  const fetch = useCallback(async () => {
     if (!onArc) return;
-    const fetch = async () => {
-      try {
-        const call = (to, data) => rpcCall("eth_call", [{ to, data }, "latest"]);
+    try {
+        // Light retry (not the full 3x/900ms used for tx-gating reads, which
+        // would make each 30s poll take too long across 23 calls) — still
+        // meaningfully raises the per-poll success rate. Individual calls
+        // failing outright (rather than retrying) is why a cold load could
+        // take several full poll cycles (minutes) before every field had a
+        // chance to succeed at least once.
+        const call = (to, data) => rpcCallWithRetry("eth_call", [{ to, data }, "latest"], 2, 500);
         // FIX: Promise.all rejects entirely if ANY single call fails — with 17 calls in
         // flight, one bad RPC response (or a v2.5-only function read against a stale
         // contract) used to blank out EVERYTHING, including pauseState, which then
@@ -1746,7 +1751,10 @@ function useProtocolStats(onArc) {
         // simply isn't called), so a crash here never blanks the panel.
         console.warn("stats fetch crashed:", e);
       }
-    };
+  }, [onArc]);
+
+  useEffect(() => {
+    if (!onArc) return;
     fetch();
     // Was 10s — 23 eth_call requests every 10s is heavy sustained load on a
     // public testnet RPC, likely the cause of the intermittent stat
@@ -1754,8 +1762,8 @@ function useProtocolStats(onArc) {
     // "loading…" the next). 30s cuts steady-state request volume by 3x.
     const id = setInterval(fetch, 30000);
     return () => clearInterval(id);
-  }, [onArc]);
-  return stats;
+  }, [onArc, fetch]);
+  return { ...stats, refresh: fetch };
 }
 
 // ── On-chain activity reconstruction (tx count / volume / fees) ────────────
@@ -2678,8 +2686,8 @@ function ShieldedWallet({ bals, onMax, tokenFilter, actionableFilter, compact = 
       </div>
       {hasStale && (
         <div style={{ background:"rgba(248,113,113,.08)", border:"1px solid rgba(248,113,113,.25)", borderRadius:4, padding:"7px 10px", marginBottom:8, fontSize:8, color:"#fca5a5", fontFamily:"monospace", lineHeight:1.6 }}>
-          ⚠ Notes locales obsolètes détectées — ces soldes proviennent d'un ancien déploiement PrivARCShieldVault.
-          Le TVL on-chain actuel est inférieur à vos notes locales.{" "}
+          ⚠ Stale local notes detected — these balances come from an older PrivARCShieldVault deployment.
+          Current on-chain TVL is lower than your local notes.{" "}
           <span
             onClick={() => {
               try {
@@ -2700,7 +2708,7 @@ function ShieldedWallet({ bals, onMax, tokenFilter, actionableFilter, compact = 
               } catch(e) { console.warn("purge failed:", e); }
             }}
             style={{ color:"#f87171", textDecoration:"underline", cursor:"pointer" }}
-          >Purger les notes obsolètes</span>
+          >Clear stale notes</span>
         </div>
       )}
       <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:5 }}>
@@ -2723,7 +2731,7 @@ function ShieldedWallet({ bals, onMax, tokenFilter, actionableFilter, compact = 
               <div style={{ fontSize:8, color: isActionable ? "#64748b" : "#334155", fontFamily:"monospace", marginBottom:3 }}>{t.sym}</div>
               <div style={{ fontSize:11, color: isClickable ? t.color : "#334155", fontFamily:"monospace", fontWeight:700 }}>{t.fmt(t.val)}</div>
               {isClickable  && <div style={{ fontSize:7, color:"#4a7c5f", fontFamily:"monospace", marginTop:2 }}>tap → MAX</div>}
-              {!isActionable && <div style={{ fontSize:6, color:"#475569", fontFamily:"monospace", marginTop:2 }}>non utilisé ici</div>}
+              {!isActionable && <div style={{ fontSize:6, color:"#475569", fontFamily:"monospace", marginTop:2 }}>not used here</div>}
             </button>
           );
         })}
@@ -2737,7 +2745,7 @@ function ShieldedWallet({ bals, onMax, tokenFilter, actionableFilter, compact = 
   );
 }
 
-function useTxSend({ account, onArc, notify, refreshBalance }) {
+function useTxSend({ account, onArc, notify, refreshBalance, onSuccess }) {
   const sendRealTx = useCallback(async ({ label, description, buildTx }) => {
     if (!onArc) { notify(label, "Switch to Arc Testnet first", "error"); return false; }
     if (!account?.address) { notify(label, "Wallet not connected", "error"); return false; }
@@ -2750,6 +2758,10 @@ function useTxSend({ account, onArc, notify, refreshBalance }) {
       if (Number(receipt.status) === 1) {  // FIX F-11: handles both "0x1" (string) and 1 (int) from different RPC implementations
         notify(`${label} ✓`, "Transaction confirmed on Arc Testnet", "success", hash);
         await refreshBalance(account.address);
+        // Dashboard stats (TVL, tx count, volume, fees) poll on a timer and
+        // would otherwise wait up to 30s to reflect this transaction — refresh
+        // them immediately instead of leaving the UI looking stale/unchanged.
+        try { onSuccess?.(); } catch {}
         return true;
       } else {
         notify(`${label} Failed`, "Transaction reverted", "error", hash);
@@ -2760,7 +2772,7 @@ function useTxSend({ account, onArc, notify, refreshBalance }) {
       notify(`${label} Failed`, msg, "error");
       return false;
     }
-  }, [account, onArc, notify, refreshBalance]);
+  }, [account, onArc, notify, refreshBalance, onSuccess]);
 
   return { sendRealTx };
 }
@@ -2771,7 +2783,7 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
   const [loading, setLoading] = useState(false);
   const [confirmTx, setConfirmTx] = useState(null); // pending TxConfirmModal
   const confirmRef = useRef(null);                   // resolves the modal promise
-  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance });
+  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(); onChainActivity?.refresh?.(); } });
 
   // Ask user to confirm before hitting wallet — shows real amount for ERC-20 / ZK txs
   const askConfirm = (txInfo) => new Promise(resolve => {
@@ -3053,7 +3065,7 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
   );
 }
 
-function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBals, recomputeShielded, protocolStats }) {
+function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBals, recomputeShielded, protocolStats, onChainActivity }) {
   // ── Architecture: PrivARCShieldVault.privateSwap()/privateSwapWithRoute() ──
   // Flow (1 tx via PrivARCShieldVault) :
   //   PrivARCShieldVault.privateSwap[WithRoute](...)
@@ -3069,7 +3081,7 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
   const [amount, setAmount]   = useState("");
   const [q, setQ]             = useState(null);
   const [loading, setLoading] = useState(false);
-  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance });
+  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(); onChainActivity?.refresh?.(); } });
   const bals = shieldedBals;
 
   const SWAP_TOKENS = {
@@ -3240,16 +3252,11 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       <NotOnArcWarning/>
       {!routerOk && (
         <div style={{ background:"rgba(248,113,113,.08)", border:"1px solid rgba(248,113,113,.25)", borderRadius:4, padding:"8px 12px", marginBottom:10, fontSize:8, color:"#fca5a5", fontFamily:"monospace", lineHeight:1.7 }}>
-          ⚠ <strong style={{ color:"#f87171" }}>Aucun swapRouter déployé</strong><br/>
+          ⚠ <strong style={{ color:"#f87171" }}>No swapRouter deployed</strong><br/>
           <code>npx hardhat run scripts/deploy-lifi.js --network arc_testnet</code><br/>
-          puis <code>VITE_LIFI_ADAPTER=0x...</code> dans Vercel Dashboard
+          then set <code>VITE_LIFI_ADAPTER=0x...</code> in the Vercel Dashboard
         </div>
       )}
-      <div style={{ background:"rgba(0,255,176,.04)", border:"1px solid rgba(0,255,176,.1)", borderRadius:4, padding:"8px 12px", marginBottom:10, fontSize:8, color:"#64748b", fontFamily:"monospace", lineHeight:1.7 }}>
-        <span style={{ color:"#00FFB0", fontWeight:700 }}>1 tx : </span>
-        PrivARCShieldVault.privateSwapWithRoute → LiFiPrivacyAdapter → LI.FI Diamond → note shieldée
-        <br/><span style={{ color:"#334155" }}>Route cotée en direct via l'API LI.FI · fallback TowerSwapAdapter (simulation)</span>
-      </div>
       <ShieldedWallet bals={bals} actionableFilter={["USDC","EURC","cirBTC"]}
         onMax={(sym, val, _raw, dec) => { setFr(sym); if (sym===to) setTo(TK.find(t=>t!==sym)||"EURC"); setAmount(val.toFixed(dec===8?5:2)); }}
         protocolStats={protocolStats}/>
@@ -3294,7 +3301,7 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
   );
 }
 
-function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBals, recomputeShielded, protocolStats }) {
+function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBals, recomputeShielded, protocolStats, onChainActivity }) {
   const [to, setTo]=useState(""); const [amount, setAmount]=useState(""); const [loading, setLoading]=useState(false);
   const [mode, setMode]=useState("shielded");
   const [confirmTx, setConfirmTx] = useState(null);
@@ -3302,7 +3309,7 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
   const askConfirm = (txInfo) => new Promise(resolve => { confirmRef.current = resolve; setConfirmTx(txInfo); });
   const onConfirm  = () => { setConfirmTx(null); confirmRef.current?.(true); };
   const onCancel   = () => { setConfirmTx(null); confirmRef.current?.(false); };
-  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance });
+  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(); onChainActivity?.refresh?.(); } });
   const bals = shieldedBals;
 
   // NOTE: ARC Name Service (.arc) is not yet deployed — there is no on-chain
@@ -3500,8 +3507,7 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
                 return (
                   <button key={t.sym} onClick={() => { setSendToken(t.sym); setAmount(""); }}
                     style={{ flex:1, background:active?"rgba(0,0,0,.4)":"rgba(0,0,0,.2)", border:`1px solid ${active?col+"80":"rgba(255,255,255,.07)"}`, borderRadius:5, padding:"7px 4px", cursor:"pointer", textAlign:"center" }}>
-                    <div style={{ fontSize:8, color:active?col:"#64748b", fontFamily:"monospace" }}>{t.sym}</div>
-                    <div style={{ fontSize:9, color:active?col:"#475569", fontFamily:"monospace", fontWeight:700 }}>{t.bal.toFixed(t.dec===8?5:2)}</div>
+                    <div style={{ fontSize:9, color:active?col:"#64748b", fontFamily:"monospace", fontWeight:700 }}>{t.sym}</div>
                   </button>
                 );
               })}
@@ -3532,12 +3538,12 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
   );
 }
 
-function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, prices, shieldedBals, recomputeShielded, protocolStats }) {
+function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, prices, shieldedBals, recomputeShielded, protocolStats, onChainActivity }) {
   const [amount, setAmount]   = useState("");
   const [dest, setDest]       = useState("");
   const [loading, setLoading] = useState(false);
   const [token, setToken]     = useState("USDC"); // selected token to withdraw
-  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance });
+  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(); onChainActivity?.refresh?.(); } });
   const bals = shieldedBals;
 
   // Token metadata — mirrors BridgePanel BRIDGE_TOKENS
@@ -3694,7 +3700,7 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
   );
 }
 
-function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedBals, recomputeShielded, protocolStats }) {
+function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedBals, recomputeShielded, protocolStats, onChainActivity }) {
   // ── Architecture: LiFiPrivacyBridge.privateBridge() — v3.2 ─────────────────
   // Replaces the old 3-step (unshield → swap → CCTP) flow, which sent EURC/
   // cirBTC into the user's PUBLIC wallet mid-flight — see /areas/privarc.md
@@ -3715,7 +3721,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
   const [recipient, setRecipient] = useState("");
   const [token, setToken]         = useState("USDC");
   const [step, setStep]           = useState("");
-  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance });
+  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(); onChainActivity?.refresh?.(); } });
   const bals = shieldedBals;
   const ch   = CH.find(c=>c.domainId===destId) || CH[0];
 
@@ -3856,11 +3862,6 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
     <div style={{ animation:"fi .3s ease" }}>
       <PH icon="⟺" title="BRIDGE" sub="Confidential bridge — LiFiPrivacyBridge (Arc Testnet)"/>
       <NotOnArcWarning/>
-
-      <div style={{ background:"rgba(14,165,233,.04)", border:"1px solid rgba(14,165,233,.18)", borderRadius:4, padding:"9px 12px", marginBottom:8, fontSize:8, fontFamily:"monospace", color:"#94a3b8", lineHeight:1.6 }}>
-        <div style={{ color:"#0EA5E9", fontWeight:700, marginBottom:3 }}>⬡ LI.FI — unshield + bridge en 1 tx</div>
-        1 transaction : LiFiPrivacyBridge.privateBridge → unshield + route LI.FI → arrivée sur {ch?.name}. Fonds jamais exposés dans un wallet public entre les deux étapes.
-      </div>
 
       <ShieldedWallet bals={bals} actionableFilter={["USDC","EURC","cirBTC"]}
         onMax={(sym, val, _raw, dec) => { setToken(sym); setAmount(val.toFixed(dec===8?5:2)); }}
