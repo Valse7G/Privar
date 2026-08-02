@@ -166,7 +166,7 @@ export function Landing({ navigate }) {
         {/* Logo */}
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <div style={{ width: 30, height: 30, border: "1.5px solid #00FFB0", borderRadius: 3, display: "flex", alignItems: "center", justifyContent: "center", color: "#00FFB0", fontSize: 14, boxShadow: "0 0 12px rgba(0,255,176,.25)" }}>◈</div>
-          <GlitchText text="privARC" style={{ fontSize: 18, fontWeight: 800, color: "#00FFB0", fontFamily: "'Syne', sans-serif" }} />
+          <GlitchText text="privar" style={{ fontSize: 18, fontWeight: 800, color: "#00FFB0", fontFamily: "'Syne', sans-serif" }} />
           <span style={{ fontSize: 8, color: "#1E5C3A", letterSpacing: ".18em", marginLeft: 2 }}>OS</span>
         </div>
 
@@ -207,7 +207,7 @@ export function Landing({ navigate }) {
 
         {/* Headline */}
         <h1 style={{ fontSize: "clamp(38px,7vw,96px)", fontWeight: 900, fontFamily: "'Syne', sans-serif", lineHeight: 1.0, marginBottom: 10, animation: "fadeUp .7s .1s ease both" }}>
-          <GlitchText text="privARC" style={{ color: "#00FFB0", display: "block" }} />
+          <GlitchText text="privar" style={{ color: "#00FFB0", display: "block" }} />
           <span style={{ color: "#ffffff", display: "block", fontWeight: 700 }}>Confidential</span>
           <span style={{ color: "#ffffff", display: "block", fontWeight: 700 }}>Capital OS</span>
         </h1>
@@ -229,7 +229,7 @@ export function Landing({ navigate }) {
           }}
             onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 0 50px rgba(0,255,176,.5)"; }}
             onMouseLeave={e => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "0 0 30px rgba(0,255,176,.35)"; }}
-          >⟶ Launch PrivARC OS</button>
+          >⟶ Launch Privar OS</button>
           <a href="#how-it-works" style={{
             padding: "14px 30px", background: "transparent",
             border: "1px solid rgba(0,255,176,.25)", borderRadius: 4,
@@ -248,7 +248,7 @@ export function Landing({ navigate }) {
           {/* Terminal header */}
           <div style={{ background: "rgba(0,0,0,.4)", padding: "10px 16px", display: "flex", alignItems: "center", gap: 7, borderBottom: "1px solid rgba(0,255,176,.08)" }}>
             {["#EF4444","#F59E0B","#00FFB0"].map((c,i) => <div key={i} style={{ width: 10, height: 10, borderRadius: "50%", background: c, opacity: .7 }} />)}
-            <span style={{ marginLeft: 8, fontSize: 9, color: "#4a7c5f", letterSpacing: ".2em" }}>PRIVARC OS — PROTOCOL STATUS — ARC TESTNET</span>
+            <span style={{ marginLeft: 8, fontSize: 9, color: "#4a7c5f", letterSpacing: ".2em" }}>PRIVAR OS — PROTOCOL STATUS — ARC TESTNET</span>
           </div>
           {/* Terminal body */}
           <div style={{ padding: "16px 18px", minHeight: 130 }}>
@@ -505,7 +505,7 @@ export function Landing({ navigate }) {
               Start managing capital<br /><span style={{ color: "#00FFB0" }}>privately today.</span>
             </h2>
             <p style={{ fontSize: 14, color: "#64748b", lineHeight: 1.7, marginBottom: 40, maxWidth: 500, margin: "0 auto 40px" }}>
-              PrivARC OS is live on Arc Testnet. Connect your wallet, get USDC from the faucet, and start shielding your assets in under 60 seconds.
+              Privar OS is live on Arc Testnet. Connect your wallet, get USDC from the faucet, and start shielding your assets in under 60 seconds.
             </p>
             <div style={{ display: "flex", gap: 14, justifyContent: "center", flexWrap: "wrap" }}>
               <button onClick={() => navigate("/app")} style={{
@@ -517,7 +517,7 @@ export function Landing({ navigate }) {
               }}
                 onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 0 60px rgba(0,255,176,.6)"; }}
                 onMouseLeave={e => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "0 0 40px rgba(0,255,176,.4)"; }}
-              >⟶ Launch PrivARC OS</button>
+              >⟶ Launch Privar OS</button>
               <a href="https://faucet.circle.com" target="_blank" rel="noreferrer" style={{
                 padding: "16px 30px", background: "transparent",
                 border: "1px solid rgba(0,255,176,.25)", borderRadius: 4,
@@ -550,7 +550,7 @@ export function Landing({ navigate }) {
         <div style={{ maxWidth: 1100, margin: "0 auto", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 16 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
             <div style={{ width: 22, height: 22, border: "1px solid rgba(0,255,176,.4)", borderRadius: 2, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#00FFB0" }}>◈</div>
-            <span style={{ fontSize: 12, fontWeight: 700, color: "#00FFB0", fontFamily: "'Syne', sans-serif" }}>privARC</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "#00FFB0", fontFamily: "'Syne', sans-serif" }}>privar</span>
             <span style={{ fontSize: 9, color: "#334155", letterSpacing: ".1em" }}>OS v12.0.0</span>
           </div>
           <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>

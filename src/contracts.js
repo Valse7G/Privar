@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════════════
-//  PrivARC OS — Contract Config v12.1.0
+//  Privar OS — Contract Config v12.1.0
 //
 //  Addresses synced with latest.json v3.0.0 (v3.3 contract, WrongFee/TVL fix redeploy) — Arc Testnet — 2026-07-25
 //  Deployer: 0x1Dc72450B3e2782AcD669D7C27073f2C8F2c9894
@@ -11,13 +11,13 @@ export const ARC_CHAIN_ID = 5042002;
 
 // ── Contract addresses ────────────────────────────────────────────────────────
 const _c = {
-  PrivARCShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0x4F8569CC8CaD8228fA4A3E493f9dcFebcDfeb43b",
+  PrivarShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0x4F8569CC8CaD8228fA4A3E493f9dcFebcDfeb43b",
   Timelock:            import.meta.env.VITE_TIMELOCK              ?? "0x8DF7C02012EBec968bdEc100F4fEAF772AcAab99",
   Governance:          import.meta.env.VITE_GOVERNANCE            ?? "0x89F08E2BBc963e48986D8A0FfA23858bA643C78A",
-  PrivARCStaking:             import.meta.env.VITE_STAKING               ?? "0xc43ffaC60e797DCb2C9eEcFba199696E75d90168",
-  PrivARCNullifierRegistry:   import.meta.env.VITE_NULLIFIER_REGISTRY    ?? "0xabCC5DD1943A1C9F25FDD86AC422373F87A93ea5",
-  PrivARCMerkleTreeManager:   import.meta.env.VITE_MERKLE_TREE_MANAGER   ?? "0xe300f445DdE5387A1a1Fa606A0901114d15682f9",
-  PrivARCDepositManager:      import.meta.env.VITE_DEPOSIT_MANAGER       ?? "0x69Aa71BA7D1d65997715d0f287C6381490773d9a",
+  PrivarStaking:             import.meta.env.VITE_STAKING               ?? "0xc43ffaC60e797DCb2C9eEcFba199696E75d90168",
+  PrivarNullifierRegistry:   import.meta.env.VITE_NULLIFIER_REGISTRY    ?? "0xabCC5DD1943A1C9F25FDD86AC422373F87A93ea5",
+  PrivarMerkleTreeManager:   import.meta.env.VITE_MERKLE_TREE_MANAGER   ?? "0xe300f445DdE5387A1a1Fa606A0901114d15682f9",
+  PrivarDepositManager:      import.meta.env.VITE_DEPOSIT_MANAGER       ?? "0x69Aa71BA7D1d65997715d0f287C6381490773d9a",
   WithdrawalManager:   import.meta.env.VITE_WITHDRAWAL_MANAGER    ?? "0x1a2d739287cEAa7d4136Ebc7C1aECEc00647a076",
   ShieldedTransfer:    import.meta.env.VITE_SHIELDED_TRANSFER     ?? "0xa880603916611a0e624f9A04c7f08b62f0532543",
   PrivateSwap:         import.meta.env.VITE_PRIVATE_SWAP          ?? "0xd16F252FFc0a406dFcF58eBAF7EA49f9e1DF78Eb",
@@ -29,7 +29,7 @@ const _c = {
   // DApp.jsx ensureViewKeyRegistered()/scanStealthNotes().
   ViewKeyRegistry:     import.meta.env.VITE_VIEW_KEY_REGISTRY     ?? "0x590D1FDC3FbD4CAb151cb7E1557D9C4ecEa2C24b",
   // LI.FI privacy adapters v3.3 — redeployed 2026-07-25 alongside the full
-  // core (WrongFee() swap fix + TVL native-scaling fix — see /areas/privarc.md).
+  // core (WrongFee() swap fix + TVL native-scaling fix — see /areas/privar.md).
   LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0x0703963ce37a485CFd6F9657dAA7361B07DCf39D",
   LiFiPrivacyBridge:   import.meta.env.VITE_LIFI_BRIDGE           ?? "0x58d00F418Fc05426ed8d09028E7A97c3d8Cf3E7b",
   LiFiDiamond:         import.meta.env.VITE_LIFI_DIAMOND          ?? "0xFf70F4A1d11995621854F3692acF286d8aCd04b2",
@@ -45,14 +45,14 @@ export const CONTRACTS = {
   EURC:                import.meta.env.VITE_EURC_ADDRESS   ?? "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
   cirBTC:              import.meta.env.VITE_CIRBTC_ADDRESS ?? "0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF",
   CCTP_TokenMessenger: "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA",
-  // Deployed by PrivARC
-  PrivARCShieldVault:         _c.PrivARCShieldVault,
+  // Deployed by Privar
+  PrivarShieldVault:         _c.PrivarShieldVault,
   Timelock:            _c.Timelock,
   Governance:          _c.Governance,
-  PrivARCStaking:             _c.PrivARCStaking,
-  PrivARCNullifierRegistry:   _c.PrivARCNullifierRegistry,
-  PrivARCMerkleTreeManager:   _c.PrivARCMerkleTreeManager,
-  PrivARCDepositManager:      _c.PrivARCDepositManager,
+  PrivarStaking:             _c.PrivarStaking,
+  PrivarNullifierRegistry:   _c.PrivarNullifierRegistry,
+  PrivarMerkleTreeManager:   _c.PrivarMerkleTreeManager,
+  PrivarDepositManager:      _c.PrivarDepositManager,
   WithdrawalManager:   _c.WithdrawalManager,
   ShieldedTransfer:    _c.ShieldedTransfer,
   PrivateSwap:         _c.PrivateSwap,
@@ -128,7 +128,7 @@ export const NATIVE_TO_ERC20    = BigInt("1000000000000"); // 10^12
 // Computed with: keccak256(functionSignature).slice(0,4)
 // Struct types are inlined per ABI spec (IModules.sol)
 //
-// IPrivARCVerifierZK.Proof = (uint256[2],uint256[2][2],uint256[2])
+// IPrivarVerifierZK.Proof = (uint256[2],uint256[2][2],uint256[2])
 //
 // DepositParams    = (bytes32,address,uint256,(uint256[2],uint256[2][2],uint256[2]),uint256[])
 // deposit(DepositParams) →
@@ -162,20 +162,20 @@ export const SEL = {
   allowance:          "0xdd62ed3e",  // allowance(address,address)
   transfer:           "0xa9059cbb",  // transfer(address,uint256)
 
-  // PrivARCShieldVault v2.2 — computed from IModules.sol struct ABI signatures
+  // PrivarShieldVault v2.2 — computed from IModules.sol struct ABI signatures
   // NOTE: These selectors are computed from the EXACT function signatures.
   // If deployment reverts with "function not found", verify with:
   //   cast sig "deposit((bytes32,address,uint256,(uint256[2],uint256[2][2],uint256[2]),uint256[]))"
-  // PrivARCShieldVault v3.0.0 — simplified ABI, NO ZK proof structs anymore.
-  // Selectors verified against contracts/core/PrivARCShieldVault.sol (v3.0.0).
+  // PrivarShieldVault v3.0.0 — simplified ABI, NO ZK proof structs anymore.
+  // Selectors verified against contracts/core/PrivarShieldVault.sol (v3.0.0).
   // Sanity-checked keccak256 impl against known selectors (balanceOf, transfer, approve).
   deposit:            "0x26b3293f",  // deposit(address,uint256,bytes32)
   withdraw:            "0x842dcc9e",  // withdraw(bytes32,bytes32,address,address,uint256,address,uint256)
   shieldedSend:        "0xfc70b4ba",  // shieldedSend(bytes32,bytes32,bytes32,bytes) — encryptedNote now inline, not payable
   privateSwap:         "0x4ac0a154",  // privateSwap(bytes32,bytes32,address,address,uint256,uint256,bytes32,uint256) — not payable
   // v3.2 — forwards an off-chain-quoted routeData (e.g. LI.FI) through to swapRouter.
-  // Selector computed against PrivARCShieldVault.sol's exact new signature — see
-  // scripts/deploy-lifi.js / contracts/core/PrivARCShieldVault.sol.
+  // Selector computed against PrivarShieldVault.sol's exact new signature — see
+  // scripts/deploy-lifi.js / contracts/core/PrivarShieldVault.sol.
   privateSwapWithRoute:"0x9fcea826",  // privateSwapWithRoute(bytes32,bytes32,address,address,uint256,uint256,bytes32,uint256,bytes)
 
   // ── DEPRECATED (v2.x struct-based ABI, does NOT exist on v3.0.0 vault) ──────
@@ -188,12 +188,12 @@ export const SEL = {
   // LiFiPrivacyBridge.privateBridge(bytes32,bytes32,address,uint256,address,uint256,bytes) — atomic unshield+LI.FI-bridge
   lifiPrivateBridge:  "0x74c37dfc",
 
-  // PrivARCShieldVault views
+  // PrivarShieldVault views
   totalShielded:      "0x6d7f2685",  // totalShielded(address)
   totalShieldedUSDC:  "0x37b12e9e",  // totalShieldedUSDC()
 
-  // PrivARCMerkleTreeManager
-  nextIndex:          "0xfc7e9c6f",  // nextIndex() — was wrongly called nextLeafIndex() (0x0be4f422), a function that doesn't exist on PrivARCMerkleTreeManager
+  // PrivarMerkleTreeManager
+  nextIndex:          "0xfc7e9c6f",  // nextIndex() — was wrongly called nextLeafIndex() (0x0be4f422), a function that doesn't exist on PrivarMerkleTreeManager
   getLastRoot:        "0xba70f757",  // getLastRoot()
   isKnownRoot:        "0x6d9833e3",  // isKnownRoot(bytes32)
 
@@ -204,35 +204,35 @@ export const SEL = {
   transfersAllowed:   "0xb0660c3d",  // transfersAllowed()
   adminReset:         "0x8c5b9b00",  // adminReset()
 
-  // PrivARCDepositManager
+  // PrivarDepositManager
   isTokenSupported:   "0x75151b63",  // isTokenSupported(address)
   getSupportedTokens: "0xd3c7c2c7",  // getSupportedTokens()
   minDeposit:         "0x3c29f839",  // minDeposit(address)
 
-  // PrivARCStaking
+  // PrivarStaking
   stake:              "0x7b0472f0",  // stake(uint256,uint256)
   unstake:            "0x2e17de78",  // unstake(uint256)
   claimRewards:       "0x372500ab",  // claimRewards()
   previewRewards:     "0xf166e920",  // previewRewards(address)
   getUserStakes:      "0x5e0e5b3e",  // getUserStakes(address) → StakePosition[]
 
-  // Protocol fees (PrivARCShieldVault v2.4.0)
+  // Protocol fees (PrivarShieldVault v2.4.0)
   feesCollectedByToken: "0xa2c169a7",  // feesCollectedByToken(address)
   withdrawFees:         "0x164e68de",  // withdrawFees(address)
   protocolFeeBps:       "0x35659fb8",  // protocolFeeBps() — deposit/withdraw
   swapFeeBps:           "0x2ffdaf89",  // swapFeeBps()
   bridgeFeeBps:         "0x4f6aa42b",  // bridgeFeeBps()
   flatFeeUsdc:          "0xb892df0e",  // flatFeeUsdc() — 6-dec USDC units (renamed from sendFlatFee in v2.8 — now used by deposit/withdraw/swap/bridge for EURC/cirBTC too, not just send)
-  treasury:             "0x61d027b3",  // treasury() — v3.3: real again (restored, see /areas/privarc.md)
+  treasury:             "0x61d027b3",  // treasury() — v3.3: real again (restored, see /areas/privar.md)
   feeRecipient:         "0x46904840",  // feeRecipient() — legacy fee-rate-setter recipient; treasury() is where withdrawFees() actually pays out
 
-  // Protocol fees (PrivARCStaking v1.1.0)
-  performanceFeeBps:    "0xb9d4e879",  // performanceFeeBps() — PrivARCStaking contract
+  // Protocol fees (PrivarStaking v1.1.0)
+  performanceFeeBps:    "0xb9d4e879",  // performanceFeeBps() — PrivarStaking contract
 
-  // Live protocol stats (PrivARCShieldVault v2.5.0) — item 4: real-time dashboard
-  VERSION:              "0x54fd4d50",  // version() returns (string) — was wrongly calling VERSION() (0xffa1ad74, uppercase), which doesn't exist; PrivARCShieldVault only has lowercase version()
-  paused:               "0x5c975abb",  // paused() — real public bool on PrivARCShieldVault, used instead of the unverifiable EmergencyController.pauseState()
-  supportedTokens:      "0x68c4ac26",  // supportedTokens(address) — real public mapping on PrivARCShieldVault; PrivARCDepositManager.isTokenSupported(address) does NOT exist (only a tokens(address) struct getter)
+  // Live protocol stats (PrivarShieldVault v2.5.0) — item 4: real-time dashboard
+  VERSION:              "0x54fd4d50",  // version() returns (string) — was wrongly calling VERSION() (0xffa1ad74, uppercase), which doesn't exist; PrivarShieldVault only has lowercase version()
+  paused:               "0x5c975abb",  // paused() — real public bool on PrivarShieldVault, used instead of the unverifiable EmergencyController.pauseState()
+  supportedTokens:      "0x68c4ac26",  // supportedTokens(address) — real public mapping on PrivarShieldVault; PrivarDepositManager.isTokenSupported(address) does NOT exist (only a tokens(address) struct getter)
   totalTxCount:         "0x9b4f50e7",  // totalTxCount() returns (uint256)
   totalVolumeByToken:   "0x38caed9f",  // totalVolumeByToken(address) returns (uint256)
 
@@ -308,7 +308,7 @@ const PROOF_C_Y = "0000000000000000000000000000000000000000000000000000000000000
 // All builders return { data: "0x...", value: "0x..." }
 
 // ─── DEPOSIT ─────────────────────────────────────────────────────────────────
-// PrivARCShieldVault.deposit(address token, uint256 amount, bytes32 commitment) payable
+// PrivarShieldVault.deposit(address token, uint256 amount, bytes32 commitment) payable
 //
 // ABI: deposit(address,uint256,bytes32) — v3.0.0, no struct, no ZK proof.
 // Layout: [sel][token][amount][commitment] — 3 static words, no offsets needed.
@@ -337,7 +337,7 @@ export function buildDepositCalldata(commitment, tokenAddress, amount, flatFeeUs
 }
 
 // ─── WITHDRAW ────────────────────────────────────────────────────────────────
-// PrivARCShieldVault.withdraw(
+// PrivarShieldVault.withdraw(
 //   bytes32 nullifier, bytes32 root, address token, address recipient,
 //   uint256 amount,    address relayer, uint256 relayerFee
 // ) payable — v3.0.0, no struct, no ZK proof.
@@ -368,7 +368,7 @@ export function buildWithdrawCalldata({ nullifier, root, token, recipient, amoun
 }
 
 // ─── SHIELDED SEND ────────────────────────────────────────────────────────────
-// PrivARCShieldVault.shieldedSend(bytes32 nullifier, bytes32 root, bytes32 commitmentOut, bytes encryptedNote)
+// PrivarShieldVault.shieldedSend(bytes32 nullifier, bytes32 root, bytes32 commitmentOut, bytes encryptedNote)
 // v3.0.0: NOT payable, no ZK proof, encryptedNote is now a REQUIRED inline argument
 // (the old two-step shieldedSend + separate ViewKeyRegistry.emitNote is merged into one call).
 //
@@ -415,7 +415,7 @@ export function buildSwapAdapterRouteData({ tokenIn, tokenOut, amountIn, minAmou
     + BigInt(feeTier).toString(16).padStart(64, "0");
 }
 
-// PrivARCShieldVault.privateSwapExec(SwapParams params)
+// PrivarShieldVault.privateSwapExec(SwapParams params)
 //
 // SwapParams (IModules.sol) — all fields in order:
 //   proof           (uint256[2],uint256[2][2],uint256[2])  → 8 words (static)
@@ -438,7 +438,7 @@ export function buildSwapAdapterRouteData({ tokenIn, tokenOut, amountIn, minAmou
 // Total head = 19 words = 0x260
 // Tail: routeData at 0x260, publicInputs follows
 
-// ── PrivARCShieldVault.privateSwap() — atomic confidential swap (v3.0.0) ──
+// ── PrivarShieldVault.privateSwap() — atomic confidential swap (v3.0.0) ──
 // This IS the v3.0.0 vault's actual swap function. NOT payable — no flatFeeUsdc/value.
 // Selector verified: keccak256("privateSwap(bytes32,bytes32,address,address,uint256,uint256,bytes32,uint256)")
 export function buildAtomicSwapCalldata({
@@ -475,7 +475,7 @@ export function buildAtomicSwapCalldata({
   return { data, value };
 }
 
-// ── PrivARCShieldVault.privateSwapWithRoute() — v3.2, forwards routeData ──
+// ── PrivarShieldVault.privateSwapWithRoute() — v3.2, forwards routeData ──
 // Same as buildAtomicSwapCalldata but appends a dynamic `routeData` blob that
 // swapRouter.executeSwap() actually receives. Required whenever swapRouter is
 // LiFiPrivacyAdapter — it reverts on an empty routeData (TowerSwapAdapter, by
@@ -620,7 +620,7 @@ export function buildPrivateSwapCalldata({ nullifier, merkleRoot, commitmentOut,
 
   // Swap landing in native USDC: no msg.value — % fee skimmed from grossOut on-chain.
   // Swap landing in EURC/cirBTC (v2.8): msg.value carries the FLAT protocol fee in
-  // USDC; grossOut is credited in full — see PrivARCShieldVault.sol's v2.8 changelog.
+  // USDC; grossOut is credited in full — see PrivarShieldVault.sol's v2.8 changelog.
   // Fee depends on tokenOUT (what the user receives), not tokenIn.
   const tokenOutIsNativeUsdc = tokenOut.toLowerCase() === NATIVE_USDC.toLowerCase();
   const value = tokenOutIsNativeUsdc ? "0x0" : "0x" + (BigInt(flatFeeUsdc) * NATIVE_TO_ERC20).toString(16);
@@ -629,7 +629,7 @@ export function buildPrivateSwapCalldata({ nullifier, merkleRoot, commitmentOut,
 }
 
 // ─── PRIVATE BRIDGE ───────────────────────────────────────────────────────────
-// PrivARCShieldVault.privateBridgeExec(BridgeParams params)
+// PrivarShieldVault.privateBridgeExec(BridgeParams params)
 //
 // BridgeParams (IModules.sol):
 //   proof               (uint256[2],uint256[2][2],uint256[2])  → 8 words
@@ -673,7 +673,7 @@ export function buildPrivateBridgeCalldata({ nullifier, merkleRoot, destinationD
   // Bridging native USDC: no msg.value — % fee skimmed from the bridged amount
   // on-chain. Bridging EURC/cirBTC (v2.8 — today's actual use case, bridge currently
   // only routes EURC): msg.value carries the FLAT protocol fee in USDC; the full
-  // amount is bridged via CCTP — see PrivARCShieldVault.sol's v2.8 changelog.
+  // amount is bridged via CCTP — see PrivarShieldVault.sol's v2.8 changelog.
   const isNativeUsdc = token.toLowerCase() === NATIVE_USDC.toLowerCase();
   const value = isNativeUsdc ? "0x0" : "0x" + (BigInt(flatFeeUsdc) * NATIVE_TO_ERC20).toString(16);
 
@@ -686,7 +686,7 @@ export function buildPrivateBridgeCalldata({ nullifier, merkleRoot, destinationD
 //
 // Replaces buildPrivateBridgeCalldata()'s CCTP path: unshields the note and
 // executes the LI.FI route in ONE transaction, targeting LiFiPrivacyBridge
-// (NOT PrivARCShieldVault) directly. For EURC/cirBTC, `flatFeeUsdc` is still
+// (NOT PrivarShieldVault) directly. For EURC/cirBTC, `flatFeeUsdc` is still
 // forwarded as msg.value exactly like a plain withdraw() — see
 // LiFiPrivacyBridge.sol's `vaultFee` handling.
 export function buildLiFiBridgeCalldata({
@@ -727,7 +727,7 @@ export function needsApproveBeforeDeposit(tokenAddress) {
 }
 
 // ─── STAKING ─────────────────────────────────────────────────────────────────
-// PrivARCStaking.sol stake(uint256 amount, uint256 lockDuration) expects lockDuration in SECONDS
+// PrivarStaking.sol stake(uint256 amount, uint256 lockDuration) expects lockDuration in SECONDS
 // Valid values: 604800 (7d), 2592000 (30d), 7776000 (90d), 15552000 (180d)
 export function buildStakeCalldata(amount, lockSeconds) {
   return SEL.stake + encodeUint256(amount) + encodeUint256(BigInt(lockSeconds));
@@ -736,7 +736,7 @@ export function buildStakeCalldata(amount, lockSeconds) {
 // ─── MERKLE ROOT GETTER ───────────────────────────────────────────────────────
 // For withdraw/send/swap: we need to read the current Merkle root
 export function buildGetLastRootCall() {
-  return SEL.getLastRoot;  // eth_call to PrivARCMerkleTreeManager
+  return SEL.getLastRoot;  // eth_call to PrivarMerkleTreeManager
 }
 
 // ─── RANDOM CRYPTO HELPERS ───────────────────────────────────────────────────
@@ -748,9 +748,9 @@ export function randomBytes32() {
 }
 
 // ─── PROTOCOL FEE PREVIEWS ────────────────────────────────────────────────────
-// Mirrors PrivARCShieldVault v2.4's on-chain fee math exactly, so the UI can show an
+// Mirrors PrivarShieldVault v2.4's on-chain fee math exactly, so the UI can show an
 // accurate "you'll pay X in fees" BEFORE the user signs anything. All four rates
-// default to 0 until governance opts in (see PrivARCShieldVault.sol v2.4 changelog).
+// default to 0 until governance opts in (see PrivarShieldVault.sol v2.4 changelog).
 export const MIN_DEPOSIT_FEE = 30_000n; // 0.03 USDC (6-dec) — matches the on-chain constant
 
 // fee = max(amount * bps / 10000, MIN_DEPOSIT_FEE), only if it doesn't consume the whole amount
@@ -808,7 +808,7 @@ export function previewBridgeFee(amountUnits, bridgeFeeBps, isNativeUsdc, flatFe
 }
 
 // Confidential send: flat fee only (no %), paid as native-USDC msg.value alongside
-// shieldedSend/shieldedSendWithNote — see PrivARCShieldVault.sol v2.4 changelog for why a
+// shieldedSend/shieldedSendWithNote — see PrivarShieldVault.sol v2.4 changelog for why a
 // percentage fee isn't possible here without revealing the shielded amount.
 // Also reused as the generic "encode a flat USDC amount as native wei" helper for
 // deposit/withdraw/swap/bridge's EURC/cirBTC side-payment (v2.8).

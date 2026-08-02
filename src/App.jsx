@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback, Component } from "react";
 import { Landing }   from "./Landing.jsx";
-import { PrivARCOS } from "./DApp.jsx";
+import { PrivarOS } from "./DApp.jsx";
 
 /* ═══════════════════════════════════════════════════════════════
-   PRIVARC OS v10 — Unified Router
+   PRIVAR OS v10 — Unified Router
    /      → Landing page
-   /app   → PrivARC OS DApp (Web3 + ZK)
+   /app   → Privar OS DApp (Web3 + ZK)
 ═══════════════════════════════════════════════════════════════ */
 
 // ── Error Boundary ─────────────────────────────────────────────
@@ -19,7 +19,7 @@ class ErrorBoundary extends Component {
     return { error: err };
   }
   componentDidCatch(err, info) {
-    console.error("[PrivARC ErrorBoundary]", err, info?.componentStack);
+    console.error("[Privar ErrorBoundary]", err, info?.componentStack);
   }
   render() {
     if (this.state.error) {
@@ -50,8 +50,8 @@ class ErrorBoundary extends Component {
             onClick={() => {
               // Clear potentially corrupt localStorage entries
               try {
-                localStorage.removeItem("privarc_notes");
-                localStorage.removeItem("privarc_txhistory_global");
+                localStorage.removeItem("privar_notes");
+                localStorage.removeItem("privar_txhistory_global");
               } catch {}
               this.setState({ error: null });
             }}
@@ -133,7 +133,7 @@ export default function App() {
         >
           ← Back to Site
         </button>
-        <PrivARCOS />
+        <PrivarOS />
       </ErrorBoundary>
     );
   }
