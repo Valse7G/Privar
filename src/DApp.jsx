@@ -2542,8 +2542,23 @@ async function cloudVaultGetLogs(topics, fromBlock) {
   return all;
 }
 
+const _resyncInFlight = new Map(); // address(lowercase) -> Promise, prevents overlapping resync runs
+
 async function resyncFromCloudVault(address, recompute) {
   if (!address || !CONTRACTS.PrivarCloudVault) return;
+  const key = address.toLowerCase();
+  // If a resync for this address is already running (e.g. the connect effect
+  // and the 2-minute poll fired close together), just await the existing run
+  // instead of starting a second one — two concurrent runs doing their own
+  // getNotes()/saveNotes() read-modify-write can race and clobber each
+  // other's merge.
+  if (_resyncInFlight.has(key)) return _resyncInFlight.get(key);
+  const p = _resyncFromCloudVaultImpl(address, recompute).finally(() => _resyncInFlight.delete(key));
+  _resyncInFlight.set(key, p);
+  return p;
+}
+
+async function _resyncFromCloudVaultImpl(address, recompute) {
   try {
     await ensureSelfBackupKeyReady(address);
 
@@ -2574,10 +2589,14 @@ async function resyncFromCloudVault(address, recompute) {
       }
     }
 
-    // 2. Replay every delta after the checkpoint (or from genesis if none)
+    // 2. Replay every delta after the checkpoint (or from genesis if none).
+    // `spentCommitments` tracks ONLY commitments we saw an explicit SPEND op
+    // for — kept separate from "not present in `state`" on purpose (see fix
+    // below).
     const deltaLogs = await cloudVaultGetLogs([NOTE_DELTA_TOPIC, ownerTopic], fromBlock);
     console.info(`[cloud vault resync] ${address}: found ${deltaLogs.length} NoteDelta event(s) from block ${fromBlock}`);
     let decrypted = 0, failed = 0;
+    const spentCommitments = new Set();
     {
       const sorted = deltaLogs
         .map(log => ({ log, version: decodeUint64Return(log.topics?.[2]) }))
@@ -2592,17 +2611,31 @@ async function resyncFromCloudVault(address, recompute) {
         if (!entry?.ops) { failed++; continue; }
         decrypted++;
         for (const op of entry.ops) {
-          if (op.t === 0 && op.commitment) state.set(op.commitment, { commitment: op.commitment, amount: op.amount, token: op.token, ts: entry.ts });
-          else if (op.t === 1 && op.commitment) state.delete(op.commitment);
+          if (op.t === 0 && op.commitment) { state.set(op.commitment, { commitment: op.commitment, amount: op.amount, token: op.token, ts: entry.ts }); spentCommitments.delete(op.commitment); }
+          else if (op.t === 1 && op.commitment) { state.delete(op.commitment); spentCommitments.add(op.commitment); }
         }
       }
     }
     console.info(`[cloud vault resync] ${address}: decrypted ${decrypted}, failed to decrypt ${failed} (wrong/missing key or corrupt), active notes after replay: ${state.size}`);
 
-    // 3. Conservative merge into local notes (never drops an un-synced local note)
+    // 3. Merge into local notes.
+    //
+    // REGRESSION FIX: this used to drop any local note flagged cloudSynced
+    // whose commitment wasn't in this pass's `state` (the ADD-derived active
+    // set). That's wrong — "absent from `state`" only means "no ADD event
+    // observed [YET] in this query", not "confirmed spent". If a device just
+    // pushed a delta and this resync runs before the RPC has finished
+    // indexing that event (or before the next poll re-reads it), the note
+    // would get silently pruned from local storage seconds after being
+    // created — even on the SAME device that just shielded it. That's
+    // exactly the "history shows the shield but the shielded balance stays
+    // 0.00" regression.
+    //
+    // Fix: only remove a local note when we have POSITIVE evidence it was
+    // spent (an explicit SPEND op decrypted from a delta) — never merely
+    // because it's missing from this pass's reconstructed active set.
     const local = getNotes(address);
-    const cloudSet = new Set(state.keys());
-    const merged = local.filter(n => !n.commitment || cloudSet.has(n.commitment) || !n.cloudSynced);
+    const merged = local.filter(n => !n.commitment || !spentCommitments.has(n.commitment));
     let added = 0;
     for (const [commitment, n] of state) {
       if (!merged.some(x => x.commitment === commitment)) {
