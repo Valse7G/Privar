@@ -14,6 +14,9 @@ import {
   buildRegisterViewKeyCalldata, buildHasViewKeyCall, buildGetViewKeyCall,
   buildEmitNoteCalldata, decodeBytesReturn, decodeStringReturn,
   buildTotalVolumeByTokenCall,
+  buildPushDeltaCalldata, buildPushCheckpointCalldata,
+  buildCvLatestVersionCall, buildCvLastCheckpointBlockCall, buildCvLastCheckpointVersionCall,
+  decodeUint64Return,
   previewDepositFee, previewWithdrawFee, previewSwapFee, previewBridgeFee, sendFeeValueHex,
 } from "./contracts.js";
 
@@ -1277,10 +1280,10 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
     }).catch(() => {});
   }, [account?.address]);
 
-  // Migrate legacy notes (from global "privar_notes" key → wallet-scoped) on first connect
+  // Migrate legacy notes (from global "privarc_notes" key → wallet-scoped) on first connect
   useEffect(() => {
     if (!account?.address) return;
-    const legacyKey = "privar_notes";
+    const legacyKey = "privarc_notes";
     const legacy = localStorage.getItem(legacyKey);
     if (legacy) {
       try {
@@ -1302,18 +1305,29 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
   // Scan chain for ECDH stealth notes addressed to this wallet on every connect,
   // and opportunistically register a view key (real ECDH P-256) if missing —
   // see ensureViewKeyRegistered() for the once-per-address retry guard.
+  // ensureSelfBackupKeyReady() is awaited FIRST (gasless signature, prompts once
+  // per device) so the very first resync on a brand-new device can already
+  // decrypt this wallet's own PrivarCloudVault note journal instead of waiting
+  // for the next poll.
   useEffect(() => {
     if (!account?.address || !onArc) return;
-    scanStealthNotes(account.address, recomputeShielded).catch(() => {});
+    let cancelled = false;
+    (async () => {
+      await ensureSelfBackupKeyReady(account.address).catch(() => {});
+      if (cancelled) return;
+      scanStealthNotes(account.address, recomputeShielded).catch(() => {});
+      resyncFromCloudVault(account.address, recomputeShielded).catch(() => {});
+    })();
     ensureViewKeyRegistered(account.address, sendViewKeyTx, notify).catch(() => {});
-    // Rescan every 2 minutes in case new stealth notes arrive
+    // Rescan every 2 minutes in case new stealth notes / cloud journal entries arrive
     const id = setInterval(() => {
       scanStealthNotes(account.address, recomputeShielded).catch(() => {});
+      resyncFromCloudVault(account.address, recomputeShielded).catch(() => {});
     }, 120_000);
-    return () => clearInterval(id);
+    return () => { cancelled = true; clearInterval(id); };
   }, [account?.address, onArc, recomputeShielded, sendViewKeyTx, notify]);
 
-  const panelProps = { account, balance, usdcBalance, onArc, notify, refreshBalance, txHistory, loadingBal, prices, changes, change24h, lastUpdate, priceError, setPanel, protocolStats, onChainActivity, shieldedBals, recomputeShielded };
+  const panelProps = { account, balance, usdcBalance, onArc, notify, refreshBalance, txHistory, loadingBal, prices, changes, change24h, lastUpdate, priceError, setPanel, protocolStats, onChainActivity, shieldedBals, recomputeShielded, sendRealTx: sendViewKeyTx };
   // Expose address + recompute for ShieldedWallet stale-notes purge button
   useEffect(() => { window._privarAccount = account?.address || ""; }, [account?.address]);
   useEffect(() => { window._privarRecomputeShielded = recomputeShielded; }, [recomputeShielded]);
@@ -2192,7 +2206,7 @@ async function eciesEncryptNoteForRecipient(recipientAddress, noteJson) {
   const sharedSecret = new Uint8Array(sharedBits);
 
   const addrBytes = hexToBytes(recipientAddress);
-  const aesKey = await hkdf(sharedSecret, addrBytes, "privar-stealth-note-v2");
+  const aesKey = await hkdf(sharedSecret, addrBytes, "privarc-stealth-note-v2");
   const ciphertext = await aesEncrypt(aesKey, noteJson);
 
   return {
@@ -2219,52 +2233,356 @@ async function eciesDecryptNoteWithViewKey(recipientAddress, encryptedNoteHex, e
     const sharedSecret = new Uint8Array(sharedBits);
 
     const addrBytes = hexToBytes(recipientAddress);
-    const aesKey = await hkdf(sharedSecret, addrBytes, "privar-stealth-note-v2");
+    const aesKey = await hkdf(sharedSecret, addrBytes, "privarc-stealth-note-v2");
     const ciphertext = hexToBytes(encryptedNoteHex);
     const plaintext = await aesDecrypt(aesKey, ciphertext);
     return JSON.parse(plaintext);
   } catch { return null; }
 }
 
+// ═══════════════════════════════════════════════════════════════
+//  PRIVAR CLOUD VAULT — decentralized note-journal sync (contracts/core/
+//  PrivarCloudVault.sol). Implements the checkpoint+delta architecture from
+//  the brainstorm doc ("meilleure implementation décentralisée"): every
+//  shield/spend pushes a tiny encrypted delta as an EVENT (not storage —
+//  ~5-10x cheaper for blobs this size); every 20 deltas, a full encrypted
+//  snapshot is pushed as a checkpoint so a brand-new device never has to
+//  replay more than ~20 events. Nothing is stored server-side, no IPFS/
+//  Arweave pinning — only PrivarCloudVault's event log, readable from any
+//  RPC node via eth_getLogs.
+//
+//  Encryption key: derived from an EIP-712 signature (domain-separated by
+//  chainId + CloudVault address, per the brainstorm's replay-safety
+//  rationale), falling back to a fixed personal_sign message on wallets
+//  without full EIP-712 support. ECDSA signatures are deterministic
+//  (RFC 6979), so every device controlling this wallet derives the exact
+//  same AES-256-GCM key — no export/import step, ever.
+//
+//  Journal payload format here is plain compact JSON (not CBOR+Brotli as
+//  sketched in the brainstorm) — this frontend is intentionally zero-
+//  dependency (see the ECDH comments above), and note-sized deltas
+//  (a few hundred bytes) don't earn back a compression library's cost.
+//  Swapping in real CBOR/Brotli later is a pure optimization, not required
+//  for correctness — the on-chain format (opaque `bytes`) never changes.
+//
+//  This module ONLY concerns the wallet's OWN note journal (self shield/
+//  spend). The ECDH ViewKeyRegistry pipeline above, for receiving notes
+//  FROM OTHER wallets via confidential send, is completely untouched.
+// ═══════════════════════════════════════════════════════════════
+
+const BACKUP_SIG_MESSAGE = (address) => [
+  "Privar Cloud Vault — derive shielded-notes backup key",
+  "",
+  "This signature never touches the blockchain and costs no gas.",
+  "It deterministically unlocks the SAME encryption key on every device",
+  "that controls this wallet, so your shielded notes stay in sync.",
+  "",
+  `Address: ${address}`,
+  `App: privar.io v1`,
+].join("\n");
+
+const backupSigStorageKey = (addr) => `privar_cloudvault_backupsig_${addr.toLowerCase()}`;
+
+// In-memory cache so we don't re-derive the CryptoKey on every call within a
+// session; the localStorage signature cache below is what actually avoids
+// re-prompting the wallet across page reloads.
+const _backupKeyCache = new Map();
+
+function getCachedBackupSignature(address) {
+  try { return localStorage.getItem(backupSigStorageKey(address)); } catch { return null; }
+}
+
+// EIP-712 typed-data signature, domain-separated by chainId + the CloudVault
+// address itself — a signature captured for this contract on this chain can
+// never be replayed against a different contract or a different network.
+async function eip712DeriveBackupKeySignature(address) {
+  const typedData = {
+    types: {
+      EIP712Domain: [
+        { name: "name", type: "string" },
+        { name: "version", type: "string" },
+        { name: "chainId", type: "uint256" },
+        { name: "verifyingContract", type: "address" },
+      ],
+      DeriveKey: [{ name: "purpose", type: "string" }],
+    },
+    primaryType: "DeriveKey",
+    domain: {
+      name: "Privar Cloud Vault", version: "1",
+      chainId: ARC_TESTNET.id, verifyingContract: CONTRACTS.PrivarCloudVault,
+    },
+    message: { purpose: "derive-backup-key-v1" },
+  };
+  return rpcCall("eth_signTypedData_v4", [address, JSON.stringify(typedData)]);
+}
+
+// Ensures a deterministic backup signature exists locally for this address,
+// prompting a (gasless) signature the FIRST time only, on any given device.
+// Prefers EIP-712 (domain-separated); falls back to a fixed personal_sign
+// message on wallets that don't support eth_signTypedData_v4 reliably —
+// still deterministic, still identical across devices. Never throws; if the
+// user rejects, cloud sync is simply unavailable this session (shields/
+// swaps/sends/withdraws still work exactly as before — this only affects
+// cross-device recoverability).
+async function ensureSelfBackupKeyReady(address) {
+  if (!address || !CONTRACTS.PrivarCloudVault) return null; // feature not deployed on this network — no-op
+  const cached = getCachedBackupSignature(address);
+  if (cached) return cached;
+  try {
+    let sig;
+    try {
+      sig = await eip712DeriveBackupKeySignature(address);
+    } catch (e712) {
+      sig = await personalSign(address, BACKUP_SIG_MESSAGE(address));
+    }
+    try { localStorage.setItem(backupSigStorageKey(address), sig); } catch {}
+    return sig;
+  } catch (e) {
+    console.warn("[cloud vault] backup key signature not available yet:", e.message);
+    return null;
+  }
+}
+
+// Derives the AES-256-GCM key from the cached deterministic signature.
+// Returns null if no signature has been captured yet on this device.
+async function deriveSelfBackupKey(address) {
+  if (!address) return null;
+  const lower = address.toLowerCase();
+  if (_backupKeyCache.has(lower)) return _backupKeyCache.get(lower);
+  const sig = getCachedBackupSignature(address);
+  if (!sig) return null;
+  const key = await hkdf(hexToBytes(sig), hexToBytes(address.toLowerCase()), "privarc-cloudvault-v1");
+  const aesKey = await crypto.subtle.importKey("raw", key, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+  _backupKeyCache.set(lower, aesKey);
+  return aesKey;
+}
+
+// Generic encrypt/decrypt for a journal blob (a delta entry OR a checkpoint
+// snapshot — both are just JSON objects). Format: [1 byte flags][12 byte
+// IV][ciphertext + 16 byte GCM tag]. flags is reserved (always 0x01 today,
+// format version) — room to add compression later without breaking old blobs.
+async function encryptJournalBlob(address, obj) {
+  const key = await deriveSelfBackupKey(address);
+  if (!key) return null;
+  const plaintext = new TextEncoder().encode(JSON.stringify(obj));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plaintext);
+  const combined = new Uint8Array(1 + iv.byteLength + ct.byteLength);
+  combined[0] = 0x01;
+  combined.set(iv, 1);
+  combined.set(new Uint8Array(ct), 1 + iv.byteLength);
+  return bytesToHex(combined);
+}
+async function decryptJournalBlob(address, hex) {
+  try {
+    const key = await deriveSelfBackupKey(address);
+    if (!key) return null;
+    const bytes = hexToBytes(hex);
+    if (bytes.length < 13) return null;
+    const iv = bytes.slice(1, 13);
+    const ct = bytes.slice(13);
+    const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
+    return JSON.parse(new TextDecoder().decode(pt));
+  } catch { return null; }
+}
+
+// ── Push side: pushDelta() for one op, pushCheckpoint() every N deltas ────
+const CLOUDVAULT_CHECKPOINT_EVERY = 20; // bounds replay length for a new device
+
+async function pushCloudVaultDelta({ account, sendRealTx, op, label, description }) {
+  if (!CONTRACTS.PrivarCloudVault) return false;
+  const address = account?.address;
+  await ensureSelfBackupKeyReady(address);
+  const encrypted = await encryptJournalBlob(address, { ts: Date.now(), ops: [op] });
+  if (!encrypted) return false; // no backup key yet — user hasn't granted the signature on this device
+  const { data } = buildPushDeltaCalldata(encrypted);
+  const ok = await sendRealTx({
+    label: label || "Cloud Sync",
+    description: description || "Backing up an encrypted note-journal entry on-chain.",
+    buildTx: () => ({ to: CONTRACTS.PrivarCloudVault, value: "0x0", data }),
+  });
+  if (ok) maybePushCloudVaultCheckpoint(account, sendRealTx).catch(() => {});
+  return ok;
+}
+
+// Condenses the journal into a full snapshot every CLOUDVAULT_CHECKPOINT_EVERY
+// deltas, keyed off the ON-CHAIN version counter (not a local counter) so the
+// trigger is identical no matter which device happens to push the Nth delta.
+async function maybePushCloudVaultCheckpoint(account, sendRealTx) {
+  const address = account?.address;
+  if (!address || !CONTRACTS.PrivarCloudVault) return;
+  const verHex = await rpcCall("eth_call", [{ to: CONTRACTS.PrivarCloudVault, data: buildCvLatestVersionCall(address) }, "latest"]);
+  const version = decodeUint64Return(verHex);
+  if (version === 0 || version % CLOUDVAULT_CHECKPOINT_EVERY !== 0) return;
+
+  // The current local note list already excludes spent notes (every removal
+  // site filters them out) — so it IS the active-note snapshot directly.
+  const notes = getNotes(address);
+  const encrypted = await encryptJournalBlob(address, { builtAt: Date.now(), notes });
+  if (!encrypted) return;
+
+  // Client-side integrity fingerprint only (never validated on-chain) — SHA-256
+  // of the sorted active commitments, so a client can sanity-check a decrypted
+  // snapshot against what it expects without trusting anything else.
+  const sortedCommitments = notes.map(n => n.commitment).filter(Boolean).sort().join(",");
+  const fpBuf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(sortedCommitments));
+  const fingerprint = bytesToHex(new Uint8Array(fpBuf));
+
+  const { data } = buildPushCheckpointCalldata(fingerprint, encrypted);
+  await sendRealTx({
+    label: "Cloud Sync — checkpoint",
+    description: "Condensing your shielded-notes journal into one snapshot so new devices sync faster.",
+    buildTx: () => ({ to: CONTRACTS.PrivarCloudVault, value: "0x0", data }),
+  });
+}
+
+// ── Item 2B: self note-journal relay (cross-device reconstruction) ────────
+// Used by every handler that creates a new spendable commitment (deposit,
+// swap output, confidential-send change, bridge leftover). Any device that
+// controls this wallet derives the identical backup key on connect — no
+// export/import step, no per-device mismatch — so resyncFromCloudVault()
+// picks these up automatically on a brand-new device.
+// Returns true if the on-chain backup succeeded, false otherwise (the
+// deposit/swap/send/bridge itself already succeeded regardless — this only
+// affects whether THIS note is cross-device recoverable).
+async function relaySelfNote({ account, sendRealTx, commitment, amount, token, label, description }) {
+  try {
+    const op = { t: 0, commitment, amount: amount.toString(), token }; // t:0 = ADD
+    const ok = await pushCloudVaultDelta({
+      account, sendRealTx, op,
+      label: label || "Cross-Device Backup",
+      description: description || "Saving an encrypted copy of this note on-chain.",
+    });
+    if (ok) markNoteCloudSynced(account?.address, commitment);
+    return ok;
+  } catch (e) { console.warn("[cloud vault relay]", e.message); return false; }
+}
+
+// Counterpart to relaySelfNote — called wherever a note is CONSUMED (withdraw,
+// used as a swap/send/bridge input) so other devices don't keep showing a
+// spent note as spendable balance. Union-of-ops replay in resyncFromCloudVault
+// makes this idempotent: replaying the same SPEND twice is a no-op.
+async function relaySelfSpend({ account, sendRealTx, commitment }) {
+  try {
+    const op = { t: 1, commitment }; // t:1 = SPEND
+    return await pushCloudVaultDelta({
+      account, sendRealTx, op,
+      label: "Cloud Sync — spend",
+      description: "Marking a shielded note as spent in the encrypted cloud journal.",
+    });
+  } catch (e) { console.warn("[cloud vault spend relay]", e.message); return false; }
+}
+
+// Flags a local note as already backed up, so resyncLocalNotesToCloud() and
+// future connects don't redundantly re-relay (and re-charge gas for) it.
+function markNoteCloudSynced(address, commitment) {
+  if (!address || !commitment) return;
+  const notes = getNotes(address);
+  const n = notes.find(n => n.commitment === commitment);
+  if (n && !n.cloudSynced) { n.cloudSynced = true; saveNotes(address, notes); }
+}
+
+// ── Pull side: rebuild this wallet's note journal from PrivarCloudVault ───
+// Reads the on-chain pointers (latestVersion / lastCheckpointBlock), fetches
+// the latest NoteCheckpoint (if any) plus every NoteDelta since, decrypts,
+// and replays the ops (ADD/SPEND — a commutative, idempotent set union, per
+// the brainstorm's "CRDT naturel" point) to reconstruct the active note set.
+// Merge policy is conservative: notes never locally confirmed as cloud-synced
+// are never removed by this pass, even if the cloud journal doesn't mention
+// them — avoids ever hiding funds due to a merge edge case.
+const NOTE_DELTA_TOPIC      = "0x875fadea50135432be31cdb501197caf5476cd403cfb3c2b50ae092dc4b681f1";
+const NOTE_CHECKPOINT_TOPIC = "0xdc96dad4cfdf4cedc40abb8b98a9cea098ab1193ab24e5a547f70553b7687307";
+
+function decodeCheckpointLogSnapshot(log) {
+  const data = (log.data || "").replace("0x", "");
+  if (data.length < 128) return null;
+  const offset = parseInt(data.slice(64, 128), 16);
+  const len    = parseInt(data.slice(offset * 2, offset * 2 + 64), 16);
+  if (!len) return null;
+  return "0x" + data.slice(offset * 2 + 64, offset * 2 + 64 + len * 2);
+}
+
+async function resyncFromCloudVault(address, recompute) {
+  if (!address || !CONTRACTS.PrivarCloudVault) return;
+  try {
+    await ensureSelfBackupKeyReady(address);
+
+    const [latestVerHex, lastCkBlockHex] = await Promise.all([
+      rpcCall("eth_call", [{ to: CONTRACTS.PrivarCloudVault, data: buildCvLatestVersionCall(address) }, "latest"]),
+      rpcCall("eth_call", [{ to: CONTRACTS.PrivarCloudVault, data: buildCvLastCheckpointBlockCall(address) }, "latest"]),
+    ]);
+    const latestVer = decodeUint64Return(latestVerHex);
+    if (latestVer === 0) return; // nothing ever pushed for this address
+
+    const fromBlock = decodeUint64Return(lastCkBlockHex); // 0 if no checkpoint has ever been pushed
+    const ownerTopic = "0x" + "0".repeat(24) + address.toLowerCase().slice(2);
+    const fromBlockHex = "0x" + fromBlock.toString(16);
+
+    // 1. Most recent checkpoint at/after fromBlock, if any
+    let state = new Map();
+    let syncedVersion = 0;
+    if (fromBlock > 0) {
+      const ckLogs = await rpcCall("eth_getLogs", [{
+        fromBlock: fromBlockHex, toBlock: "latest",
+        address: CONTRACTS.PrivarCloudVault, topics: [NOTE_CHECKPOINT_TOPIC, ownerTopic],
+      }]);
+      if (Array.isArray(ckLogs) && ckLogs.length > 0) {
+        const latestLog = ckLogs[ckLogs.length - 1];
+        const encHex = decodeCheckpointLogSnapshot(latestLog);
+        const snap = encHex ? await decryptJournalBlob(address, encHex) : null;
+        if (snap && Array.isArray(snap.notes)) {
+          for (const n of snap.notes) if (n?.commitment) state.set(n.commitment, n);
+          syncedVersion = decodeUint64Return(latestLog.topics?.[2]);
+        }
+      }
+    }
+
+    // 2. Replay every delta after the checkpoint (or from genesis if none)
+    const deltaLogs = await rpcCall("eth_getLogs", [{
+      fromBlock: fromBlockHex, toBlock: "latest",
+      address: CONTRACTS.PrivarCloudVault, topics: [NOTE_DELTA_TOPIC, ownerTopic],
+    }]);
+    if (Array.isArray(deltaLogs)) {
+      const sorted = deltaLogs
+        .map(log => ({ log, version: decodeUint64Return(log.topics?.[2]) }))
+        .filter(x => x.version > syncedVersion)
+        .sort((a, b) => a.version - b.version);
+      for (const { log } of sorted) {
+        // Event data for a single dynamic `bytes` param has EXACTLY the same
+        // [offset][length][data] shape as an eth_call bytes return — reuse.
+        const raw = decodeBytesReturn(log.data);
+        if (!raw) continue;
+        const entry = await decryptJournalBlob(address, raw);
+        if (!entry?.ops) continue;
+        for (const op of entry.ops) {
+          if (op.t === 0 && op.commitment) state.set(op.commitment, { commitment: op.commitment, amount: op.amount, token: op.token, ts: entry.ts });
+          else if (op.t === 1 && op.commitment) state.delete(op.commitment);
+        }
+      }
+    }
+
+    // 3. Conservative merge into local notes (never drops an un-synced local note)
+    const local = getNotes(address);
+    const cloudSet = new Set(state.keys());
+    const merged = local.filter(n => !n.commitment || cloudSet.has(n.commitment) || !n.cloudSynced);
+    let added = 0;
+    for (const [commitment, n] of state) {
+      if (!merged.some(x => x.commitment === commitment)) {
+        merged.push({ ...n, cloudSynced: true, source: "cloudvault" });
+        added++;
+      }
+    }
+    if (added > 0 || merged.length !== local.length) {
+      saveNotes(address, merged);
+      recompute?.();
+    }
+  } catch (e) { console.warn("[cloud vault resync]", e.message); }
+}
+
 // ── Scan chain for stealth notes addressed to this wallet ─────────────────
 // Relayed via ViewKeyRegistry.emitNote() — NOT PrivarShieldVault — so this works
 // against the currently-deployed PrivarShieldVault v2.2 with no vault redeploy.
 const NOTE_EMITTED_TOPIC = "0x8aa4f1b6dca845fb984ab9e095ea9417a69f44be2922e9b5cc5e19f83e336851";
-
-// ── Item 2B: self-addressed encrypted note relay (cross-device reconstruction) ──
-// Used by every handler that creates a new spendable commitment (deposit, swap
-// output, confidential-send change, bridge leftover). Encrypts the note to the
-// CALLER'S OWN registered view key and relays it via ViewKeyRegistry.emitNote() —
-// the exact same stealth-note pipeline confidential send uses for a real recipient,
-// just addressed to yourself. Once a view key is restored on a new device (Settings
-// → backup/restore), scanStealthNotes() picks these up automatically and rebuilds
-// the note without ever touching localStorage on the new device.
-// Returns true if the on-chain backup succeeded, false otherwise (deposit/swap/
-// send/bridge itself already succeeded regardless — this only affects whether
-// THIS note is cross-device recoverable, never local availability).
-async function relaySelfNote({ account, sendRealTx, commitment, amount, token, label, description }) {
-  try {
-    // vault tag (v2.9): this commitment only exists in THIS PrivarShieldVault's Merkle
-    // tree. Without it, a note relayed before a redeploy would still decrypt fine
-    // after the redeploy and get silently re-added as if spendable on the NEW
-    // (unrelated) contract — re-introducing the exact "phantom balance" bug fixed
-    // by vault-scoping notesKey. scanStealthNotes checks this field on decrypt.
-    const selfNoteJson = JSON.stringify({
-      commitment, amount: amount.toString(), token,
-      from: account?.address, ts: Date.now(), vault: CONTRACTS.PrivarShieldVault,
-    });
-    const ecies = await eciesEncryptNoteForRecipient(account?.address, selfNoteJson);
-    if (!ecies) return false; // no view key registered yet — nothing to relay
-    const { data } = buildEmitNoteCalldata({
-      recipient: account?.address, encryptedNote: ecies.encryptedNote, ephemeralPubKey: ecies.ephemeralPubKey,
-    });
-    return await sendRealTx({
-      label: label || "Cross-Device Backup",
-      description: description || "Saving an encrypted copy of this note on-chain.",
-      buildTx: () => ({ to: CONTRACTS.ViewKeyRegistry, value: "0x0", data }),
-    });
-  } catch (e) { console.warn("[self-note relay]", e.message); return false; }
-}
 
 async function scanStealthNotes(address, recompute) {
   if (!address || !CONTRACTS.ViewKeyRegistry) return;
@@ -2350,6 +2668,40 @@ async function scanStealthNotes(address, recompute) {
 const notesKey  = (addr) => addr ? `privar_notes_${addr.toLowerCase()}_${CONTRACTS.PrivarShieldVault.toLowerCase()}` : "privar_notes_anon";
 const getNotes  = (addr) => { try { return JSON.parse(localStorage.getItem(notesKey(addr)) || "[]"); } catch { return []; } };
 const saveNotes = (addr, notes) => { try { localStorage.setItem(notesKey(addr), JSON.stringify(notes)); } catch {} };
+
+// ── Migration / manual resync: push THIS device's local-only notes to the
+// cloud backup, for notes created before the self-backup-key fix shipped
+// (or where the backup tx silently failed at the time). Run this on the
+// ORIGINAL device where the note is still visible locally — e.g. reconnect
+// on the phone that did the original Shield, tap "Sync notes to cloud" once,
+// then any other device (PC, another browser) auto-recovers it on connect.
+// One on-chain tx per un-synced note; sequential so wallets don't choke on
+// concurrent signature requests. Returns { synced, failed, total }.
+async function resyncLocalNotesToCloud(account, sendRealTx, onProgress) {
+  const address = account?.address;
+  if (!address) return { synced: 0, failed: 0, total: 0 };
+
+  await ensureSelfBackupKeyReady(address);
+
+  const notes = getNotes(address);
+  const pending = notes.filter(n => n.commitment && !n.cloudSynced);
+  let synced = 0, failed = 0;
+
+  for (let i = 0; i < pending.length; i++) {
+    const n = pending[i];
+    onProgress?.(i + 1, pending.length);
+    const ok = await relaySelfNote({
+      account, sendRealTx,
+      commitment: n.commitment, amount: BigInt(n.amount || 0), token: n.token,
+      label: "Cloud Sync — backfill",
+      description: "Backing up an existing shielded note so it's recoverable on other devices.",
+    }).catch(() => false);
+    if (ok) { n.cloudSynced = true; synced++; } else { failed++; }
+  }
+
+  saveNotes(address, notes);
+  return { synced, failed, total: pending.length };
+}
 
 // Event topic0 hashes (keccak256 of event signature)
 const EV = {
@@ -2613,7 +2965,7 @@ function useShieldedBalances(prices, address) {
     compute();
     // Listen for cross-tab writes (uses wallet-scoped key)
     const key = notesKey(address);
-    const handler = (e) => { if (e.key === key || e.key === "privar_notes") compute(); };
+    const handler = (e) => { if (e.key === key || e.key === "privarc_notes") compute(); };
     window.addEventListener("storage", handler);
     // On-chain reconciliation on mount (adds any missed deposits)
     if (address) reconcileNotesOnChain(address).then(compute).catch(() => {});
@@ -3223,12 +3575,20 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       // Update local notes
       const updated   = notes.filter(n => n.commitment !== note.commitment);
       const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
-      if (remaining > 0n) updated.push({ ...note, amount:remaining.toString(), commitment:randomBytes32() });
+      let changeCommitment = null;
+      if (remaining > 0n) { changeCommitment = randomBytes32(); updated.push({ ...note, amount:remaining.toString(), commitment:changeCommitment }); }
       updated.push({ commitment:commitmentOut, amount:outAmountBig.toString(), token:tkTo.addr, ts:Date.now() });
       saveNotes(account?.address, updated);
       recomputeShielded?.();
       await relaySelfNote({ account, sendRealTx, commitment:commitmentOut, amount:outAmountBig, token:tkTo.addr,
         label:"Swap · Backup", description:"Encrypted backup of swap output note." });
+      relaySelfSpend({ account, sendRealTx, commitment: note.commitment }).catch(() => {});
+      // Pre-existing gap: the swap-input leftover note was never backed up like
+      // every other change note — fixed here as part of closing note-persistence gaps.
+      if (changeCommitment) relaySelfNote({
+        account, sendRealTx, commitment: changeCommitment, amount: remaining, token: note.token,
+        label: "Swap · Change Backup", description: "Saving an encrypted copy of your change note on-chain.",
+      }).catch(() => {});
       notify("Swap ✓",`${amount} ${fr} → ~${q.out} ${to} — swap confidentiel terminé.`,"success");
     }
 
@@ -3425,6 +3785,7 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
 
     if (ok) {
       const updated = notes.filter(n => n.commitment !== note.commitment);
+      relaySelfSpend({ account, sendRealTx, commitment: note.commitment }).catch(() => {});
       const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
       let changeBackedUp = false;
       if (remaining > 0n) {
@@ -3640,6 +4001,7 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
 
     if (ok) {
       const updated   = notes.filter(n => n.commitment !== note.commitment);
+      relaySelfSpend({ account, sendRealTx, commitment: note.commitment }).catch(() => {});
       const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
       if (remaining > 0n) {
         const changeCommitment = randomBytes32();
@@ -3846,8 +4208,20 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
 
     if (bridgeOk) {
       const updated   = notes.filter(n => n.commitment !== note.commitment);
+      relaySelfSpend({ account, sendRealTx, commitment: note.commitment }).catch(() => {});
       const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
-      if (remaining > 0n) updated.push({ ...note, amount: remaining.toString(), commitment: randomBytes32() });
+      if (remaining > 0n) {
+        const changeCommitment = randomBytes32();
+        updated.push({ ...note, amount: remaining.toString(), commitment: changeCommitment });
+        // Pre-existing gap: the bridge leftover note was never backed up like
+        // every other change note (swap/send/withdraw all call relaySelfNote) —
+        // fixed here as part of closing note-persistence gaps.
+        relaySelfNote({
+          account, sendRealTx, commitment: changeCommitment, amount: remaining, token: note.token,
+          label: "Bridge · Change Backup",
+          description: "Saving an encrypted copy of your change note on-chain.",
+        }).catch(() => {});
+      }
       saveNotes(account?.address, updated);
       recomputeShielded?.();
       notify("Bridge ✓", `${amount} ${token} → ${ch.name} — arriving in 1-5 min.`, "success");
@@ -4705,11 +5079,13 @@ function HistoryPanel({ txHistory }) {
   );
 }
 
-function SettingsPanel({ account, onArc, notify }) {
+function SettingsPanel({ account, onArc, notify, sendRealTx, recomputeShielded }) {
   const [slip, setSlip]=useState("0.5"); const [dl, setDl]=useState("20"); const [expert, setExpert]=useState(false);
   const [backupVisible, setBackupVisible] = useState(false);
   const [backupBlob, setBackupBlob] = useState("");
   const [restoreInput, setRestoreInput] = useState("");
+  const [syncing, setSyncing] = useState(false);
+  const [syncProgress, setSyncProgress] = useState(null);
   const Tog=({on,onClick})=><div onClick={onClick} style={{ width:32, height:17, background:on?"rgba(0,255,176,.2)":"rgba(0,0,0,.5)", border:`1px solid ${on?"rgba(0,255,176,.55)":"rgba(0,255,176,.15)"}`, borderRadius:9, cursor:"pointer", position:"relative", transition:"all .2s", flexShrink:0 }}><div style={{ position:"absolute", top:2.5, left:on?15:2.5, width:10, height:10, borderRadius:"50%", background:on?"#00FFB0":"#475569", boxShadow:on?"0 0 5px #00FFB0":"none", transition:"all .2s" }}/></div>;
   const Sec=({t,c})=><div style={{ marginBottom:12 }}><div style={{ fontSize:8, color:"#4a7c5f", letterSpacing:".18em", fontFamily:"monospace", marginBottom:6, paddingBottom:5, borderBottom:"1px solid rgba(0,255,176,.06)" }}>{t}</div>{c}</div>;
   const Row=({label,sub,c})=><div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"7px 10px", background:"rgba(0,0,0,.3)", borderRadius:3, marginBottom:4, border:"1px solid rgba(255,255,255,.04)" }}><div><div style={{ fontSize:10, color:"#ffffff", fontFamily:"monospace" }}>{label}</div><div style={{ fontSize:8, color:"#64748b", fontFamily:"monospace", marginTop:1 }}>{sub}</div></div>{c}</div>;
@@ -4724,6 +5100,27 @@ function SettingsPanel({ account, onArc, notify }) {
   const handleCopy = async () => {
     try { await navigator.clipboard.writeText(backupBlob); notify?.("Copied ✓", "Backup copied — store it somewhere safe (password manager).", "success"); }
     catch { /* clipboard permission denied — blob is already shown for manual copy */ }
+  };
+  const handleSyncNotes = async () => {
+    if (!account?.address || syncing) return;
+    setSyncing(true); setSyncProgress(null);
+    try {
+      const { synced, failed, total } = await resyncLocalNotesToCloud(
+        account, sendRealTx, (done, n) => setSyncProgress(`${done}/${n}`)
+      );
+      if (total === 0) {
+        notify?.("Already in sync ✓", "Every shielded note on this device already has a cloud backup.", "success");
+      } else if (failed === 0) {
+        notify?.("Notes synced ✓", `${synced} note${synced===1?"":"s"} backed up — now recoverable on any device with this wallet.`, "success");
+      } else {
+        notify?.("Partial sync", `${synced} backed up, ${failed} failed (check wallet for rejected signatures) — try again.`, "error");
+      }
+      recomputeShielded?.();
+    } catch (e) {
+      notify?.("Sync failed", e.message || "Could not reach the cloud backup registry.", "error");
+    } finally {
+      setSyncing(false); setSyncProgress(null);
+    }
   };
   const handleRestore = async () => {
     if (!account?.address || !restoreInput.trim()) return;
@@ -4782,6 +5179,28 @@ function SettingsPanel({ account, onArc, notify }) {
         <Row label="Address" sub={account?.address||"—"} c={<span style={{ fontSize:8, color:"#4ade80", fontFamily:"monospace" }}>ACTIVE</span>}/>
         <Row label="Provider" sub={account?.walletName||"—"} c={<span style={{ fontSize:8, color:"#94a3b8", fontFamily:"monospace" }}>{account?.walletName||"—"}</span>}/>
         <Row label="Network" sub={onArc?"Arc Testnet (5042002)":"Wrong network"} c={<span style={{ fontSize:8, color:onArc?"#4ade80":"#f87171", fontFamily:"monospace" }}>{onArc?"CORRECT":"WRONG"}</span>}/>
+      </>}/>
+
+      <Sec t="SHIELDED NOTES — CLOUD SYNC" c={<>
+        {!CONTRACTS.PrivarCloudVault ? (
+          <div style={{ fontSize:8, color:"#f59e0b", fontFamily:"monospace", lineHeight:1.6 }}>
+            PrivarCloudVault isn't deployed on this network yet (VITE_CLOUD_VAULT
+            unset) — cross-device note sync is temporarily unavailable. Deposits,
+            swaps, sends, and withdrawals are completely unaffected.
+          </div>
+        ) : <>
+          <div style={{ fontSize:8, color:"#64748b", fontFamily:"monospace", lineHeight:1.6, marginBottom:8 }}>
+            Shielded balances sync automatically across every device that controls
+            this wallet via PrivarCloudVault — a dedicated, decentralized on-chain
+            journal (no server, no IPFS). New shields, swaps, sends, and withdrawals
+            back themselves up the moment they happen.
+            If a note was created before this update (or a backup tx failed at the
+            time), sync it from the device where it's still visible below.
+          </div>
+          <button onClick={handleSyncNotes} disabled={syncing || !account?.address} style={{ width:"100%", padding:"8px", background:syncing?"rgba(0,0,0,.3)":"rgba(0,255,176,.08)", border:`1px solid ${syncing?"rgba(255,255,255,.06)":"rgba(0,255,176,.3)"}`, borderRadius:3, color:syncing?"#475569":"#00FFB0", fontSize:9, fontFamily:"monospace", cursor:syncing?"default":"pointer" }}>
+            {syncing ? `SYNCING… ${syncProgress || ""}` : "🔄 SYNC NOTES TO CLOUD"}
+          </button>
+        </>}
       </>}/>
 
       <Sec t="CONFIDENTIAL RECEIVING — VIEW KEY" c={<>

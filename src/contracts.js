@@ -1,7 +1,8 @@
 // ════════════════════════════════════════════════════════════════════════════
 //  Privar OS — Contract Config v12.1.0
 //
-//  Addresses synced with latest.json v3.0.0 (v3.3 contract, WrongFee/TVL fix redeploy) — Arc Testnet — 2026-07-25
+//  Addresses synced with latest.json v3.0.0 — Arc Testnet — last updated 2026-08-06
+//  (adds PrivarCloudVault, deployed 2026-08-06T12:16:30.997Z)
 //  Deployer: 0x1Dc72450B3e2782AcD669D7C27073f2C8F2c9894
 //
 //  ADDRESSES: sourced from VITE_ env vars (Vercel) or hardcoded fallbacks
@@ -28,6 +29,13 @@ const _c = {
   // (real ECDH stealth notes) is feature-gated on this being non-null — see
   // DApp.jsx ensureViewKeyRegistered()/scanStealthNotes().
   ViewKeyRegistry:     import.meta.env.VITE_VIEW_KEY_REGISTRY     ?? "0x590D1FDC3FbD4CAb151cb7E1557D9C4ecEa2C24b",
+  // PrivarCloudVault — standalone, additive (no constructor args, no link to
+  // ShieldVault). Decentralized events-only backup registry for the shielded
+  // note journal — fixes cross-device note persistence. Feature-gated on
+  // being non-null, same pattern as ViewKeyRegistry — see DApp.jsx
+  // "PRIVAR CLOUD VAULT" section. Deploy: scripts/deploy-cloudvault.js.
+  // Deployed 2026-08-06 (see deployments/latest.json _cloudVaultDeployedAt).
+  PrivarCloudVault:    import.meta.env.VITE_CLOUD_VAULT           ?? "0x348DF4D1b448dAB5DE63a16E7d9E64665c89664E",
   // LI.FI privacy adapters v3.3 — redeployed 2026-07-25 alongside the full
   // core (WrongFee() swap fix + TVL native-scaling fix — see /areas/privar.md).
   LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0x0703963ce37a485CFd6F9657dAA7361B07DCf39D",
@@ -64,11 +72,12 @@ export const CONTRACTS = {
   // NOTE: as of the v3.2 LI.FI deployment, ShieldVault.swapRouter() points to
   // LiFiPrivacyAdapter, NOT this address — TowerSwapAdapter is kept deployed
   // only as a documented rollback target (see scripts/deploy-lifi.js).
-  TowerSwapAdapter:    import.meta.env.VITE_TOWER_SWAP_ADAPTER ?? "0x762483223c10530E9C0e0c5719309228daB95116",
+  TowerSwapAdapter:    import.meta.env.VITE_TOWER_SWAP_ADAPTER ?? "0x6d0350b3B3Ea2f7f0eba72B5bD51BC3c6A905132",
   PrivateBridge:       _c.PrivateBridge,
   EmergencyController: _c.EmergencyController,
   MockVerifierZK:      _c.MockVerifierZK,
   ViewKeyRegistry:     _c.ViewKeyRegistry,
+  PrivarCloudVault:    _c.PrivarCloudVault,
   // LI.FI privacy adapters — active default swap router + confidential bridge.
   // See contracts/adapters/LiFiPrivacyAdapter.sol / LiFiPrivacyBridge.sol.
   LiFiPrivacyAdapter:  _c.LiFiPrivacyAdapter,
@@ -242,6 +251,17 @@ export const SEL = {
   hasViewKey:         "0x9e0607f1",  // hasViewKey(address)
   getViewKey:         "0xc1f5c989",  // getViewKey(address)
   emitNote:           "0xdefb8b15",  // emitNote(address,bytes,bytes)
+
+  // PrivarCloudVault — decentralized events-only note-journal backup registry.
+  // Selectors computed from contracts/core/PrivarCloudVault.sol's exact
+  // signatures (pure keccak256, no external deps — see keccak.py used to
+  // derive these once; sanity-checked against known selectors elsewhere
+  // in this file, e.g. balanceOf/transfer/approve above).
+  pushDelta:            "0xbc4cc79b",  // pushDelta(bytes)
+  pushCheckpoint:        "0x4e71faa8",  // pushCheckpoint(bytes32,bytes)
+  cvLatestVersion:        "0x8e480b20",  // latestVersion(address)
+  cvLastCheckpointBlock:  "0x17b1ea38",  // lastCheckpointBlock(address)
+  cvLastCheckpointVersion:"0x47872aa5",  // lastCheckpointVersion(address)
 };
 
 // ── ABI encoding primitives ───────────────────────────────────────────────────
@@ -888,7 +908,53 @@ export function decodeBytesReturn(hex) {
   return "0x" + clean.slice(128, 128 + len * 2);
 }
 
-// ─── CCTP DESTINATION DOMAINS ────────────────────────────────────────────────
+// ─── PRIVAR CLOUD VAULT ───────────────────────────────────────────────────────
+// PrivarCloudVault.sol — decentralized, events-only backup registry for the
+// shielded note journal. See contracts/core/PrivarCloudVault.sol for full
+// design notes. No struct args — encoding follows the same hand-rolled ABI
+// pattern as the rest of this file (this project intentionally has zero
+// ethers/viem dependency).
+
+// pushDelta(bytes encryptedDelta) — single dynamic arg
+export function buildPushDeltaCalldata(encryptedDeltaHex) {
+  const offset = encodeUint256(0x20n);
+  return { data: SEL.pushDelta + offset + encodeBytes(encryptedDeltaHex), value: "0x0" };
+}
+
+// pushCheckpoint(bytes32 stateFingerprint, bytes encryptedSnapshot)
+// Head = 2 words: [fingerprint (static)][offset to encryptedSnapshot]
+export function buildPushCheckpointCalldata(fingerprintHex, encryptedSnapshotHex) {
+  const offset = encodeUint256(0x40n);
+  const data = SEL.pushCheckpoint
+    + encodeBytes32(fingerprintHex)
+    + offset
+    + encodeBytes(encryptedSnapshotHex);
+  return { data, value: "0x0" };
+}
+
+// latestVersion(address owner) view returns (uint64) — for eth_call
+export function buildCvLatestVersionCall(owner) {
+  return SEL.cvLatestVersion + encodeAddress(owner);
+}
+
+// lastCheckpointBlock(address owner) view returns (uint64) — for eth_call
+export function buildCvLastCheckpointBlockCall(owner) {
+  return SEL.cvLastCheckpointBlock + encodeAddress(owner);
+}
+
+// lastCheckpointVersion(address owner) view returns (uint64) — for eth_call
+export function buildCvLastCheckpointVersionCall(owner) {
+  return SEL.cvLastCheckpointVersion + encodeAddress(owner);
+}
+
+// Decode a `uint64`/`uint256` eth_call return value into a plain JS number.
+// CloudVault's counters are uint64, always small enough for Number() safely.
+export function decodeUint64Return(hex) {
+  if (!hex || hex === "0x") return 0;
+  try { return Number(BigInt(hex)); } catch { return 0; }
+}
+
+
 // Circle CCTP v2 domain IDs (matches PrivateBridge.sol constructor)
 export const CCTP_DOMAINS = {
   // kitChain: App Kit chain identifier for kit.bridge() / kit.swap()

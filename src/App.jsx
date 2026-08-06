@@ -50,7 +50,7 @@ class ErrorBoundary extends Component {
             onClick={() => {
               // Clear potentially corrupt localStorage entries
               try {
-                localStorage.removeItem("privar_notes");
+                localStorage.removeItem("privarc_notes");
                 localStorage.removeItem("privar_txhistory_global");
               } catch {}
               this.setState({ error: null });
