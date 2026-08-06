@@ -1313,6 +1313,7 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
     if (!account?.address || !onArc) return;
     let cancelled = false;
     (async () => {
+      migrateCloudSyncKeyScheme(account.address);
       await ensureSelfBackupKeyReady(account.address).catch(() => {});
       if (cancelled) return;
       scanStealthNotes(account.address, recomputeShielded).catch(() => {});
@@ -2292,49 +2293,30 @@ function getCachedBackupSignature(address) {
   try { return localStorage.getItem(backupSigStorageKey(address)); } catch { return null; }
 }
 
-// EIP-712 typed-data signature, domain-separated by chainId + the CloudVault
-// address itself — a signature captured for this contract on this chain can
-// never be replayed against a different contract or a different network.
-async function eip712DeriveBackupKeySignature(address) {
-  const typedData = {
-    types: {
-      EIP712Domain: [
-        { name: "name", type: "string" },
-        { name: "version", type: "string" },
-        { name: "chainId", type: "uint256" },
-        { name: "verifyingContract", type: "address" },
-      ],
-      DeriveKey: [{ name: "purpose", type: "string" }],
-    },
-    primaryType: "DeriveKey",
-    domain: {
-      name: "Privar Cloud Vault", version: "1",
-      chainId: ARC_TESTNET.id, verifyingContract: CONTRACTS.PrivarCloudVault,
-    },
-    message: { purpose: "derive-backup-key-v1" },
-  };
-  return rpcCall("eth_signTypedData_v4", [address, JSON.stringify(typedData)]);
-}
-
 // Ensures a deterministic backup signature exists locally for this address,
 // prompting a (gasless) signature the FIRST time only, on any given device.
-// Prefers EIP-712 (domain-separated); falls back to a fixed personal_sign
-// message on wallets that don't support eth_signTypedData_v4 reliably —
-// still deterministic, still identical across devices. Never throws; if the
-// user rejects, cloud sync is simply unavailable this session (shields/
-// swaps/sends/withdraws still work exactly as before — this only affects
-// cross-device recoverability).
+//
+// IMPORTANT: uses ONLY personal_sign, never eth_signTypedData_v4/EIP-712.
+// An earlier version tried EIP-712 first and silently fell back to
+// personal_sign on wallets that didn't support it — which meant TWO
+// DIFFERENT wallet apps could end up signing two COMPLETELY DIFFERENT
+// messages for the "same" backup key, deriving two different AES keys with
+// no error anywhere: pushDelta() would still succeed on-chain (the contract
+// doesn't care what's inside the blob), but the other device could never
+// decrypt it. That's the root cause of "shield on device A → still 0 on
+// device B" even after this whole CloudVault pipeline shipped.
+// personal_sign is implemented near-identically by every injected wallet
+// (it's the oldest, simplest signing RPC — sign keccak256("\x19Ethereum
+// Signed Message:\n" + len(message) + message)), so it's the one signing
+// method we can trust to behave the same on TokenPocket, Rabby, MetaMask,
+// or anything else — a single deterministic codepath, no branching, no
+// possibility of two devices silently taking different paths.
 async function ensureSelfBackupKeyReady(address) {
   if (!address || !CONTRACTS.PrivarCloudVault) return null; // feature not deployed on this network — no-op
   const cached = getCachedBackupSignature(address);
   if (cached) return cached;
   try {
-    let sig;
-    try {
-      sig = await eip712DeriveBackupKeySignature(address);
-    } catch (e712) {
-      sig = await personalSign(address, BACKUP_SIG_MESSAGE(address));
-    }
+    const sig = await personalSign(address, BACKUP_SIG_MESSAGE(address));
     try { localStorage.setItem(backupSigStorageKey(address), sig); } catch {}
     return sig;
   } catch (e) {
@@ -2351,7 +2333,12 @@ async function deriveSelfBackupKey(address) {
   if (_backupKeyCache.has(lower)) return _backupKeyCache.get(lower);
   const sig = getCachedBackupSignature(address);
   if (!sig) return null;
-  const key = await hkdf(hexToBytes(sig), hexToBytes(address.toLowerCase()), "privarc-cloudvault-v1");
+  // Use only r‖s (the first 64 bytes) — drop the trailing v/recovery-id byte.
+  // Different wallets encode v differently (27/28 vs 0/1) for an otherwise
+  // IDENTICAL signature; keeping it in the HKDF input would make the derived
+  // key depend on which convention the signing wallet happens to use.
+  const sigBytes = hexToBytes(sig).slice(0, 64);
+  const key = await hkdf(sigBytes, hexToBytes(address.toLowerCase()), "privar-cloudvault-v2");
   const aesKey = await crypto.subtle.importKey("raw", key, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
   _backupKeyCache.set(lower, aesKey);
   return aesKey;
@@ -2483,6 +2470,26 @@ function markNoteCloudSynced(address, commitment) {
 }
 
 // ── Pull side: rebuild this wallet's note journal from PrivarCloudVault ───
+// One-time migration for the key-derivation scheme fix (personal_sign-only,
+// r‖s-truncated — see ensureSelfBackupKeyReady). Any note already flagged
+// cloudSynced under the OLD scheme was encrypted with a key this build can
+// no longer reproduce, so it needs to be re-pushed once. Runs at most once
+// per address (tracked in localStorage) and only clears the flag — it never
+// touches the note's commitment/amount/token, so there's no way this can
+// affect spendability, only whether it still needs a backup push.
+function migrateCloudSyncKeyScheme(address) {
+  if (!address) return;
+  const flag = `privar_cloudsync_v2_migrated_${address.toLowerCase()}`;
+  try {
+    if (localStorage.getItem(flag)) return;
+    const notes = getNotes(address);
+    let touched = false;
+    for (const n of notes) if (n.cloudSynced) { n.cloudSynced = false; touched = true; }
+    if (touched) saveNotes(address, notes);
+    localStorage.setItem(flag, "1");
+  } catch {}
+}
+
 // Reads the on-chain pointers (latestVersion / lastCheckpointBlock), fetches
 // the latest NoteCheckpoint (if any) plus every NoteDelta since, decrypts,
 // and replays the ops (ADD/SPEND — a commutative, idempotent set union, per
@@ -2502,6 +2509,39 @@ function decodeCheckpointLogSnapshot(log) {
   return "0x" + data.slice(offset * 2 + 64, offset * 2 + 64 + len * 2);
 }
 
+// Fetches ALL logs matching `topics` from `fromBlock` to the chain head,
+// paginating in fixed-size windows. Some RPC providers cap how many blocks
+// a single eth_getLogs call may span (commonly 2k-10k) and just error out
+// on a wide fromBlock=0→latest query — which resyncFromCloudVault used to
+// issue directly. That error was caught by the outer try/catch and only
+// ever logged to the console, so a device could silently see ZERO delta
+// events and show a 0 balance with no visible error anywhere. This chunks
+// proactively so we never depend on a provider's specific limit, and each
+// chunk's failure is retried at half the window instead of aborting the
+// whole resync.
+async function cloudVaultGetLogs(topics, fromBlock) {
+  const headHex = await rpcCall("eth_blockNumber", []);
+  const head = Number(BigInt(headHex || "0x0"));
+  const all = [];
+  let start = fromBlock;
+  let window = 5000;
+  while (start <= head) {
+    let end = Math.min(start + window - 1, head);
+    try {
+      const logs = await rpcCall("eth_getLogs", [{
+        fromBlock: "0x" + start.toString(16), toBlock: "0x" + end.toString(16),
+        address: CONTRACTS.PrivarCloudVault, topics,
+      }]);
+      if (Array.isArray(logs)) all.push(...logs);
+      start = end + 1;
+    } catch (e) {
+      if (window <= 100) { console.warn("[cloud vault resync] eth_getLogs failing even at min window, giving up on remaining range:", e.message); break; }
+      window = Math.floor(window / 4) || 100; // provider likely rejected the range — retry narrower
+    }
+  }
+  return all;
+}
+
 async function resyncFromCloudVault(address, recompute) {
   if (!address || !CONTRACTS.PrivarCloudVault) return;
   try {
@@ -2512,21 +2552,18 @@ async function resyncFromCloudVault(address, recompute) {
       rpcCall("eth_call", [{ to: CONTRACTS.PrivarCloudVault, data: buildCvLastCheckpointBlockCall(address) }, "latest"]),
     ]);
     const latestVer = decodeUint64Return(latestVerHex);
+    console.info(`[cloud vault resync] ${address}: on-chain latestVersion=${latestVer}`);
     if (latestVer === 0) return; // nothing ever pushed for this address
 
     const fromBlock = decodeUint64Return(lastCkBlockHex); // 0 if no checkpoint has ever been pushed
     const ownerTopic = "0x" + "0".repeat(24) + address.toLowerCase().slice(2);
-    const fromBlockHex = "0x" + fromBlock.toString(16);
 
     // 1. Most recent checkpoint at/after fromBlock, if any
     let state = new Map();
     let syncedVersion = 0;
     if (fromBlock > 0) {
-      const ckLogs = await rpcCall("eth_getLogs", [{
-        fromBlock: fromBlockHex, toBlock: "latest",
-        address: CONTRACTS.PrivarCloudVault, topics: [NOTE_CHECKPOINT_TOPIC, ownerTopic],
-      }]);
-      if (Array.isArray(ckLogs) && ckLogs.length > 0) {
+      const ckLogs = await cloudVaultGetLogs([NOTE_CHECKPOINT_TOPIC, ownerTopic], fromBlock);
+      if (ckLogs.length > 0) {
         const latestLog = ckLogs[ckLogs.length - 1];
         const encHex = decodeCheckpointLogSnapshot(latestLog);
         const snap = encHex ? await decryptJournalBlob(address, encHex) : null;
@@ -2538,11 +2575,10 @@ async function resyncFromCloudVault(address, recompute) {
     }
 
     // 2. Replay every delta after the checkpoint (or from genesis if none)
-    const deltaLogs = await rpcCall("eth_getLogs", [{
-      fromBlock: fromBlockHex, toBlock: "latest",
-      address: CONTRACTS.PrivarCloudVault, topics: [NOTE_DELTA_TOPIC, ownerTopic],
-    }]);
-    if (Array.isArray(deltaLogs)) {
+    const deltaLogs = await cloudVaultGetLogs([NOTE_DELTA_TOPIC, ownerTopic], fromBlock);
+    console.info(`[cloud vault resync] ${address}: found ${deltaLogs.length} NoteDelta event(s) from block ${fromBlock}`);
+    let decrypted = 0, failed = 0;
+    {
       const sorted = deltaLogs
         .map(log => ({ log, version: decodeUint64Return(log.topics?.[2]) }))
         .filter(x => x.version > syncedVersion)
@@ -2551,15 +2587,17 @@ async function resyncFromCloudVault(address, recompute) {
         // Event data for a single dynamic `bytes` param has EXACTLY the same
         // [offset][length][data] shape as an eth_call bytes return — reuse.
         const raw = decodeBytesReturn(log.data);
-        if (!raw) continue;
+        if (!raw) { failed++; continue; }
         const entry = await decryptJournalBlob(address, raw);
-        if (!entry?.ops) continue;
+        if (!entry?.ops) { failed++; continue; }
+        decrypted++;
         for (const op of entry.ops) {
           if (op.t === 0 && op.commitment) state.set(op.commitment, { commitment: op.commitment, amount: op.amount, token: op.token, ts: entry.ts });
           else if (op.t === 1 && op.commitment) state.delete(op.commitment);
         }
       }
     }
+    console.info(`[cloud vault resync] ${address}: decrypted ${decrypted}, failed to decrypt ${failed} (wrong/missing key or corrupt), active notes after replay: ${state.size}`);
 
     // 3. Conservative merge into local notes (never drops an un-synced local note)
     const local = getNotes(address);
