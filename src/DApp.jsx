@@ -2585,6 +2585,64 @@ function saveScanProgress(keyPrefix, topics, address, block) {
   try { localStorage.setItem(scanProgressKey(keyPrefix, topics, address), String(block)); } catch {}
 }
 
+// ── Blockscout indexed-log API (primary path) ──────────────────────────────
+// testnet.arcscan.app is a Blockscout instance (confirmed: contract_platform
+// "blockscout", contract_chain "arc-testnet") exposing an Etherscan-compatible
+// REST API — a completely SEPARATE service from the rate-limited JSON-RPC
+// node, pre-indexed server-side. It can answer "all logs for this
+// contract+topic since block X" in ONE request, with no manual chunking and
+// its own independent rate-limit budget that isn't shared with the wallet's
+// RPC calls at all. This is a much better fit for "give me everything since
+// block X" than hand-rolled eth_getLogs pagination against a node that
+// clearly can't sustain much load (see console logs from prior debugging).
+//
+// Response fields are normalized defensively (camelCase/snake_case, hex/
+// decimal) since the exact shape couldn't be live-verified from this
+// environment (sandboxed, no outbound RPC/API access) — if a field name
+// assumption is wrong, this fails fast and the caller falls back to the
+// already-working paginated RPC path below, so it can only ever help, never
+// regress. First real test run will confirm the response shape; adjust here
+// if console logs show a mismatch.
+const BLOCKSCOUT_API_BASE = `${ARC_TESTNET.explorer}/api`;
+
+function normalizeBlockscoutLog(l) {
+  const toHex = (v) => {
+    if (v == null) return v;
+    if (typeof v === "string" && v.startsWith("0x")) return v;
+    const n = typeof v === "string" ? parseInt(v, 10) : v;
+    return Number.isFinite(n) ? "0x" + n.toString(16) : v;
+  };
+  return {
+    ...l,
+    data:   l.data && l.data.startsWith("0x") ? l.data : "0x" + (l.data || ""),
+    topics: Array.isArray(l.topics) ? l.topics.map(t => (t && t.startsWith("0x")) ? t : "0x" + t) : l.topics,
+    blockNumber:     toHex(l.blockNumber ?? l.block_number),
+    transactionHash: l.transactionHash || l.transaction_hash || l.hash,
+    logIndex:        toHex(l.logIndex ?? l.log_index ?? l.index),
+  };
+}
+
+async function fetchLogsViaBlockscout(contractAddress, topics, fromBlock) {
+  const params = new URLSearchParams({
+    module: "logs", action: "getLogs",
+    fromBlock: String(fromBlock), toBlock: "latest",
+    address: contractAddress,
+  });
+  if (topics[0]) params.set("topic0", topics[0]);
+  if (topics[1]) { params.set("topic1", topics[1]); params.set("topic0_1_opr", "and"); }
+
+  const res = await fetch(`${BLOCKSCOUT_API_BASE}?${params.toString()}`);
+  if (!res.ok) throw new Error(`Blockscout HTTP ${res.status}`);
+  const json = await res.json();
+  if (json.status !== "1") {
+    // Blockscout returns status "0" + message "No records found" for a
+    // legitimately empty (but successful) result — not a real error.
+    if ((json.message || "").toLowerCase().includes("no records")) return [];
+    throw new Error(`Blockscout: ${json.message || "unknown error"}`);
+  }
+  return Array.isArray(json.result) ? json.result.map(normalizeBlockscoutLog) : [];
+}
+
 // Generic paginated, rate-limit-resilient eth_getLogs fetcher.
 //
 // Originally built only for PrivarCloudVault, then extracted after finding
@@ -2610,6 +2668,21 @@ function saveScanProgress(keyPrefix, topics, address, block) {
 // reconnects) accumulate steadily and visibly instead of one call spending
 // minutes retrying in silence, which looks indistinguishable from "stuck".
 async function fetchLogsPaginated(contractAddress, topics, fromBlock, keyPrefix, address, label) {
+  // 1) Try the Blockscout indexed API first — one request, no chunking,
+  //    separate rate-limit budget from the RPC node.
+  try {
+    const logs = await fetchLogsViaBlockscout(contractAddress, topics, fromBlock);
+    console.info(`[${label}] scan(${topics[0]?.slice(2,10)}): ${logs.length} log(s) via Blockscout API (single request, no RPC pagination needed)`);
+    try {
+      const headHex = await rpcCallWithBackoff("eth_blockNumber", []);
+      saveScanProgress(keyPrefix, topics, address, Number(BigInt(headHex || "0x0")) + 1);
+    } catch {} // progress bookkeeping only — the logs were already fetched successfully either way
+    return logs;
+  } catch (e) {
+    console.warn(`[${label}] scan(${topics[0]?.slice(2,10)}): Blockscout API unavailable (${e.message}), falling back to paginated RPC`);
+  }
+
+  // 2) Fallback: paginated, backoff-aware eth_getLogs against the RPC node.
   const headHex = await rpcCallWithBackoff("eth_blockNumber", []);
   const head = Number(BigInt(headHex || "0x0"));
   const all = [];
