@@ -2271,6 +2271,15 @@ async function eciesDecryptNoteWithViewKey(recipientAddress, encryptedNoteHex, e
 //  FROM OTHER wallets via confidential send, is completely untouched.
 // ═══════════════════════════════════════════════════════════════
 
+// IMPORTANT: the address is normalized to lowercase here. Different wallets
+// return the connected account in different casing from eth_requestAccounts/
+// eth_accounts — e.g. Rabby returns it all-lowercase, TokenPocket returns it
+// EIP-55 checksummed. personal_sign signs the literal message BYTES, so if
+// this message embedded `address` as-is, two wallets controlling the exact
+// same private key would sign two DIFFERENT byte strings — deriving two
+// different AES keys with no error anywhere. That was the actual root cause
+// of TokenPocket ↔ Rabby sync never working even after the v2 key-derivation
+// fix (personal_sign alone doesn't help if the signed text itself differs).
 const BACKUP_SIG_MESSAGE = (address) => [
   "Privar Cloud Vault — derive shielded-notes backup key",
   "",
@@ -2278,11 +2287,15 @@ const BACKUP_SIG_MESSAGE = (address) => [
   "It deterministically unlocks the SAME encryption key on every device",
   "that controls this wallet, so your shielded notes stay in sync.",
   "",
-  `Address: ${address}`,
+  `Address: ${address.toLowerCase()}`,
   `App: privar.io v1`,
 ].join("\n");
 
-const backupSigStorageKey = (addr) => `privar_cloudvault_backupsig_${addr.toLowerCase()}`;
+// Scheme version bumped (_v2 suffix) to force every device to re-sign under
+// the case-normalized message above — any signature cached under the old,
+// casing-dependent message must not be reused, or this fix wouldn't do
+// anything for a device that already has a stale cached signature.
+const backupSigStorageKey = (addr) => `privar_cloudvault_backupsig_v2_${addr.toLowerCase()}`;
 
 // In-memory cache so we don't re-derive the CryptoKey on every call within a
 // session; the localStorage signature cache below is what actually avoids
@@ -2338,7 +2351,7 @@ async function deriveSelfBackupKey(address) {
   // IDENTICAL signature; keeping it in the HKDF input would make the derived
   // key depend on which convention the signing wallet happens to use.
   const sigBytes = hexToBytes(sig).slice(0, 64);
-  const key = await hkdf(sigBytes, hexToBytes(address.toLowerCase()), "privar-cloudvault-v2");
+  const key = await hkdf(sigBytes, hexToBytes(address.toLowerCase()), "privar-cloudvault-v3");
   const aesKey = await crypto.subtle.importKey("raw", key, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
   _backupKeyCache.set(lower, aesKey);
   return aesKey;
@@ -2470,16 +2483,20 @@ function markNoteCloudSynced(address, commitment) {
 }
 
 // ── Pull side: rebuild this wallet's note journal from PrivarCloudVault ───
-// One-time migration for the key-derivation scheme fix (personal_sign-only,
-// r‖s-truncated — see ensureSelfBackupKeyReady). Any note already flagged
-// cloudSynced under the OLD scheme was encrypted with a key this build can
-// no longer reproduce, so it needs to be re-pushed once. Runs at most once
-// per address (tracked in localStorage) and only clears the flag — it never
-// touches the note's commitment/amount/token, so there's no way this can
-// affect spendability, only whether it still needs a backup push.
+// One-time migration for the key-derivation scheme fix. v2 = personal_sign-
+// only, r‖s-truncated. v3 = same, PLUS the signed message now lowercases the
+// embedded address (different wallets return the connected account in
+// different casing — Rabby all-lowercase, TokenPocket EIP-55 checksummed —
+// so the un-normalized message text differed byte-for-byte between wallets,
+// which is what actually broke cross-device sync even after v2 shipped).
+// Any note flagged cloudSynced under an OLDER scheme was encrypted with a
+// key this build can no longer reproduce, so it needs to be re-pushed once.
+// Runs at most once per address (tracked in localStorage) and only clears
+// the flag — it never touches the note's commitment/amount/token, so there's
+// no way this can affect spendability, only whether it still needs a backup push.
 function migrateCloudSyncKeyScheme(address) {
   if (!address) return;
-  const flag = `privar_cloudsync_v2_migrated_${address.toLowerCase()}`;
+  const flag = `privar_cloudsync_v3_migrated_${address.toLowerCase()}`;
   try {
     if (localStorage.getItem(flag)) return;
     const notes = getNotes(address);
