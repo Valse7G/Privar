@@ -2271,6 +2271,17 @@ async function eciesDecryptNoteWithViewKey(recipientAddress, encryptedNoteHex, e
 //  FROM OTHER wallets via confidential send, is completely untouched.
 // ═══════════════════════════════════════════════════════════════
 
+// Floor block for eth_getLogs scans, set well before PrivarCloudVault's
+// actual deployment (2026-08-06T12:16:30Z) — confirmed via a pushDelta tx
+// at block 55,729,500 (Aug 07 2026 06:49:30, ~18.5h after deployment, ~1433
+// confirmations in 13 min ⇒ roughly 1.8 blocks/sec on this chain). That puts
+// deployment at roughly block 55.6M; this floor is set ~530k blocks earlier
+// (~3 days of margin at the observed block rate) so it can never skip a
+// delta that predates it, while still cutting the scan range from 55M+
+// blocks down to a few hundred thousand — the actual fix for the RPC
+// rate-limit death spiral (see cloudVaultGetLogs).
+const CLOUD_VAULT_GENESIS_BLOCK = 55200000;
+
 // IMPORTANT: the address is normalized to lowercase here. Different wallets
 // return the connected account in different casing from eth_requestAccounts/
 // eth_accounts — e.g. Rabby returns it all-lowercase, TokenPocket returns it
@@ -2536,14 +2547,51 @@ function decodeCheckpointLogSnapshot(log) {
 // proactively so we never depend on a provider's specific limit, and each
 // chunk's failure is retried at half the window instead of aborting the
 // whole resync.
-async function cloudVaultGetLogs(topics, fromBlock) {
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// Persists how far we've successfully scanned per (address, topic-set), so a
+// resync that gets cut short (rate limit, page unload, etc.) picks up where
+// it left off next time instead of re-scanning the same huge range from
+// scratch on every single call — which is what made progress effectively
+// impossible against a chain already 50M+ blocks deep.
+const cloudScanProgressKey = (topics, address) => `privar_cloudvault_scanprogress_${topics[0]?.slice(2,10)}_${address.toLowerCase()}`;
+function getScanProgress(topics, address, fallback) {
+  try { const v = localStorage.getItem(cloudScanProgressKey(topics, address)); return v ? Number(v) : fallback; } catch { return fallback; }
+}
+function saveScanProgress(topics, address, block) {
+  try { localStorage.setItem(cloudScanProgressKey(topics, address), String(block)); } catch {}
+}
+
+// Fetches ALL logs matching `topics` from `fromBlock` to the chain head,
+// paginating in fixed-size windows.
+//
+// Two DIFFERENT failure modes need two DIFFERENT responses, and conflating
+// them was the actual bug: a real Arc Testnet RPC log showed the app hitting
+// "rate limit exceeded" almost every call, which the old code treated the
+// same as "requested range too large" — shrinking the window. But shrinking
+// the window in response to a RATE limit makes things worse: it turns one
+// throttled request into several more, tripping the limiter again almost
+// immediately, forever. "giving up on remaining range" every single resync
+// attempt was the direct, reproducible result.
+// - "rate limit exceeded" / "too many requests" → the range was fine, we're
+//   just going too fast. Wait, then retry the EXACT SAME window.
+// - "requested range too large" / anything else → the range itself was
+//   rejected. Shrink the window and retry.
+// Progress is saved after every successful chunk (not just at the end), so
+// even a run that has to bail out early (rate-limited past its retry
+// budget) keeps whatever ground it covered for the next call to resume from.
+async function cloudVaultGetLogs(topics, address, fromBlock) {
   const headHex = await rpcCall("eth_blockNumber", []);
   const head = Number(BigInt(headHex || "0x0"));
   const all = [];
-  let start = fromBlock;
+  let start = Math.max(fromBlock, getScanProgress(topics, address, fromBlock));
   let window = 5000;
-  while (start <= head) {
-    let end = Math.min(start + window - 1, head);
+  let rateLimitRetries = 0;
+  let chunkCount = 0;
+  const MAX_CHUNKS_PER_CALL = 25; // bound one resync pass — remaining range picks up next call via saved progress
+
+  while (start <= head && chunkCount < MAX_CHUNKS_PER_CALL) {
+    const end = Math.min(start + window - 1, head);
     try {
       const logs = await rpcCall("eth_getLogs", [{
         fromBlock: "0x" + start.toString(16), toBlock: "0x" + end.toString(16),
@@ -2551,9 +2599,24 @@ async function cloudVaultGetLogs(topics, fromBlock) {
       }]);
       if (Array.isArray(logs)) all.push(...logs);
       start = end + 1;
+      saveScanProgress(topics, address, start);
+      rateLimitRetries = 0;
+      chunkCount++;
+      if (start <= head) await sleep(250); // be a good citizen — avoid tripping the limiter again immediately
     } catch (e) {
-      if (window <= 100) { console.warn("[cloud vault resync] eth_getLogs failing even at min window, giving up on remaining range:", e.message); break; }
-      window = Math.floor(window / 4) || 100; // provider likely rejected the range — retry narrower
+      const msg = (e.message || "").toLowerCase();
+      const isRateLimit = msg.includes("rate limit") || msg.includes("too many requests");
+      if (isRateLimit && rateLimitRetries < 5) {
+        rateLimitRetries++;
+        await sleep(800 * rateLimitRetries); // backoff, same window/range — shrinking wouldn't help a rate limit
+        continue;
+      }
+      if (window <= 200) {
+        console.warn("[cloud vault resync] eth_getLogs still failing at min window, stopping this pass — progress saved, will resume next call:", e.message);
+        break;
+      }
+      window = Math.floor(window / 4) || 200; // provider actually rejected the RANGE — retry narrower
+      rateLimitRetries = 0;
     }
   }
   return all;
@@ -2587,14 +2650,14 @@ async function _resyncFromCloudVaultImpl(address, recompute) {
     console.info(`[cloud vault resync] ${address}: on-chain latestVersion=${latestVer}`);
     if (latestVer === 0) return; // nothing ever pushed for this address
 
-    const fromBlock = decodeUint64Return(lastCkBlockHex); // 0 if no checkpoint has ever been pushed
+    const fromBlock = Math.max(decodeUint64Return(lastCkBlockHex), CLOUD_VAULT_GENESIS_BLOCK); // 0 if no checkpoint has ever been pushed
     const ownerTopic = "0x" + "0".repeat(24) + address.toLowerCase().slice(2);
 
     // 1. Most recent checkpoint at/after fromBlock, if any
     let state = new Map();
     let syncedVersion = 0;
     if (fromBlock > 0) {
-      const ckLogs = await cloudVaultGetLogs([NOTE_CHECKPOINT_TOPIC, ownerTopic], fromBlock);
+      const ckLogs = await cloudVaultGetLogs([NOTE_CHECKPOINT_TOPIC, ownerTopic], address, fromBlock);
       if (ckLogs.length > 0) {
         const latestLog = ckLogs[ckLogs.length - 1];
         const encHex = decodeCheckpointLogSnapshot(latestLog);
@@ -2610,7 +2673,7 @@ async function _resyncFromCloudVaultImpl(address, recompute) {
     // `spentCommitments` tracks ONLY commitments we saw an explicit SPEND op
     // for — kept separate from "not present in `state`" on purpose (see fix
     // below).
-    const deltaLogs = await cloudVaultGetLogs([NOTE_DELTA_TOPIC, ownerTopic], fromBlock);
+    const deltaLogs = await cloudVaultGetLogs([NOTE_DELTA_TOPIC, ownerTopic], address, fromBlock);
     console.info(`[cloud vault resync] ${address}: found ${deltaLogs.length} NoteDelta event(s) from block ${fromBlock}`);
     let decrypted = 0, failed = 0;
     const spentCommitments = new Set();
