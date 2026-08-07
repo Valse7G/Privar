@@ -2606,10 +2606,21 @@ async function cloudVaultGetLogs(topics, address, fromBlock) {
   const head = Number(BigInt(headHex || "0x0"));
   const all = [];
   let start = Math.max(fromBlock, getScanProgress(topics, address, fromBlock));
-  let window = 5000;
+  let window = 2000;
   let rateLimitRetries = 0;
   let chunkCount = 0;
-  const MAX_CHUNKS_PER_CALL = 25; // bound one resync pass — remaining range picks up next call via saved progress
+  // Kept deliberately small: this RPC is under heavy, sustained rate
+  // limiting from three concurrent subsystems (this module, the stealth
+  // scan, and reconcileNotesOnChain — the latter two pre-existing, outside
+  // this module). A prior run went silent for minutes retrying inside a
+  // single call with no visible progress, which looked indistinguishable
+  // from "stuck". Better to do a LITTLE work per call, log every step, and
+  // let repeated calls (2-minute poll, reconnects) accumulate progress —
+  // persisted via saveScanProgress — than to gamble on one long call.
+  const MAX_CHUNKS_PER_CALL = 6;
+
+  if (start > head) { console.info(`[cloud vault resync] scan(${topics[0].slice(2,10)}): already caught up to head`); return all; }
+  console.info(`[cloud vault resync] scan(${topics[0].slice(2,10)}): resuming from block ${start}, head=${head}, ${head - start} blocks remaining`);
 
   while (start <= head && chunkCount < MAX_CHUNKS_PER_CALL) {
     const end = Math.min(start + window - 1, head);
@@ -2623,23 +2634,25 @@ async function cloudVaultGetLogs(topics, address, fromBlock) {
       saveScanProgress(topics, address, start);
       rateLimitRetries = 0;
       chunkCount++;
-      if (start <= head) await sleep(250); // be a good citizen — avoid tripping the limiter again immediately
+      if (start <= head) await sleep(1500); // be a good citizen — this RPC is easily overwhelmed
     } catch (e) {
       const msg = (e.message || "").toLowerCase();
-      const isRateLimit = msg.includes("rate limit") || msg.includes("too many requests");
-      if (isRateLimit && rateLimitRetries < 5) {
+      const isRateLimit = msg.includes("rate limit") || msg.includes("too many requests") || msg.includes("request limit");
+      if (isRateLimit && rateLimitRetries < 3) {
         rateLimitRetries++;
-        await sleep(800 * rateLimitRetries); // backoff, same window/range — shrinking wouldn't help a rate limit
+        console.info(`[cloud vault resync] scan(${topics[0].slice(2,10)}): rate limited, backing off (retry ${rateLimitRetries}/3)`);
+        await sleep(1200 * rateLimitRetries); // backoff, same window/range — shrinking wouldn't help a rate limit
         continue;
       }
-      if (window <= 200) {
-        console.warn("[cloud vault resync] eth_getLogs still failing at min window, stopping this pass — progress saved, will resume next call:", e.message);
+      if (window <= 200 || !isRateLimit) {
+        console.warn(`[cloud vault resync] scan(${topics[0].slice(2,10)}): stopping this pass at block ${start} — progress saved, will resume next call:`, e.message);
         break;
       }
       window = Math.floor(window / 4) || 200; // provider actually rejected the RANGE — retry narrower
       rateLimitRetries = 0;
     }
   }
+  console.info(`[cloud vault resync] scan(${topics[0].slice(2,10)}): pass done — ${all.length} log(s) this call, now at block ${start}${start <= head ? ` (${head - start} blocks still remaining, will continue next call)` : " (caught up)"}`);
   return all;
 }
 
