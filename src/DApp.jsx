@@ -2570,68 +2570,68 @@ async function rpcCallWithBackoff(method, params, maxRetries = 4) {
   }
 }
 
-// Persists how far we've successfully scanned per (address, topic-set), so a
-// resync that gets cut short (rate limit, page unload, etc.) picks up where
-// it left off next time instead of re-scanning the same huge range from
-// scratch on every single call — which is what made progress effectively
-// impossible against a chain already 50M+ blocks deep.
-const cloudScanProgressKey = (topics, address) => `privar_cloudvault_scanprogress_${topics[0]?.slice(2,10)}_${address.toLowerCase()}`;
-function getScanProgress(topics, address, fallback) {
-  try { const v = localStorage.getItem(cloudScanProgressKey(topics, address)); return v ? Number(v) : fallback; } catch { return fallback; }
+// Persists how far we've successfully scanned per (progress-key-prefix,
+// topic-set, address), so a scan that gets cut short (rate limit, page
+// unload, etc.) picks up where it left off next time instead of re-scanning
+// the same huge range from scratch on every single call — which is what
+// made progress effectively impossible against a chain already 50M+ blocks
+// deep. `keyPrefix` differs per caller (CloudVault / stealth-scan /
+// reconcile) so their progress is tracked independently.
+function scanProgressKey(keyPrefix, topics, address) { return `${keyPrefix}_${topics[0]?.slice(2,10)}_${address.toLowerCase()}`; }
+function getScanProgress(keyPrefix, topics, address, fallback) {
+  try { const v = localStorage.getItem(scanProgressKey(keyPrefix, topics, address)); return v ? Number(v) : fallback; } catch { return fallback; }
 }
-function saveScanProgress(topics, address, block) {
-  try { localStorage.setItem(cloudScanProgressKey(topics, address), String(block)); } catch {}
+function saveScanProgress(keyPrefix, topics, address, block) {
+  try { localStorage.setItem(scanProgressKey(keyPrefix, topics, address), String(block)); } catch {}
 }
 
-// Fetches ALL logs matching `topics` from `fromBlock` to the chain head,
-// paginating in fixed-size windows.
+// Generic paginated, rate-limit-resilient eth_getLogs fetcher.
+//
+// Originally built only for PrivarCloudVault, then extracted after finding
+// the other two log-scanning call sites (scanStealthNotes, on-chain note
+// reconciliation) each fired a SINGLE unpaginated eth_getLogs spanning up to
+// 5,000,000 blocks, with no retry/backoff at all, on every connect AND every
+// 2-minute poll — while this scanner was already paginated and polite, those
+// two were re-scanning a huge range from scratch, repeatedly, and were the
+// dominant source of the sustained RPC rate-limiting seen in console logs
+// (a real log showed "on-chain latestVersion=27" succeed, then the actual
+// eth_getLogs calls stall under continuous "rate limit exceeded" from all
+// three subsystems firing concurrently).
 //
 // Two DIFFERENT failure modes need two DIFFERENT responses, and conflating
-// them was the actual bug: a real Arc Testnet RPC log showed the app hitting
-// "rate limit exceeded" almost every call, which the old code treated the
-// same as "requested range too large" — shrinking the window. But shrinking
-// the window in response to a RATE limit makes things worse: it turns one
-// throttled request into several more, tripping the limiter again almost
-// immediately, forever. "giving up on remaining range" every single resync
-// attempt was the direct, reproducible result.
-// - "rate limit exceeded" / "too many requests" → the range was fine, we're
-//   just going too fast. Wait, then retry the EXACT SAME window.
-// - "requested range too large" / anything else → the range itself was
-//   rejected. Shrink the window and retry.
-// Progress is saved after every successful chunk (not just at the end), so
-// even a run that has to bail out early (rate-limited past its retry
-// budget) keeps whatever ground it covered for the next call to resume from.
-async function cloudVaultGetLogs(topics, address, fromBlock) {
+// them was an earlier bug: "rate limit exceeded" → the range was fine, we're
+// just going too fast — wait, then retry the EXACT SAME window (shrinking it
+// would only turn one throttled request into several more). "requested
+// range too large" → the range itself was rejected — shrink the window.
+//
+// Deliberately does a LITTLE work per call (small window, small per-call
+// chunk budget) rather than gambling on one long call: progress is saved
+// after every successful chunk, so repeated calls (2-minute poll,
+// reconnects) accumulate steadily and visibly instead of one call spending
+// minutes retrying in silence, which looks indistinguishable from "stuck".
+async function fetchLogsPaginated(contractAddress, topics, fromBlock, keyPrefix, address, label) {
   const headHex = await rpcCallWithBackoff("eth_blockNumber", []);
   const head = Number(BigInt(headHex || "0x0"));
   const all = [];
-  let start = Math.max(fromBlock, getScanProgress(topics, address, fromBlock));
+  let start = Math.max(fromBlock, getScanProgress(keyPrefix, topics, address, fromBlock));
   let window = 2000;
   let rateLimitRetries = 0;
   let chunkCount = 0;
-  // Kept deliberately small: this RPC is under heavy, sustained rate
-  // limiting from three concurrent subsystems (this module, the stealth
-  // scan, and reconcileNotesOnChain — the latter two pre-existing, outside
-  // this module). A prior run went silent for minutes retrying inside a
-  // single call with no visible progress, which looked indistinguishable
-  // from "stuck". Better to do a LITTLE work per call, log every step, and
-  // let repeated calls (2-minute poll, reconnects) accumulate progress —
-  // persisted via saveScanProgress — than to gamble on one long call.
   const MAX_CHUNKS_PER_CALL = 6;
 
-  if (start > head) { console.info(`[cloud vault resync] scan(${topics[0].slice(2,10)}): already caught up to head`); return all; }
-  console.info(`[cloud vault resync] scan(${topics[0].slice(2,10)}): resuming from block ${start}, head=${head}, ${head - start} blocks remaining`);
+  if (start > head) { console.info(`[${label}] scan(${topics[0]?.slice(2,10)}): already caught up to head`); return all; }
+  console.info(`[${label}] scan(${topics[0]?.slice(2,10)}): resuming from block ${start}, head=${head}, ${head - start} blocks remaining`);
 
   while (start <= head && chunkCount < MAX_CHUNKS_PER_CALL) {
     const end = Math.min(start + window - 1, head);
     try {
       const logs = await rpcCall("eth_getLogs", [{
         fromBlock: "0x" + start.toString(16), toBlock: "0x" + end.toString(16),
-        address: CONTRACTS.PrivarCloudVault, topics,
+        address: contractAddress, topics,
       }]);
       if (Array.isArray(logs)) all.push(...logs);
       start = end + 1;
-      saveScanProgress(topics, address, start);
+      saveScanProgress(keyPrefix, topics, address, start);
       rateLimitRetries = 0;
       chunkCount++;
       if (start <= head) await sleep(1500); // be a good citizen — this RPC is easily overwhelmed
@@ -2640,20 +2640,28 @@ async function cloudVaultGetLogs(topics, address, fromBlock) {
       const isRateLimit = msg.includes("rate limit") || msg.includes("too many requests") || msg.includes("request limit");
       if (isRateLimit && rateLimitRetries < 3) {
         rateLimitRetries++;
-        console.info(`[cloud vault resync] scan(${topics[0].slice(2,10)}): rate limited, backing off (retry ${rateLimitRetries}/3)`);
+        console.info(`[${label}] scan(${topics[0]?.slice(2,10)}): rate limited, backing off (retry ${rateLimitRetries}/3)`);
         await sleep(1200 * rateLimitRetries); // backoff, same window/range — shrinking wouldn't help a rate limit
         continue;
       }
       if (window <= 200 || !isRateLimit) {
-        console.warn(`[cloud vault resync] scan(${topics[0].slice(2,10)}): stopping this pass at block ${start} — progress saved, will resume next call:`, e.message);
+        console.warn(`[${label}] scan(${topics[0]?.slice(2,10)}): stopping this pass at block ${start} — progress saved, will resume next call:`, e.message);
         break;
       }
       window = Math.floor(window / 4) || 200; // provider actually rejected the RANGE — retry narrower
       rateLimitRetries = 0;
     }
   }
-  console.info(`[cloud vault resync] scan(${topics[0].slice(2,10)}): pass done — ${all.length} log(s) this call, now at block ${start}${start <= head ? ` (${head - start} blocks still remaining, will continue next call)` : " (caught up)"}`);
+  console.info(`[${label}] scan(${topics[0]?.slice(2,10)}): pass done — ${all.length} log(s) this call, now at block ${start}${start <= head ? ` (${head - start} blocks still remaining, will continue next call)` : " (caught up)"}`);
   return all;
+}
+
+// Thin CloudVault-specific wrapper — keeps the exact call shape existing
+// callers already use, and the exact progress-key prefix already persisted
+// in users' browsers (privar_cloudvault_scanprogress_...) so no progress is
+// lost by this refactor.
+async function cloudVaultGetLogs(topics, address, fromBlock) {
+  return fetchLogsPaginated(CONTRACTS.PrivarCloudVault, topics, fromBlock, "privar_cloudvault_scanprogress", address, "cloud vault resync");
 }
 
 const _resyncInFlight = new Map(); // address(lowercase) -> Promise, prevents overlapping resync runs
@@ -2772,15 +2780,19 @@ const NOTE_EMITTED_TOPIC = "0x8aa4f1b6dca845fb984ab9e095ea9417a69f44be2922e9b5cc
 async function scanStealthNotes(address, recompute) {
   if (!address || !CONTRACTS.ViewKeyRegistry) return;
   try {
-    const blockHex = await rpcCall("eth_blockNumber", []);
-    const cur = parseInt(blockHex, 16);
+    const cur = Number(BigInt(await rpcCallWithBackoff("eth_blockNumber", [])));
     const recipientTopic = "0x" + "0".repeat(24) + address.toLowerCase().slice(2);
-    const logs = await rpcCall("eth_getLogs", [{
-      fromBlock: "0x" + Math.max(0, cur - 5_000_000).toString(16),
-      toBlock:   "latest",
-      address:   CONTRACTS.ViewKeyRegistry,
-      topics:    [NOTE_EMITTED_TOPIC, recipientTopic],
-    }]);
+    // Was previously a single unpaginated eth_getLogs spanning up to
+    // 5,000,000 blocks with no retry — fired fresh from scratch on every
+    // connect AND every 2-minute poll. That's a huge, un-throttled request
+    // hitting the same rate-limited RPC that PrivarCloudVault's resync also
+    // depends on, and was almost certainly the dominant source of the
+    // sustained "rate limit exceeded" errors seen in production logs. Now
+    // uses the same paginated, backoff-aware, progress-persisting fetcher.
+    const logs = await fetchLogsPaginated(
+      CONTRACTS.ViewKeyRegistry, [NOTE_EMITTED_TOPIC, recipientTopic],
+      Math.max(0, cur - 5_000_000), "privar_stealthscan_scanprogress", address, "Privar stealth scan"
+    );
     if (!Array.isArray(logs) || logs.length === 0) return;
 
     const existing  = getNotes(address);
@@ -2908,23 +2920,29 @@ async function buildTxHistoryFromChain(address) {
   if (!address) return [];
   const MAX_BLOCKS = 5_000_000;
   try {
-    const blockHex = await rpcCall("eth_blockNumber", []);
-    const cur = parseInt(blockHex, 16);
-    const from = "0x" + Math.max(0, cur - MAX_BLOCKS).toString(16);
+    const cur = Number(BigInt(await rpcCallWithBackoff("eth_blockNumber", [])));
+    const from = Math.max(0, cur - MAX_BLOCKS);
     const addrTopic = "0x" + "000000000000000000000000" + address.slice(2).toLowerCase();
 
-    // Fetch all PrivarShieldVault + PrivarStaking events where the user is an indexed topic
-    const [depLogs, wdLogs, swLogs, bridgeLogs, sendLogs, stakeLogs, unstakeLogs, claimLogs] =
-      await Promise.allSettled([
-        rpcCall("eth_getLogs", [{ fromBlock:from, toBlock:"latest", address:CONTRACTS.PrivarShieldVault, topics:[EV.Deposited,  null, addrTopic] }]),
-        rpcCall("eth_getLogs", [{ fromBlock:from, toBlock:"latest", address:CONTRACTS.PrivarShieldVault, topics:[EV.Withdrawn,  null, null, addrTopic] }]),
-        rpcCall("eth_getLogs", [{ fromBlock:from, toBlock:"latest", address:CONTRACTS.PrivarShieldVault, topics:[EV.SwapExecuted] }]),
-        rpcCall("eth_getLogs", [{ fromBlock:from, toBlock:"latest", address:CONTRACTS.PrivarShieldVault, topics:[EV.BridgeInitiated] }]),
-        rpcCall("eth_getLogs", [{ fromBlock:from, toBlock:"latest", address:CONTRACTS.PrivarShieldVault, topics:[EV.ShieldedTransferProcessed] }]),
-        CONTRACTS.PrivarStaking ? rpcCall("eth_getLogs", [{ fromBlock:from, toBlock:"latest", address:CONTRACTS.PrivarStaking, topics:[EV.Staked, addrTopic] }]) : [],
-        CONTRACTS.PrivarStaking ? rpcCall("eth_getLogs", [{ fromBlock:from, toBlock:"latest", address:CONTRACTS.PrivarStaking, topics:[EV.Unstaked, addrTopic] }]) : [],
-        CONTRACTS.PrivarStaking ? rpcCall("eth_getLogs", [{ fromBlock:from, toBlock:"latest", address:CONTRACTS.PrivarStaking, topics:[EV.RewardsClaimed, addrTopic] }]) : [],
-      ]).then(results => results.map(r => (r.status === "fulfilled" && Array.isArray(r.value)) ? r.value : []));
+    // Fetch all PrivarShieldVault + PrivarStaking events where the user is an
+    // indexed topic. Was previously 8 unpaginated eth_getLogs fired all at
+    // once via Promise.allSettled, each spanning up to 5,000,000 blocks — a
+    // major contributor to the RPC rate-limiting that was also blocking
+    // PrivarCloudVault's resync. Now paginated (same backoff-aware fetcher)
+    // and run SEQUENTIALLY rather than in parallel, since this call is
+    // fire-and-forget (`.then(...)`, not awaited by the render path) and tx
+    // history isn't time-critical the way the shielded balance is — it's
+    // fine for this to populate gradually over a few connects/polls instead
+    // of contending with CloudVault/stealth-scan for the same RPC budget.
+    const sv = CONTRACTS.PrivarShieldVault, st = CONTRACTS.PrivarStaking;
+    const depLogs      = await fetchLogsPaginated(sv, [EV.Deposited, null, addrTopic], from, "privar_txhist_dep", address, "Privar tx-history");
+    const wdLogs        = await fetchLogsPaginated(sv, [EV.Withdrawn, null, null, addrTopic], from, "privar_txhist_wd", address, "Privar tx-history");
+    const swLogs         = await fetchLogsPaginated(sv, [EV.SwapExecuted], from, "privar_txhist_sw", address, "Privar tx-history");
+    const bridgeLogs   = await fetchLogsPaginated(sv, [EV.BridgeInitiated], from, "privar_txhist_br", address, "Privar tx-history");
+    const sendLogs     = await fetchLogsPaginated(sv, [EV.ShieldedTransferProcessed], from, "privar_txhist_st", address, "Privar tx-history");
+    const stakeLogs     = st ? await fetchLogsPaginated(st, [EV.Staked, addrTopic], from, "privar_txhist_stk", address, "Privar tx-history") : [];
+    const unstakeLogs   = st ? await fetchLogsPaginated(st, [EV.Unstaked, addrTopic], from, "privar_txhist_unstk", address, "Privar tx-history") : [];
+    const claimLogs     = st ? await fetchLogsPaginated(st, [EV.RewardsClaimed, addrTopic], from, "privar_txhist_clm", address, "Privar tx-history") : [];
 
     const tc = (tsMs) => tsMs ? new Date(tsMs).toLocaleString("fr-FR", { dateStyle:"short", timeStyle:"short" }) : "—";
 
@@ -3060,17 +3078,17 @@ async function reconcileNotesOnChain(address) {
   // notes from localStorage — keeping local notes in sync with on-chain state.
   if (!address) return;
   try {
-    const blockHex = await rpcCall("eth_blockNumber", []);
-    const current  = parseInt(blockHex, 16);
-    const from     = "0x" + Math.max(0, current - 5_000_000).toString(16);
+    const current = Number(BigInt(await rpcCallWithBackoff("eth_blockNumber", [])));
 
-    // Fetch Withdrawn events to find spent nullifiers
-    const logs = await rpcCall("eth_getLogs", [{
-      fromBlock: from,
-      toBlock:   "latest",
-      address:   CONTRACTS.PrivarShieldVault,
-      topics:    [EV.Withdrawn],
-    }]);
+    // Was previously a single unpaginated eth_getLogs spanning up to
+    // 5,000,000 blocks with no retry — fired fresh from scratch on every
+    // connect AND every 2-minute poll, alongside scanStealthNotes and
+    // PrivarCloudVault's resync all hitting the same rate-limited RPC. Now
+    // uses the same paginated, backoff-aware, progress-persisting fetcher.
+    const logs = await fetchLogsPaginated(
+      CONTRACTS.PrivarShieldVault, [EV.Withdrawn],
+      Math.max(0, current - 5_000_000), "privar_reconcile_scanprogress", address, "Privar"
+    );
     if (!Array.isArray(logs) || logs.length === 0) return;
 
     // Build set of spent nullifiers
