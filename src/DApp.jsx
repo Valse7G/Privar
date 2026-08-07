@@ -2422,7 +2422,7 @@ async function pushCloudVaultDelta({ account, sendRealTx, op, label, description
 async function maybePushCloudVaultCheckpoint(account, sendRealTx) {
   const address = account?.address;
   if (!address || !CONTRACTS.PrivarCloudVault) return;
-  const verHex = await rpcCall("eth_call", [{ to: CONTRACTS.PrivarCloudVault, data: buildCvLatestVersionCall(address) }, "latest"]);
+  const verHex = await rpcCallWithBackoff("eth_call", [{ to: CONTRACTS.PrivarCloudVault, data: buildCvLatestVersionCall(address) }, "latest"]);
   const version = decodeUint64Return(verHex);
   if (version === 0 || version % CLOUDVAULT_CHECKPOINT_EVERY !== 0) return;
 
@@ -2549,6 +2549,27 @@ function decodeCheckpointLogSnapshot(log) {
 // whole resync.
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+// Generic rate-limit-resilient wrapper for single-shot RPC calls (eth_call,
+// eth_blockNumber). cloudVaultGetLogs already retries eth_getLogs on rate
+// limits, but the eth_call reads that run BEFORE it (latestVersion,
+// lastCheckpointBlock) had no protection at all — one rate-limited eth_call
+// aborted the entire resync pass before it ever reached the (already
+// resilient) log-scanning phase. A real console log confirmed this exact
+// failure: "[cloud vault resync] ... eth_call ... rate limit exceeded" on
+// the very first attempt, with the pass only succeeding on a later retry.
+async function rpcCallWithBackoff(method, params, maxRetries = 4) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await rpcCall(method, params);
+    } catch (e) {
+      const msg = (e.message || "").toLowerCase();
+      const isRateLimit = msg.includes("rate limit") || msg.includes("too many requests") || msg.includes("request limit");
+      if (!isRateLimit || attempt >= maxRetries) throw e;
+      await sleep(600 * (attempt + 1));
+    }
+  }
+}
+
 // Persists how far we've successfully scanned per (address, topic-set), so a
 // resync that gets cut short (rate limit, page unload, etc.) picks up where
 // it left off next time instead of re-scanning the same huge range from
@@ -2581,7 +2602,7 @@ function saveScanProgress(topics, address, block) {
 // even a run that has to bail out early (rate-limited past its retry
 // budget) keeps whatever ground it covered for the next call to resume from.
 async function cloudVaultGetLogs(topics, address, fromBlock) {
-  const headHex = await rpcCall("eth_blockNumber", []);
+  const headHex = await rpcCallWithBackoff("eth_blockNumber", []);
   const head = Number(BigInt(headHex || "0x0"));
   const all = [];
   let start = Math.max(fromBlock, getScanProgress(topics, address, fromBlock));
@@ -2643,8 +2664,8 @@ async function _resyncFromCloudVaultImpl(address, recompute) {
     await ensureSelfBackupKeyReady(address);
 
     const [latestVerHex, lastCkBlockHex] = await Promise.all([
-      rpcCall("eth_call", [{ to: CONTRACTS.PrivarCloudVault, data: buildCvLatestVersionCall(address) }, "latest"]),
-      rpcCall("eth_call", [{ to: CONTRACTS.PrivarCloudVault, data: buildCvLastCheckpointBlockCall(address) }, "latest"]),
+      rpcCallWithBackoff("eth_call", [{ to: CONTRACTS.PrivarCloudVault, data: buildCvLatestVersionCall(address) }, "latest"]),
+      rpcCallWithBackoff("eth_call", [{ to: CONTRACTS.PrivarCloudVault, data: buildCvLastCheckpointBlockCall(address) }, "latest"]),
     ]);
     const latestVer = decodeUint64Return(latestVerHex);
     console.info(`[cloud vault resync] ${address}: on-chain latestVersion=${latestVer}`);
