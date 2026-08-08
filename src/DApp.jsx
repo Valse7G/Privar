@@ -3261,14 +3261,21 @@ function ShieldedWallet({ bals, onMax, tokenFilter, actionableFilter, compact = 
   const activeFilter = actionableFilter || tokenFilter;
   if (!bals) return null;
 
-  // ── Stale notes detection ────────────────────────────────────────────────
-  // If local notes claim more than the global TVL, they are stale (from a
-  // previous PrivarShieldVault deployment). Show a warning so the user knows.
+  // ── Stale-note diagnostic (informational only — no destructive action) ──
+  // A previous "Clear stale notes" button here compared the LOCAL wallet
+  // balance to the GLOBAL protocol TVL (across every user) and, if it fired,
+  // wiped ALL local notes unconditionally — including a note the user had
+  // just shielded seconds earlier, because there was no way to tell "old/
+  // invalid" apart from "brand new" using only a balance comparison. Real
+  // staleness (a note actually spent on-chain) is already detected
+  // precisely and safely by reconcileNotesOnChain(), which only removes a
+  // note when its nullifier matches a real on-chain Withdrawn event — no
+  // user action needed, and it can never remove a note it can't verify.
+  // This banner is now purely diagnostic: it can flag a genuine mismatch
+  // worth investigating, but never offers a destructive one-click fix.
   const globalUsdc = protocolStats?.shieldedUsdc != null ? Number(protocolStats.shieldedUsdc) / 1e6 : null;
   const globalEurc = protocolStats?.shieldedEurc != null ? Number(protocolStats.shieldedEurc) / 1e6 : null;
   const globalCbtc = protocolStats?.shieldedBtc  != null ? Number(protocolStats.shieldedBtc)  / 1e8 : null;
-  // A note is stale if its local balance exceeds the TOTAL protocol TVL for that token
-  // (impossible if the notes are from the current contract)
   const staleUsdc = globalUsdc != null && bals.usdc > 0 && bals.usdc > globalUsdc + 0.01;
   const staleEurc = globalEurc != null && bals.eurc > 0 && bals.eurc > globalEurc + 0.01;
   const staleCbtc = globalCbtc != null && bals.cbtc > 0 && bals.cbtc > globalCbtc + 0.000001;
@@ -3314,29 +3321,10 @@ function ShieldedWallet({ bals, onMax, tokenFilter, actionableFilter, compact = 
       </div>
       {hasStale && (
         <div style={{ background:"rgba(248,113,113,.08)", border:"1px solid rgba(248,113,113,.25)", borderRadius:4, padding:"7px 10px", marginBottom:8, fontSize:8, color:"#fca5a5", fontFamily:"monospace", lineHeight:1.6 }}>
-          ⚠ Stale local notes detected — these balances come from an older PrivarShieldVault deployment.
-          Current on-chain TVL is lower than your local notes.{" "}
-          <span
-            onClick={() => {
-              try {
-                // notesKey() format: privar_notes_{addr}_{vaultAddr}
-                // We must use the same key format or we miss the entry
-                const addr  = window._privarAccount?.toLowerCase?.() || "";
-                const vault = (typeof CONTRACTS !== "undefined" ? CONTRACTS.PrivarShieldVault : "").toLowerCase();
-                const key   = addr && vault ? `privar_notes_${addr}_${vault}` : null;
-                if (key) localStorage.removeItem(key);
-                // Also clear legacy key format (no vault suffix)
-                if (addr) localStorage.removeItem(`privar_notes_${addr}`);
-                // Trigger recompute via storage event (cross-tab) AND direct callback
-                if (key) window.dispatchEvent(new StorageEvent("storage", { key }));
-                // Direct recompute if callback available
-                if (typeof window._privarRecomputeShielded === "function") {
-                  window._privarRecomputeShielded();
-                }
-              } catch(e) { console.warn("purge failed:", e); }
-            }}
-            style={{ color:"#f87171", textDecoration:"underline", cursor:"pointer" }}
-          >Clear stale notes</span>
+          ⚠ Local balance is currently higher than the protocol-wide TVL reading — this
+          can happen right after a fresh shield or sync while on-chain stats catch up,
+          and resolves automatically. Any note actually spent on-chain is pruned
+          automatically in the background — no action needed here.
         </div>
       )}
       <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:5 }}>
