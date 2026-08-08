@@ -1318,6 +1318,12 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
       if (cancelled) return;
       scanStealthNotes(account.address, recomputeShielded).catch(() => {});
       resyncFromCloudVault(account.address, recomputeShielded).catch(() => {});
+      // Retry any SPEND broadcasts that failed on a previous session (see
+      // "Pending SPEND broadcast queue") — a no-op wallet-side if the queue
+      // is empty, so safe to run on every connect without extra prompts.
+      retryPendingSpends(account, sendViewKeyTx).then(({ synced }) => {
+        if (synced > 0) recomputeShielded?.();
+      }).catch(() => {});
     })();
     ensureViewKeyRegistered(account.address, sendViewKeyTx, notify).catch(() => {});
     // Rescan every 2 minutes in case new stealth notes / cloud journal entries arrive
@@ -2473,15 +2479,61 @@ async function relaySelfNote({ account, sendRealTx, commitment, amount, token, l
 // used as a swap/send/bridge input) so other devices don't keep showing a
 // spent note as spendable balance. Union-of-ops replay in resyncFromCloudVault
 // makes this idempotent: replaying the same SPEND twice is a no-op.
+// ── Pending SPEND broadcast queue ──────────────────────────────────────────
+// relaySelfSpend() is fire-and-forget (.catch(()=>{})) at every call site —
+// correctly so, since a local spend (swap/send/withdraw) must never be
+// blocked by a background broadcast. But that means a failed broadcast
+// (rate limit, dropped signature, network drop — anything we've spent this
+// whole debugging session fixing symptoms of) was previously just LOST:
+// the note was already removed from THIS device's local storage (correct),
+// but no other device would ever learn it was spent, since there's no
+// retry. That other device's CloudVault resync keeps the note active
+// forever — a permanent phantom balance with no self-correction. This
+// queue makes SPEND broadcasts as durable as ADD broadcasts already were
+// (see cloudSynced / resyncLocalNotesToCloud).
+const pendingSpendsKey = (addr) => `privar_cloudvault_pendingspends_${addr.toLowerCase()}`;
+function getPendingSpends(address) {
+  try { return JSON.parse(localStorage.getItem(pendingSpendsKey(address)) || "[]"); } catch { return []; }
+}
+function addPendingSpend(address, commitment) {
+  if (!address || !commitment) return;
+  const list = getPendingSpends(address);
+  if (!list.includes(commitment)) { list.push(commitment); try { localStorage.setItem(pendingSpendsKey(address), JSON.stringify(list)); } catch {} }
+}
+function removePendingSpend(address, commitment) {
+  if (!address || !commitment) return;
+  const list = getPendingSpends(address).filter(c => c !== commitment);
+  try { localStorage.setItem(pendingSpendsKey(address), JSON.stringify(list)); } catch {}
+}
+
 async function relaySelfSpend({ account, sendRealTx, commitment }) {
+  const address = account?.address;
+  addPendingSpend(address, commitment); // recorded BEFORE the attempt — survives a failed/interrupted broadcast
   try {
     const op = { t: 1, commitment }; // t:1 = SPEND
-    return await pushCloudVaultDelta({
+    const ok = await pushCloudVaultDelta({
       account, sendRealTx, op,
       label: "Cloud Sync — spend",
       description: "Marking a shielded note as spent in the encrypted cloud journal.",
     });
+    if (ok) removePendingSpend(address, commitment);
+    return ok;
   } catch (e) { console.warn("[cloud vault spend relay]", e.message); return false; }
+}
+
+// Retries any SPEND broadcasts that didn't make it through last time —
+// called alongside resyncLocalNotesToCloud() so both directions (new notes
+// AND spent notes) get a chance to catch up together.
+async function retryPendingSpends(account, sendRealTx) {
+  const address = account?.address;
+  if (!address) return { synced: 0, failed: 0, total: 0 };
+  const pending = getPendingSpends(address);
+  let synced = 0, failed = 0;
+  for (const commitment of pending) {
+    const ok = await relaySelfSpend({ account, sendRealTx, commitment }).catch(() => false);
+    if (ok) synced++; else failed++;
+  }
+  return { synced, failed, total: pending.length };
 }
 
 // Flags a local note as already backed up, so resyncLocalNotesToCloud() and
@@ -2959,7 +3011,7 @@ async function resyncLocalNotesToCloud(account, sendRealTx, onProgress) {
 
   for (let i = 0; i < pending.length; i++) {
     const n = pending[i];
-    onProgress?.(i + 1, pending.length);
+    onProgress?.(i + 1, pending.length + getPendingSpends(address).length);
     const ok = await relaySelfNote({
       account, sendRealTx,
       commitment: n.commitment, amount: BigInt(n.amount || 0), token: n.token,
@@ -2968,10 +3020,21 @@ async function resyncLocalNotesToCloud(account, sendRealTx, onProgress) {
     }).catch(() => false);
     if (ok) { n.cloudSynced = true; synced++; } else { failed++; }
   }
-
   saveNotes(address, notes);
-  return { synced, failed, total: pending.length };
+
+  // Also retry any SPEND broadcasts that never made it through — otherwise
+  // a note already spent on THIS device stays "active" forever on any
+  // device that never received that SPEND delta (permanent phantom
+  // balance, no self-correction). See "Pending SPEND broadcast queue" above.
+  const spendResult = await retryPendingSpends(account, sendRealTx);
+
+  return {
+    synced: synced + spendResult.synced,
+    failed: failed + spendResult.failed,
+    total: pending.length + spendResult.total,
+  };
 }
+
 
 // Event topic0 hashes (keccak256 of event signature)
 const EV = {
