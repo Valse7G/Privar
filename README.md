@@ -1,42 +1,44 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v15.6.0-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v3.4.0-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
-![contracts](https://img.shields.io/badge/Contracts-v3.0.0-4ade80?style=flat-square&labelColor=0a1628)
+![contracts](https://img.shields.io/badge/Contracts-v3.4.0-4ade80?style=flat-square&labelColor=0a1628)
 ![status](https://img.shields.io/badge/status-testnet-4ade80?style=flat-square&labelColor=0a1628)
 
-Confidential on-chain capital management built on **Arc Testnet** (Circle L1, USDC native gas): shield, swap, send, withdraw, and bridge USDC/EURC/cirBTC privately, with cross-device shielded-note sync via a dedicated on-chain journal (**PrivarCloudVault**).
+Confidential on-chain capital management built on **Arc Testnet** (Circle L1, USDC native gas): shield, swap, send, withdraw, and bridge USDC/EURC/cirBTC privately, with protocol-wide note-journal persistence embedded directly in every shielding transaction (v3.4) — no separate broadcast that can silently fail.
 
 ---
 
-## Deployed contracts — Arc Testnet (v3.0.0)
+## Deployed contracts — Arc Testnet (v3.4.0)
 
 Deployer / treasury: `0x1Dc72450B3e2782AcD669D7C27073f2C8F2c9894`
+Deployed: 2026-08-09T11:20:37Z — full protocol redeployment (not a migration; see [Note-journal persistence](#note-journal-persistence-v34) below).
 
 | Contract | Address | Frontend key (`src/contracts.js`) |
 |---|---|---|
-| **PrivarShieldVault** | `0x4F8569CC8CaD8228fA4A3E493f9dcFebcDfeb43b` | `PrivarShieldVault` |
-| PrivarMerkleTreeManager | `0xe300f445DdE5387A1a1Fa606A0901114d15682f9` | `PrivarMerkleTreeManager` |
-| PrivarNullifierRegistry | `0xabCC5DD1943A1C9F25FDD86AC422373F87A93ea5` | `PrivarNullifierRegistry` |
-| PrivarDepositManager | `0x69Aa71BA7D1d65997715d0f287C6381490773d9a` | `PrivarDepositManager` |
-| PrivarWithdrawManager | `0x1a2d739287cEAa7d4136Ebc7C1aECEc00647a076` | `WithdrawalManager` |
-| PrivarStaking | `0xc43ffaC60e797DCb2C9eEcFba199696E75d90168` | `PrivarStaking` |
-| VerifierZK (Mock¹) | `0x6dcC80c09f789cd2a3403834465B3d66372606D6` | `MockVerifierZK` |
-| **PrivarCloudVault** ² | `0x348DF4D1b448dAB5DE63a16E7d9E64665c89664E` | `PrivarCloudVault` |
-| ViewKeyRegistry | `0x590D1FDC3FbD4CAb151cb7E1557D9C4ecEa2C24b` | `ViewKeyRegistry` |
-| LiFiPrivacyAdapter (active swap router) | `0x0703963ce37a485CFd6F9657dAA7361B07DCf39D` | `LiFiPrivacyAdapter` |
-| LiFiPrivacyBridge | `0x58d00F418Fc05426ed8d09028E7A97c3d8Cf3E7b` | `LiFiPrivacyBridge` |
+| **PrivarShieldVault** ³ | `0xf80D237A730788B3673EA4660B67E87232905CB0` | `PrivarShieldVault` |
+| PrivarMerkleTreeManager | `0xddDB0e99F1d1170A4aa4717a4DeD34120cC64f2e` | `PrivarMerkleTreeManager` |
+| PrivarNullifierRegistry | `0xd16a588Ef75e991c1A4774f3863391051C44d9e0` | `PrivarNullifierRegistry` |
+| PrivarDepositManager | `0xC0873536178607567c1172947ec477f4F0176C7F` | `PrivarDepositManager` |
+| PrivarWithdrawManager | `0x76F8Ee057FBe72009B576e96889873b51591dfeD` | `WithdrawalManager` |
+| PrivarStaking (public, no notes — see below) | `0x9288AcdeB38d0ebfE5b0A85857A5CF04f80B442e` | `PrivarStaking` |
+| VerifierZK (Mock¹) | `0x9643E2494ca2d695376939e2416B04ea58A92863` | `MockVerifierZK` |
+| **PrivarCloudVault** ² | `0x16505F02E7C759ddF921e75acEf9afFfd7d43Eb7` | `PrivarCloudVault` |
+| ViewKeyRegistry (unchanged since v1.0.0) | `0x590D1FDC3FbD4CAb151cb7E1557D9C4ecEa2C24b` | `ViewKeyRegistry` |
+| LiFiPrivacyAdapter (active swap router) | `0x731c81A345D1f0C47571bf3472d6Cb92b40E2Dac` | `LiFiPrivacyAdapter` |
+| LiFiPrivacyBridge ³ | `0x171DA0e3Ae1234645f59cC9ACB532d23B52d30b6` | `LiFiPrivacyBridge` |
 | LiFiDiamond | `0xFf70F4A1d11995621854F3692acF286d8aCd04b2` | `LiFiDiamond` |
-| TowerSwapAdapter (documented rollback target, not routed) | `0x6d0350b3B3Ea2f7f0eba72B5bD51BC3c6A905132` | `TowerSwapAdapter` |
+| TowerSwapAdapter (documented rollback target, not routed) | `0x3DAAcBc477CdeC3Ef66804C946254Af04cd30826` | `TowerSwapAdapter` |
 | USDC (native gas token) | `0x3600000000000000000000000000000000000000` | `NATIVE_USDC` |
 | EURC | `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a` | `EURC` |
 | cirBTC | `0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF` | `cirBTC` |
 | CCTP TokenMessenger | `0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA` | `CCTP_TokenMessenger` |
 
 ¹ Testnet only — `MockVerifierZK` accepts all well-formed proofs; not the production Groth16 verifier.
-² Standalone, additive deployment — no constructor args, no dependency on ShieldVault or any other contract. See [Cross-device note sync](#cross-device-note-sync--privarcloudvault) below.
+² Standalone, additive deployment — no constructor args, no dependency on ShieldVault or any other contract. Since v3.4, ShieldVault's own `NoteJournal` event is the *primary* persistence path for new activity — CloudVault stays deployed for backward compatibility with pre-v3.4 journal entries and as the manual "Sync Notes to Cloud" backfill in Settings. See [Note-journal persistence](#note-journal-persistence-v34) below.
+³ Redeployed for v3.4 — gained a `NoteJournal` event and, on `withdraw()`, an explicit `noteOwner` parameter. See below.
 
 All fallback addresses are hardcoded in `src/contracts.js` and can be overridden per-deployment with `VITE_*` env vars (Vercel) without touching code.
 
@@ -91,7 +93,7 @@ src/
 | `useProtocolStats(onArc)` | Live TVL, commitments, vault status |
 | `useTxSend(...)` | Sends tx, awaits receipt, persists txHistory |
 | `scanStealthNotes` / `ensureViewKeyRegistered` | ECDH stealth-note discovery for notes received from other wallets (`ViewKeyRegistry`) |
-| `resyncFromCloudVault` / `relaySelfNote` / `relaySelfSpend` | Push/pull sync of this wallet's own note journal (`PrivarCloudVault`) |
+| `resyncFromShieldVaultJournal` / `resyncFromCloudVault` | Reads note-journal entries — primary path is ShieldVault's own `NoteJournal` events (v3.4); `PrivarCloudVault` kept for backward compatibility |
 
 ### localStorage (per wallet, unless noted)
 
@@ -115,16 +117,21 @@ None of these are ever sent anywhere except the encrypted blobs explicitly pushe
 
 ---
 
-## Cross-device note sync — PrivarCloudVault
+## Note-journal persistence (v3.4)
 
-Shielded notes are normally only known to the browser that created them. `PrivarCloudVault` is a standalone, events-only contract that lets a device back up its own note journal on-chain, encrypted, so any other device controlling the same wallet can reconstruct the same shielded balance automatically — no manual export/import.
+Shielded notes are normally only known to the browser that created them. As of v3.4, **every function that creates or spends a note embeds an encrypted journal entry directly in the same transaction** as the operation itself — `deposit()`, `withdraw()`, `shieldedSend()`, `privateSwap()`, `privateSwapWithRoute()` all accept an optional trailing `bytes encryptedEntry`, emitted via `NoteJournal(address indexed owner, bytes encryptedEntry)` in that same call. There is no longer a separate follow-up transaction that can fail independently of the shield/spend itself.
 
-- **Transport**: `pushDelta(bytes)` for one incremental change (a new note, or a spent one), `pushCheckpoint(bytes32,bytes)` for a periodic full snapshot. Both emit events only — the contract never stores the payload, only a version counter and a checkpoint pointer, keeping writes cheap.
-- **Key derivation**: a single `personal_sign` of a fixed, address-normalized message → HKDF → AES-256-GCM. ECDSA `personal_sign` is deterministic and implemented near-identically across wallets, so every device controlling the private key derives the exact same key with one free, gasless signature — no EIP-712 branching (that turned out to be the actual source of a cross-wallet bug: two different signing paths can silently produce two different keys).
-- **Reading**: `resyncFromCloudVault` reads the on-chain version pointer, paginates `eth_getLogs` from a fixed `CLOUD_VAULT_GENESIS_BLOCK` floor (Arc Testnet is already tens of millions of blocks deep — scanning from block 0 reliably triggers RPC rate limits), decrypts, and replays ops. Scan progress persists locally so an interrupted pass resumes instead of restarting.
+- **Why this changed**: the pre-v3.4 design pushed journal entries to `PrivarCloudVault` as a *second*, independent transaction after the note-affecting one. If that second transaction failed for any reason (RPC rate limit, dropped signature, network drop), the spend/shield itself had already succeeded — but the journal entry was permanently lost, and any other device would show a stale or phantom balance forever with no way to self-correct. Bundling the entry into the same transaction makes that structurally impossible: either both happen, or neither does.
+- **`withdraw()`'s `noteOwner` parameter**: since `withdraw()` can be called by an intermediary contract on the user's behalf (`LiFiPrivacyBridge.privateBridge()`), the journal entry is keyed by an explicit `noteOwner` address rather than `msg.sender`. Anyone could in principle pass an arbitrary address here, but the entry is opaque ciphertext only the real owner's derived key can decrypt — a spoofed entry simply fails to decrypt and is ignored.
+- **Key derivation**: a single `personal_sign` of a fixed, address-normalized message → HKDF → AES-256-GCM. ECDSA `personal_sign` is deterministic and implemented near-identically across wallets, so every device controlling the private key derives the exact same key with one free, gasless signature.
+- **Reading**: `resyncFromShieldVaultJournal` reads `NoteJournal` events directly from `PrivarShieldVault`, paginating `eth_getLogs` with a genesis-block floor (Arc Testnet is already tens of millions of blocks deep — scanning from block 0 reliably triggers RPC rate limits) and persisting scan progress locally so an interrupted pass resumes instead of restarting.
 - **Merge safety**: a local note is only ever removed on positive evidence (an explicit "spent" op decrypted from the journal) — never merely because it's absent from one read pass, which avoids pruning a note that's just not indexed yet.
 
-This module only concerns a wallet's own notes. Notes received from other wallets via confidential send still use the separate ECDH `ViewKeyRegistry` pipeline, untouched by any of the above.
+**`PrivarCloudVault`** (a standalone, events-only contract — `pushDelta`/`pushCheckpoint`) is still deployed and read (`resyncFromCloudVault`) for backward compatibility with journal entries pushed before the v3.4 upgrade, and as the manual "Sync Notes to Cloud" backfill path in Settings for any note that still predates it. New activity no longer pushes to it.
+
+**`PrivarStaking` is untouched by any of this** — it's a fully public ERC-20 staking contract (positions indexed by `msg.sender`, readable directly via `getUserPositions()`), with no shielded notes involved at all. It was redeployed as part of the v3.4 suite for a clean, internally-consistent stack, but its logic and persistence model didn't change — it was already natively persistent on-chain.
+
+This only concerns a wallet's own notes. Notes received from other wallets via confidential send still use the separate ECDH `ViewKeyRegistry` pipeline, untouched by any of the above.
 
 ---
 
@@ -162,7 +169,15 @@ Override any address via Vercel env vars (`VITE_SHIELD_VAULT`, `VITE_CLOUD_VAULT
 
 ## Changelog
 
-### v15.6.0 (current)
+### v3.4.0 (current) — full protocol redeployment
+- **Protocol-wide note-journal persistence**: `deposit()`/`withdraw()`/`shieldedSend()`/`privateSwap()`/`privateSwapWithRoute()` now embed an encrypted journal entry directly in the same transaction (`NoteJournal` event) instead of a separate follow-up broadcast to PrivarCloudVault — closes the reliability gap where that second transaction could fail after the spend/shield had already succeeded, permanently orphaning the note's journal entry on other devices
+- `withdraw()` gains an explicit `noteOwner` parameter so `LiFiPrivacyBridge.privateBridge()` (which calls `withdraw()` on the user's behalf) attributes the journal entry to the right wallet
+- Fixed a real pre-existing bug in the Confidential Send flow: the calldata builder was called with mismatched field names, leaving `nullifier`/`root` undefined
+- `PrivarCloudVault` retained for backward compatibility with pre-v3.4 journal entries and manual backfill; no longer the primary path for new activity
+- `PrivarStaking` redeployed for a clean, internally-consistent v3.4 stack — logic unchanged (fully public, no shielded notes)
+- Full-suite redeployment, not a migration — v3.3 shielded balances remain in the old `PrivarShieldVault` address
+
+### v15.6.0
 - **PrivarCloudVault**: new standalone contract for decentralized, events-only cross-device note sync (checkpoint + delta journal)
 - Fixed cross-wallet key-derivation bug (EIP-712/personal_sign branching could silently derive two different keys on two different wallets)
 - Fixed unnormalized address casing in the signed backup message (different wallets return different casing for the same address)

@@ -1318,6 +1318,7 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
       if (cancelled) return;
       scanStealthNotes(account.address, recomputeShielded).catch(() => {});
       resyncFromCloudVault(account.address, recomputeShielded).catch(() => {});
+      resyncFromShieldVaultJournal(account.address, recomputeShielded).catch(() => {});
       // Retry any SPEND broadcasts that failed on a previous session (see
       // "Pending SPEND broadcast queue") — a no-op wallet-side if the queue
       // is empty, so safe to run on every connect without extra prompts.
@@ -1330,6 +1331,7 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
     const id = setInterval(() => {
       scanStealthNotes(account.address, recomputeShielded).catch(() => {});
       resyncFromCloudVault(account.address, recomputeShielded).catch(() => {});
+      resyncFromShieldVaultJournal(account.address, recomputeShielded).catch(() => {});
     }, 120_000);
     return () => { cancelled = true; clearInterval(id); };
   }, [account?.address, onArc, recomputeShielded, sendViewKeyTx, notify]);
@@ -2288,6 +2290,17 @@ async function eciesDecryptNoteWithViewKey(recipientAddress, encryptedNoteHex, e
 // rate-limit death spiral (see cloudVaultGetLogs).
 const CLOUD_VAULT_GENESIS_BLOCK = 55200000;
 
+// Floor block for scanning PrivarShieldVault's own NoteJournal events (v3.4).
+// SEPARATE from CLOUD_VAULT_GENESIS_BLOCK above — that one was calibrated for
+// the v3.3-era PrivarCloudVault deployment and has no relation to this
+// contract's own deployment block. TODO: set this to ShieldVault v3.4's
+// actual deployment block once known (same reasoning as CLOUD_VAULT_GENESIS_
+// BLOCK — Arc Testnet is 50M+ blocks deep, scanning from 0 triggers the RPC
+// rate-limit death spiral even for a contract with zero history before it).
+// 0 is a safe (if slow) default until then — a brand-new contract simply has
+// no events before its own deployment block regardless of where the scan starts.
+const SHIELD_VAULT_JOURNAL_GENESIS_BLOCK = 0;
+
 // IMPORTANT: the address is normalized to lowercase here. Different wallets
 // return the connected account in different casing from eth_requestAccounts/
 // eth_accounts — e.g. Rabby returns it all-lowercase, TokenPocket returns it
@@ -2895,6 +2908,75 @@ async function _resyncFromCloudVaultImpl(address, recompute) {
       recompute?.();
     }
   } catch (e) { console.warn("[cloud vault resync]", e.message); }
+}
+
+// ── v3.4 — resync from PrivarShieldVault's own NoteJournal events ─────────
+// Sibling to resyncFromCloudVault(), same journal format (ops array,
+// AES-256-GCM, personal_sign-derived key — decryptJournalBlob is shared),
+// same conservative merge (only ever remove a note on positive SPEND
+// evidence). Different transport: since v3.4, deposit()/withdraw()/
+// shieldedSend()/privateSwap*() embed the journal entry directly in the
+// SAME transaction as the operation itself via NoteJournal(owner, entry) —
+// see PrivarShieldVault.sol's doc comment — so this is now the PRIMARY
+// source for new activity. PrivarCloudVault (resyncFromCloudVault above)
+// stays in place for backward compatibility with journal entries pushed
+// before this upgrade, and as a manual backfill path (Settings → Sync Notes
+// to Cloud) for any note that still predates NoteJournal. No checkpoint
+// concept here (unlike CloudVault) — ShieldVault has no pushCheckpoint
+// equivalent, every entry is a plain incremental delta.
+const NOTE_JOURNAL_TOPIC = "0x7165dc7fc38d2a514b779acd1810fb57b3569ba2f4ddf0b31d35d6d711747d0f";
+const _shieldVaultJournalInFlight = new Map();
+
+async function resyncFromShieldVaultJournal(address, recompute) {
+  if (!address || !CONTRACTS.PrivarShieldVault) return;
+  const key = address.toLowerCase();
+  if (_shieldVaultJournalInFlight.has(key)) return _shieldVaultJournalInFlight.get(key);
+  const p = _resyncFromShieldVaultJournalImpl(address, recompute).finally(() => _shieldVaultJournalInFlight.delete(key));
+  _shieldVaultJournalInFlight.set(key, p);
+  return p;
+}
+
+async function _resyncFromShieldVaultJournalImpl(address, recompute) {
+  try {
+    await ensureSelfBackupKeyReady(address);
+    const ownerTopic = "0x" + "0".repeat(24) + address.toLowerCase().slice(2);
+    const logs = await fetchLogsPaginated(
+      CONTRACTS.PrivarShieldVault, [NOTE_JOURNAL_TOPIC, ownerTopic],
+      SHIELD_VAULT_JOURNAL_GENESIS_BLOCK, "privar_shieldvault_journal_scanprogress", address, "shield vault journal resync"
+    );
+    if (!Array.isArray(logs) || logs.length === 0) return;
+
+    const spentCommitments = new Set();
+    const state = new Map();
+    let decrypted = 0, failed = 0;
+    for (const log of logs) {
+      const raw = decodeBytesReturn(log.data);
+      if (!raw) { failed++; continue; }
+      const entry = await decryptJournalBlob(address, raw);
+      if (!entry?.ops) { failed++; continue; }
+      decrypted++;
+      for (const op of entry.ops) {
+        if (op.t === 0 && op.commitment) { state.set(op.commitment, { commitment: op.commitment, amount: op.amount, token: op.token, ts: entry.ts }); spentCommitments.delete(op.commitment); }
+        else if (op.t === 1 && op.commitment) { state.delete(op.commitment); spentCommitments.add(op.commitment); }
+      }
+    }
+    console.info(`[shield vault journal resync] ${address}: ${logs.length} event(s), decrypted ${decrypted}, failed ${failed}`);
+
+    // Same conservative merge as resyncFromCloudVault — only remove on positive SPEND evidence.
+    const local = getNotes(address);
+    const merged = local.filter(n => !n.commitment || !spentCommitments.has(n.commitment));
+    let added = 0;
+    for (const [commitment, n] of state) {
+      if (!merged.some(x => x.commitment === commitment)) {
+        merged.push({ ...n, cloudSynced: true, source: "shieldvault-journal" });
+        added++;
+      }
+    }
+    if (added > 0 || merged.length !== local.length) {
+      saveNotes(address, merged);
+      recompute?.();
+    }
+  } catch (e) { console.warn("[shield vault journal resync]", e.message); }
 }
 
 // ── Scan chain for stealth notes addressed to this wallet ─────────────────
@@ -3560,9 +3642,19 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
     }
 
     // Step 3: Build deposit calldata
+    // v3.4 — the note-journal entry is embedded DIRECTLY in this same
+    // transaction (NoteJournal event) instead of a separate follow-up call
+    // to PrivarCloudVault.pushDelta(). This closes the reliability gap where
+    // that second, independent transaction could fail (rate limit, dropped
+    // signature, network drop) after the shield itself had already
+    // succeeded, permanently orphaning the note's journal entry on every
+    // OTHER device — see PrivarShieldVault.sol's NoteJournal doc comment.
+    await ensureSelfBackupKeyReady(account?.address);
+    const journalEntry = await encryptJournalBlob(account?.address, { ts: Date.now(), ops: [{ t: 0, commitment, amount: netAmount.toString(), token: token.address }] });
+
     // For native USDC: value = amount * 1e12 (wei), no ERC-20 transferFrom
     // For EURC/cirBTC: value = flatFeeUsdc * 1e12 (the separate USDC fee payment, v2.8), standard ERC-20 transferFrom
-    const { data: depositData, value: depositValue } = buildDepositCalldata(commitment, token.address, amountBig, flatFeeUsdc);
+    const { data: depositData, value: depositValue } = buildDepositCalldata(commitment, token.address, amountBig, flatFeeUsdc, journalEntry || "0x");
 
     // Show confirmation modal before hitting wallet — shows real amount (wallet shows value=0 for ERC-20)
     const confirmed = await askConfirm({
@@ -3587,18 +3679,16 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
       // Store note locally with the NET (post-fee) amount — matches what PrivarShieldVault
       // actually credited to totalShieldedByToken, so future withdraw/send/swap on this
       // note request an amount the pool can actually back.
-      const note = { commitment, amount: netAmount.toString(), token: token.address, ts: Date.now() };
+      // cloudSynced is true here BY CONSTRUCTION (v3.4): the journal entry
+      // was embedded in the SAME transaction that just confirmed — there is
+      // no separate broadcast that could still be pending or fail.
+      const note = { commitment, amount: netAmount.toString(), token: token.address, ts: Date.now(), cloudSynced: !!journalEntry };
       const notes = getNotes(account?.address);
       notes.push(note);
       saveNotes(account?.address, notes);
       recomputeShielded?.(); // FIX: localStorage "storage" event never fires for same-tab writes — must call explicitly
 
-      // ── Item 2B: self-addressed encrypted note (cross-device reconstruction) ──
-      const backedUp = await relaySelfNote({
-        account, sendRealTx, commitment, amount: netAmount, token: token.address,
-        label: "Shield · Cross-Device Backup",
-        description: "Saving an encrypted copy of this note on-chain so it's recoverable from any device.",
-      });
+      const backedUp = !!journalEntry;
 
       notify(
         "Shield ✓",
@@ -3876,6 +3966,19 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       setLoading(false); return;
     }
 
+    // v3.4 — embed the SPEND + ADD(s) journal ops directly in this SAME swap
+    // transaction instead of 2-3 separate follow-up calls. See
+    // PrivarShieldVault.sol's NoteJournal doc comment.
+    await ensureSelfBackupKeyReady(account?.address);
+    const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
+    const changeCommitment = remaining > 0n ? randomBytes32() : null;
+    const swapOps = [
+      { t: 1, commitment: note.commitment },
+      { t: 0, commitment: commitmentOut, amount: outAmountBig.toString(), token: tkTo.addr },
+    ];
+    if (changeCommitment) swapOps.push({ t: 0, commitment: changeCommitment, amount: remaining.toString(), token: note.token });
+    const journalEntry = await encryptJournalBlob(account?.address, { ts: Date.now(), ops: swapOps });
+
     // Build calldata for PrivarShieldVault.privateSwap() / privateSwapWithRoute()
     // Atomic: ShieldVault spends nullifier → swapRouter.executeSwap() → re-shield
     const { data, value } = usingLiFi
@@ -3883,11 +3986,13 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
           nullifier, root: merkleRoot, tokenIn: tkFr.addr, tokenOut: tkTo.addr,
           amountIn: amountBig, minAmountOut: minOut,
           commitmentOut, deadline, routeData, flatFeeUsdc,
+          encryptedEntry: journalEntry || "0x",
         })
       : buildAtomicSwapCalldata({
           nullifier, root: merkleRoot, tokenIn: tkFr.addr, tokenOut: tkTo.addr,
           amountIn: amountBig, minAmountOut: minOut,
           commitmentOut, deadline, flatFeeUsdc,
+          encryptedEntry: journalEntry || "0x",
         });
 
     const ok = await sendRealTx({
@@ -3900,22 +4005,11 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
 
     if (ok) {
       // Update local notes
-      const updated   = notes.filter(n => n.commitment !== note.commitment);
-      const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
-      let changeCommitment = null;
-      if (remaining > 0n) { changeCommitment = randomBytes32(); updated.push({ ...note, amount:remaining.toString(), commitment:changeCommitment }); }
-      updated.push({ commitment:commitmentOut, amount:outAmountBig.toString(), token:tkTo.addr, ts:Date.now() });
+      const updated = notes.filter(n => n.commitment !== note.commitment);
+      if (changeCommitment) updated.push({ ...note, amount:remaining.toString(), commitment:changeCommitment, cloudSynced: !!journalEntry });
+      updated.push({ commitment:commitmentOut, amount:outAmountBig.toString(), token:tkTo.addr, ts:Date.now(), cloudSynced: !!journalEntry });
       saveNotes(account?.address, updated);
       recomputeShielded?.();
-      await relaySelfNote({ account, sendRealTx, commitment:commitmentOut, amount:outAmountBig, token:tkTo.addr,
-        label:"Swap · Backup", description:"Encrypted backup of swap output note." });
-      relaySelfSpend({ account, sendRealTx, commitment: note.commitment }).catch(() => {});
-      // Pre-existing gap: the swap-input leftover note was never backed up like
-      // every other change note — fixed here as part of closing note-persistence gaps.
-      if (changeCommitment) relaySelfNote({
-        account, sendRealTx, commitment: changeCommitment, amount: remaining, token: note.token,
-        label: "Swap · Change Backup", description: "Saving an encrypted copy of your change note on-chain.",
-      }).catch(() => {});
       notify("Swap ✓",`${amount} ${fr} → ~${q.out} ${to} — swap confidentiel terminé.`,"success");
     }
 
@@ -4102,8 +4196,25 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     });
     if (!confirmed) { setLoading(false); return; }
 
-    // Tx 1: the actual shielded fund movement (PrivarShieldVault selector 0x5635a2e7)
-    const { data, value } = buildShieldedSendCalldata({ nullifierIn, merkleRoot, commitmentOut, sendFlatFee: sendFee, token: tkSend.addr });
+    // v3.4 — embed the SPEND (and, if there's change, ADD) journal ops for
+    // the SENDER's own records directly in this SAME transaction, separate
+    // from `encryptedNote` (which is encrypted to the RECIPIENT's view key
+    // and relayed via ViewKeyRegistry in a second tx below — unrelated
+    // transport, unrelated key). See PrivarShieldVault.sol's NoteJournal
+    // doc comment for why embedding beats a follow-up broadcast.
+    await ensureSelfBackupKeyReady(account?.address);
+    const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
+    const changeCommitment = remaining > 0n ? randomBytes32() : null;
+    const selfOps = [{ t: 1, commitment: note.commitment }];
+    if (changeCommitment) selfOps.push({ t: 0, commitment: changeCommitment, amount: remaining.toString(), token: note.token });
+    const selfEntry = await encryptJournalBlob(account?.address, { ts: Date.now(), ops: selfOps });
+
+    // Tx 1: the actual shielded fund movement
+    const { data, value } = buildShieldedSendCalldata({
+      nullifier: nullifierIn, root: merkleRoot, commitmentOut,
+      encryptedNote: encryptedNote || "0x",
+      encryptedSelfEntry: selfEntry || "0x",
+    });
     const ok = await sendRealTx({
       label: "Confidential Send",
       description: `${amount} ${sendToken} → ${dest.slice(0,8)}… (shielded)`,
@@ -4112,19 +4223,7 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
 
     if (ok) {
       const updated = notes.filter(n => n.commitment !== note.commitment);
-      relaySelfSpend({ account, sendRealTx, commitment: note.commitment }).catch(() => {});
-      const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
-      let changeBackedUp = false;
-      if (remaining > 0n) {
-        const changeCommitment = randomBytes32();
-        updated.push({ ...note, amount: remaining.toString(), commitment: changeCommitment });
-        // ── Item 2B: self-addressed encrypted note for the change note ──────────
-        changeBackedUp = await relaySelfNote({
-          account, sendRealTx, commitment: changeCommitment, amount: remaining, token: note.token,
-          label: "Send · Change Backup",
-          description: "Saving an encrypted copy of your change note on-chain.",
-        });
-      }
+      if (changeCommitment) updated.push({ ...note, amount: remaining.toString(), commitment: changeCommitment, cloudSynced: !!selfEntry });
       // Keep sender's copy of output note (local history only — not a spendable
       // note for the sender anymore, ownership transferred to the recipient, so
       // this is NOT self-relayed via ViewKeyRegistry).
@@ -4151,7 +4250,7 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
           "success"
         );
       } else {
-        notify("Confidential Send ✓", `${amount} USDC sent privately.${changeBackedUp ? " Change note backed up on-chain." : ""}`, "success");
+        notify("Confidential Send ✓", `${amount} USDC sent privately.${selfEntry ? " Change note backed up on-chain." : ""}`, "success");
       }
     }
 
@@ -4306,6 +4405,17 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
       notify("Withdraw", "Could not read current fees (slow network) — please retry.", "error");
       setLoading(false); return;
     }
+    // v3.4 — embed the SPEND (and, if there's change, ADD) journal ops
+    // directly in this SAME withdraw transaction instead of separate
+    // follow-up calls — see PrivarShieldVault.sol's NoteJournal doc comment
+    // for why that used to be a reliability gap.
+    await ensureSelfBackupKeyReady(account?.address);
+    const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
+    const changeCommitment = remaining > 0n ? randomBytes32() : null;
+    const ops = [{ t: 1, commitment: note.commitment }];
+    if (changeCommitment) ops.push({ t: 0, commitment: changeCommitment, amount: remaining.toString(), token: note.token });
+    const journalEntry = await encryptJournalBlob(account?.address, { ts: Date.now(), ops });
+
     const { data, value: txValue } = buildWithdrawCalldata({
       nullifier, root,
       token:       tk.addr,
@@ -4314,6 +4424,8 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
       relayerFee:  0n,
       relayer:     "0x0000000000000000000000000000000000000000",
       flatFeeUsdc,
+      noteOwner:   account?.address,
+      encryptedEntry: journalEntry || "0x",
     });
 
     const feeDesc = withdrawFee > 0n
@@ -4327,18 +4439,8 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
     });
 
     if (ok) {
-      const updated   = notes.filter(n => n.commitment !== note.commitment);
-      relaySelfSpend({ account, sendRealTx, commitment: note.commitment }).catch(() => {});
-      const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
-      if (remaining > 0n) {
-        const changeCommitment = randomBytes32();
-        updated.push({ ...note, amount: remaining.toString(), commitment: changeCommitment });
-        await relaySelfNote({
-          account, sendRealTx, commitment: changeCommitment, amount: remaining, token: note.token,
-          label: "Withdraw · Change Backup",
-          description: "Saving an encrypted copy of your change note on-chain.",
-        });
-      }
+      const updated = notes.filter(n => n.commitment !== note.commitment);
+      if (changeCommitment) updated.push({ ...note, amount: remaining.toString(), commitment: changeCommitment, cloudSynced: !!journalEntry });
       saveNotes(account?.address, updated);
       recomputeShielded?.();
     }
@@ -4517,6 +4619,17 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
       setLoading(false); setStep(""); return;
     }
 
+    // v3.4 — embed the SPEND (+ ADD for change) journal ops directly in this
+    // SAME bridge transaction, forwarded through LiFiPrivacyBridge to
+    // ShieldVault.withdraw() and emitted there. See PrivarShieldVault.sol's
+    // NoteJournal doc comment.
+    await ensureSelfBackupKeyReady(account?.address);
+    const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
+    const changeCommitment = remaining > 0n ? randomBytes32() : null;
+    const bridgeOps = [{ t: 1, commitment: note.commitment }];
+    if (changeCommitment) bridgeOps.push({ t: 0, commitment: changeCommitment, amount: remaining.toString(), token: note.token });
+    const journalEntry = await encryptJournalBlob(account?.address, { ts: Date.now(), ops: bridgeOps });
+
     // 5. Atomic unshield + LI.FI bridge — ONE transaction, targeting
     // LiFiPrivacyBridge directly (NOT PrivarShieldVault).
     setStep(`Étape 3/3 — Unshield + Bridge ${token} → ${ch.name}…`);
@@ -4525,6 +4638,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
       token: tk.addr, amount: amountBig,
       relayer: "0x0000000000000000000000000000000000000000", relayerFee: 0n,
       routeData, flatFeeUsdc,
+      encryptedEntry: journalEntry || "0x",
     });
 
     const bridgeOk = await sendRealTx({
@@ -4534,21 +4648,8 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
     });
 
     if (bridgeOk) {
-      const updated   = notes.filter(n => n.commitment !== note.commitment);
-      relaySelfSpend({ account, sendRealTx, commitment: note.commitment }).catch(() => {});
-      const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
-      if (remaining > 0n) {
-        const changeCommitment = randomBytes32();
-        updated.push({ ...note, amount: remaining.toString(), commitment: changeCommitment });
-        // Pre-existing gap: the bridge leftover note was never backed up like
-        // every other change note (swap/send/withdraw all call relaySelfNote) —
-        // fixed here as part of closing note-persistence gaps.
-        relaySelfNote({
-          account, sendRealTx, commitment: changeCommitment, amount: remaining, token: note.token,
-          label: "Bridge · Change Backup",
-          description: "Saving an encrypted copy of your change note on-chain.",
-        }).catch(() => {});
-      }
+      const updated = notes.filter(n => n.commitment !== note.commitment);
+      if (changeCommitment) updated.push({ ...note, amount: remaining.toString(), commitment: changeCommitment, cloudSynced: !!journalEntry });
       saveNotes(account?.address, updated);
       recomputeShielded?.();
       notify("Bridge ✓", `${amount} ${token} → ${ch.name} — arriving in 1-5 min.`, "success");

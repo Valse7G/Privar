@@ -1,8 +1,12 @@
 // ════════════════════════════════════════════════════════════════════════════
-//  Privar OS — Contract Config v12.1.0
+//  Privar OS — Contract Config v3.4.0
 //
-//  Addresses synced with latest.json v3.0.0 — Arc Testnet — last updated 2026-08-06
-//  (adds PrivarCloudVault, deployed 2026-08-06T12:16:30.997Z)
+//  Addresses synced with latest.json v3.4.0 — Arc Testnet — deployed 2026-08-09T11:20:37Z
+//  Full protocol redeployment: protocol-wide note-journal persistence
+//  (deposit/withdraw/shieldedSend/privateSwap* now embed an encrypted
+//  journal entry in the SAME transaction — see PrivarShieldVault.sol's
+//  NoteJournal event doc comment). NOT a migration — this is a fresh vault;
+//  any v3.3 shielded balances remain in the old ShieldVault address.
 //  Deployer: 0x1Dc72450B3e2782AcD669D7C27073f2C8F2c9894
 //
 //  ADDRESSES: sourced from VITE_ env vars (Vercel) or hardcoded fallbacks
@@ -12,34 +16,35 @@ export const ARC_CHAIN_ID = 5042002;
 
 // ── Contract addresses ────────────────────────────────────────────────────────
 const _c = {
-  PrivarShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0x4F8569CC8CaD8228fA4A3E493f9dcFebcDfeb43b",
+  PrivarShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0xf80D237A730788B3673EA4660B67E87232905CB0",
   Timelock:            import.meta.env.VITE_TIMELOCK              ?? "0x8DF7C02012EBec968bdEc100F4fEAF772AcAab99",
   Governance:          import.meta.env.VITE_GOVERNANCE            ?? "0x89F08E2BBc963e48986D8A0FfA23858bA643C78A",
-  PrivarStaking:             import.meta.env.VITE_STAKING               ?? "0xc43ffaC60e797DCb2C9eEcFba199696E75d90168",
-  PrivarNullifierRegistry:   import.meta.env.VITE_NULLIFIER_REGISTRY    ?? "0xabCC5DD1943A1C9F25FDD86AC422373F87A93ea5",
-  PrivarMerkleTreeManager:   import.meta.env.VITE_MERKLE_TREE_MANAGER   ?? "0xe300f445DdE5387A1a1Fa606A0901114d15682f9",
-  PrivarDepositManager:      import.meta.env.VITE_DEPOSIT_MANAGER       ?? "0x69Aa71BA7D1d65997715d0f287C6381490773d9a",
-  WithdrawalManager:   import.meta.env.VITE_WITHDRAWAL_MANAGER    ?? "0x1a2d739287cEAa7d4136Ebc7C1aECEc00647a076",
+  PrivarStaking:             import.meta.env.VITE_STAKING               ?? "0x9288AcdeB38d0ebfE5b0A85857A5CF04f80B442e",
+  PrivarNullifierRegistry:   import.meta.env.VITE_NULLIFIER_REGISTRY    ?? "0xd16a588Ef75e991c1A4774f3863391051C44d9e0",
+  PrivarMerkleTreeManager:   import.meta.env.VITE_MERKLE_TREE_MANAGER   ?? "0xddDB0e99F1d1170A4aa4717a4DeD34120cC64f2e",
+  PrivarDepositManager:      import.meta.env.VITE_DEPOSIT_MANAGER       ?? "0xC0873536178607567c1172947ec477f4F0176C7F",
+  WithdrawalManager:   import.meta.env.VITE_WITHDRAWAL_MANAGER    ?? "0x76F8Ee057FBe72009B576e96889873b51591dfeD",
   ShieldedTransfer:    import.meta.env.VITE_SHIELDED_TRANSFER     ?? "0xa880603916611a0e624f9A04c7f08b62f0532543",
   PrivateSwap:         import.meta.env.VITE_PRIVATE_SWAP          ?? "0xd16F252FFc0a406dFcF58eBAF7EA49f9e1DF78Eb",
   PrivateBridge:       import.meta.env.VITE_PRIVATE_BRIDGE        ?? "0x1C22eEb6c422BeF73B335e1E5668ec3109839B40",
   EmergencyController: import.meta.env.VITE_EMERGENCY_CONTROLLER  ?? "0xa788E96DcF4dBf348995bc5b8D0C7BbaD8e5e88F",
-  MockVerifierZK:      import.meta.env.VITE_VERIFIER_ZK           ?? "0x6dcC80c09f789cd2a3403834465B3d66372606D6",
+  MockVerifierZK:      import.meta.env.VITE_VERIFIER_ZK           ?? "0x9643E2494ca2d695376939e2416B04ea58A92863",
   // ViewKeyRegistry v1.0.0 — deployed 2026-06-20. Confidential-send auto-discovery
   // (real ECDH stealth notes) is feature-gated on this being non-null — see
-  // DApp.jsx ensureViewKeyRegistered()/scanStealthNotes().
+  // DApp.jsx ensureViewKeyRegistered()/scanStealthNotes(). NOT part of the
+  // v3.4 ShieldVault-suite redeploy — unchanged, still the original address.
   ViewKeyRegistry:     import.meta.env.VITE_VIEW_KEY_REGISTRY     ?? "0x590D1FDC3FbD4CAb151cb7E1557D9C4ecEa2C24b",
   // PrivarCloudVault — standalone, additive (no constructor args, no link to
   // ShieldVault). Decentralized events-only backup registry for the shielded
-  // note journal — fixes cross-device note persistence. Feature-gated on
-  // being non-null, same pattern as ViewKeyRegistry — see DApp.jsx
-  // "PRIVAR CLOUD VAULT" section. Deploy: scripts/deploy-cloudvault.js.
-  // Deployed 2026-08-06 (see deployments/latest.json _cloudVaultDeployedAt).
-  PrivarCloudVault:    import.meta.env.VITE_CLOUD_VAULT           ?? "0x348DF4D1b448dAB5DE63a16E7d9E64665c89664E",
-  // LI.FI privacy adapters v3.3 — redeployed 2026-07-25 alongside the full
-  // core (WrongFee() swap fix + TVL native-scaling fix — see /areas/privar.md).
-  LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0x0703963ce37a485CFd6F9657dAA7361B07DCf39D",
-  LiFiPrivacyBridge:   import.meta.env.VITE_LIFI_BRIDGE           ?? "0x58d00F418Fc05426ed8d09028E7A97c3d8Cf3E7b",
+  // note journal. Since v3.4, ShieldVault's own NoteJournal event is the
+  // PRIMARY persistence path for new activity (see resyncFromShieldVaultJournal
+  // in DApp.jsx) — this stays deployed for backward compatibility with
+  // journal entries pushed before the v3.4 upgrade, and as the manual
+  // "Sync Notes to Cloud" backfill path in Settings.
+  PrivarCloudVault:    import.meta.env.VITE_CLOUD_VAULT           ?? "0x16505F02E7C759ddF921e75acEf9afFfd7d43Eb7",
+  // LI.FI privacy adapters — redeployed 2026-08-09 as part of the full v3.4 suite.
+  LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0x731c81A345D1f0C47571bf3472d6Cb92b40E2Dac",
+  LiFiPrivacyBridge:   import.meta.env.VITE_LIFI_BRIDGE           ?? "0x171DA0e3Ae1234645f59cC9ACB532d23B52d30b6",
   LiFiDiamond:         import.meta.env.VITE_LIFI_DIAMOND          ?? "0xFf70F4A1d11995621854F3692acF286d8aCd04b2",
 };
 
@@ -72,7 +77,7 @@ export const CONTRACTS = {
   // NOTE: as of the v3.2 LI.FI deployment, ShieldVault.swapRouter() points to
   // LiFiPrivacyAdapter, NOT this address — TowerSwapAdapter is kept deployed
   // only as a documented rollback target (see scripts/deploy-lifi.js).
-  TowerSwapAdapter:    import.meta.env.VITE_TOWER_SWAP_ADAPTER ?? "0x6d0350b3B3Ea2f7f0eba72B5bD51BC3c6A905132",
+  TowerSwapAdapter:    import.meta.env.VITE_TOWER_SWAP_ADAPTER ?? "0x3DAAcBc477CdeC3Ef66804C946254Af04cd30826",
   PrivateBridge:       _c.PrivateBridge,
   EmergencyController: _c.EmergencyController,
   MockVerifierZK:      _c.MockVerifierZK,
@@ -178,14 +183,14 @@ export const SEL = {
   // PrivarShieldVault v3.0.0 — simplified ABI, NO ZK proof structs anymore.
   // Selectors verified against contracts/core/PrivarShieldVault.sol (v3.0.0).
   // Sanity-checked keccak256 impl against known selectors (balanceOf, transfer, approve).
-  deposit:            "0x26b3293f",  // deposit(address,uint256,bytes32)
-  withdraw:            "0x842dcc9e",  // withdraw(bytes32,bytes32,address,address,uint256,address,uint256)
-  shieldedSend:        "0xfc70b4ba",  // shieldedSend(bytes32,bytes32,bytes32,bytes) — encryptedNote now inline, not payable
-  privateSwap:         "0x4ac0a154",  // privateSwap(bytes32,bytes32,address,address,uint256,uint256,bytes32,uint256) — not payable
+  deposit:            "0x17c224e8",  // v3.4: deposit(address,uint256,bytes32,bytes)
+  withdraw:            "0x5b5bbcf8",  // v3.4: withdraw(bytes32,bytes32,address,address,uint256,address,uint256,address,bytes)
+  shieldedSend:        "0x883be0f1",  // v3.4: shieldedSend(bytes32,bytes32,bytes32,bytes,bytes) — encryptedNote + encryptedSelfEntry, not payable
+  privateSwap:         "0x1f12e042",  // v3.4: privateSwap(bytes32,bytes32,address,address,uint256,uint256,bytes32,uint256,bytes) — not payable
   // v3.2 — forwards an off-chain-quoted routeData (e.g. LI.FI) through to swapRouter.
   // Selector computed against PrivarShieldVault.sol's exact new signature — see
   // scripts/deploy-lifi.js / contracts/core/PrivarShieldVault.sol.
-  privateSwapWithRoute:"0x9fcea826",  // privateSwapWithRoute(bytes32,bytes32,address,address,uint256,uint256,bytes32,uint256,bytes)
+  privateSwapWithRoute:"0x05e550e9",  // v3.4: privateSwapWithRoute(bytes32,bytes32,address,address,uint256,uint256,bytes32,uint256,bytes,bytes)
 
   // ── DEPRECATED (v2.x struct-based ABI, does NOT exist on v3.0.0 vault) ──────
   // Kept only so old references don't hard-crash; DO NOT call these against the
@@ -194,8 +199,8 @@ export const SEL = {
   shieldedSendWithNote:"0xd3c9406f",  // OBSOLETE — folded into shieldedSend() in v3.0.0
   privateSwapExec:     "0x49fa2a6e",  // OBSOLETE — replaced by privateSwap() in v3.0.0
   privateBridgeExec:  "0x8fa6444e",  // OBSOLETE — public CCTP path on the orphaned PrivateBridge contract, replaced by LiFiPrivacyBridge below
-  // LiFiPrivacyBridge.privateBridge(bytes32,bytes32,address,uint256,address,uint256,bytes) — atomic unshield+LI.FI-bridge
-  lifiPrivateBridge:  "0x74c37dfc",
+  // v3.4: LiFiPrivacyBridge.privateBridge(bytes32,bytes32,address,uint256,address,uint256,bytes,bytes) — atomic unshield+LI.FI-bridge
+  lifiPrivateBridge:  "0x51957a1c",
 
   // PrivarShieldVault views
   totalShielded:      "0x6d7f2685",  // totalShielded(address)
@@ -328,12 +333,14 @@ const PROOF_C_Y = "0000000000000000000000000000000000000000000000000000000000000
 // All builders return { data: "0x...", value: "0x..." }
 
 // ─── DEPOSIT ─────────────────────────────────────────────────────────────────
-// PrivarShieldVault.deposit(address token, uint256 amount, bytes32 commitment) payable
+// PrivarShieldVault.deposit(address token, uint256 amount, bytes32 commitment, bytes encryptedEntry) payable
 //
-// ABI: deposit(address,uint256,bytes32) — v3.0.0, no struct, no ZK proof.
-// Layout: [sel][token][amount][commitment] — 3 static words, no offsets needed.
+// ABI: deposit(address,uint256,bytes32,bytes) — v3.4.0, adds a trailing
+// optional encryptedEntry (protocol-wide note-journal persistence — see
+// PrivarShieldVault.sol's NoteJournal event doc comment). Pass "0x" to skip.
+// Layout: [token][amount][commitment][offset=0x80] then at 0x80: [len][data].
 
-export function buildDepositCalldata(commitment, tokenAddress, amount, flatFeeUsdc = 0n) {
+export function buildDepositCalldata(commitment, tokenAddress, amount, flatFeeUsdc = 0n, encryptedEntry = "0x") {
   const comm32 = commitment.replace("0x", "").padStart(64, "0");
 
   // Native USDC: the vault does `if (msg.value != amount) revert WrongFee()` — an EXACT
@@ -347,7 +354,9 @@ export function buildDepositCalldata(commitment, tokenAddress, amount, flatFeeUs
   const data = SEL.deposit
     + encodeAddress(tokenAddress)          // token
     + encodeUint256(amountForCalldata)     // amount — wei for native USDC, else raw units
-    + comm32;                              // commitment
+    + comm32                               // commitment
+    + encodeUint256(0x80n)                 // offset to encryptedEntry
+    + encodeBytes(encryptedEntry);         // encryptedEntry (v3.4)
 
   const value = isNativeUsdc
     ? "0x" + amountForCalldata.toString(16)                              // must equal calldata amount exactly
@@ -359,11 +368,23 @@ export function buildDepositCalldata(commitment, tokenAddress, amount, flatFeeUs
 // ─── WITHDRAW ────────────────────────────────────────────────────────────────
 // PrivarShieldVault.withdraw(
 //   bytes32 nullifier, bytes32 root, address token, address recipient,
-//   uint256 amount,    address relayer, uint256 relayerFee
-// ) payable — v3.0.0, no struct, no ZK proof.
+//   uint256 amount,    address relayer, uint256 relayerFee,
+//   address noteOwner, bytes encryptedEntry
+// ) payable — v3.4.0, adds explicit noteOwner + optional encryptedEntry
+// (protocol-wide note-journal persistence — see PrivarShieldVault.sol's
+// NoteJournal event doc comment). noteOwner lets an intermediary contract
+// (e.g. LiFiPrivacyBridge) call withdraw() on the real owner's behalf while
+// still attributing the journal entry correctly.
 // NOTE the arg order: relayer comes BEFORE relayerFee on-chain (v2.x struct had it reversed).
 
-export function buildWithdrawCalldata({ nullifier, root, token, recipient, amount, relayerFee = 0n, relayer = "0x0000000000000000000000000000000000000000", flatFeeUsdc = 0n }) {
+// ABI: withdraw(bytes32,bytes32,address,address,uint256,address,uint256,address,bytes) — v3.4.0
+// 9 args, 1 dynamic (encryptedEntry). Head = 9 words (0x120):
+//   [0x00] nullifier   [0x20] root       [0x40] token      [0x60] recipient
+//   [0x80] amount      [0xa0] relayer    [0xc0] relayerFee [0xe0] noteOwner
+//   [0x100] offset to encryptedEntry (= 0x120)
+//   [0x120] encryptedEntry length + padded data
+
+export function buildWithdrawCalldata({ nullifier, root, token, recipient, amount, relayerFee = 0n, relayer = "0x0000000000000000000000000000000000000000", flatFeeUsdc = 0n, noteOwner = null, encryptedEntry = "0x" }) {
   // withdraw()'s native branch does `payable(recipient).call{value: amount - relayerFee}`
   // — `amount` IS the native wei sent out, so for native USDC it must be in
   // 18-dec wei (matching deposit's convention), not the 6-dec display unit.
@@ -378,7 +399,10 @@ export function buildWithdrawCalldata({ nullifier, root, token, recipient, amoun
     + encodeAddress(recipient)
     + encodeUint256(amountForCalldata)
     + encodeAddress(relayer)
-    + encodeUint256(relayerFeeForCalldata);
+    + encodeUint256(relayerFeeForCalldata)
+    + encodeAddress(noteOwner || recipient) // v3.4 — who the journal entry belongs to (defaults to recipient, the common direct-withdraw case)
+    + encodeUint256(0x120n)                 // offset to encryptedEntry
+    + encodeBytes(encryptedEntry);          // v3.4 — protocol-wide note-journal persistence
 
   // Native USDC withdraw: no msg.value — % fee is skimmed from withdrawAmt on-chain.
   // EURC/cirBTC withdraw: msg.value carries the FLAT protocol fee in USDC, if set.
@@ -388,36 +412,44 @@ export function buildWithdrawCalldata({ nullifier, root, token, recipient, amoun
 }
 
 // ─── SHIELDED SEND ────────────────────────────────────────────────────────────
-// PrivarShieldVault.shieldedSend(bytes32 nullifier, bytes32 root, bytes32 commitmentOut, bytes encryptedNote)
-// v3.0.0: NOT payable, no ZK proof, encryptedNote is now a REQUIRED inline argument
-// (the old two-step shieldedSend + separate ViewKeyRegistry.emitNote is merged into one call).
+// PrivarShieldVault.shieldedSend(bytes32 nullifier, bytes32 root, bytes32 commitmentOut, bytes encryptedNote, bytes encryptedSelfEntry)
+// v3.4.0: NOT payable, no ZK proof. encryptedNote (ECIES payload for the
+// RECIPIENT) stays required; encryptedSelfEntry is NEW — an optional
+// journal entry for the SENDER's own records (protocol-wide note-journal
+// persistence — see PrivarShieldVault.sol's NoteJournal event doc comment).
+// Kept as a SEPARATE param from encryptedNote since one is encrypted to the
+// recipient's view key and the other to the sender's own backup key.
 //
-// ABI: shieldedSend(bytes32,bytes32,bytes32,bytes)
-// 4 args, 1 dynamic (encryptedNote). Head = 4 words (0x80):
+// ABI: shieldedSend(bytes32,bytes32,bytes32,bytes,bytes)
+// 5 args, 2 dynamic. Head = 5 words (0xa0):
 //   [0x00] nullifier      (static)
 //   [0x20] root           (static)
 //   [0x40] commitmentOut  (static)
-//   [0x60] offset to encryptedNote (= 0x80, right after head)
-//   [0x80] encryptedNote length + padded data
+//   [0x60] offset to encryptedNote     (= 0xa0, right after head)
+//   [0x80] offset to encryptedSelfEntry (= 0xa0 + encodedBytesSize(encryptedNote))
+//   [0xa0] encryptedNote block, then encryptedSelfEntry block
 
-export function buildShieldedSendCalldata({ nullifier, root, commitmentOut, encryptedNote = "0x" }) {
-  const offEncNote = encodeUint256(0x80n);
+export function buildShieldedSendCalldata({ nullifier, root, commitmentOut, encryptedNote = "0x", encryptedSelfEntry = "0x" }) {
+  const offEncNote = 0xa0n;
+  const offSelfEntry = offEncNote + BigInt(encodedBytesSize(encryptedNote));
 
   const data = SEL.shieldedSend
     + encodeBytes32(nullifier)
     + encodeBytes32(root)
     + encodeBytes32(commitmentOut)
-    + offEncNote
-    + encodeBytes(encryptedNote);
+    + encodeUint256(offEncNote)
+    + encodeUint256(offSelfEntry)
+    + encodeBytes(encryptedNote)
+    + encodeBytes(encryptedSelfEntry);
 
-  // Not payable on v3.0.0 — do not attach msg.value or the tx will revert.
+  // Not payable — do not attach msg.value or the tx will revert.
   return { data, value: "0x0" };
 }
 
 // Old field name `nullifierIn`/`merkleRoot` kept as an alias so existing call sites
 // (e.g. DApp.jsx built against the v2.x builder) don't need renaming immediately.
-export function buildShieldedSendCalldataLegacyArgs({ nullifierIn, merkleRoot, commitmentOut, encryptedNote }) {
-  return buildShieldedSendCalldata({ nullifier: nullifierIn, root: merkleRoot, commitmentOut, encryptedNote });
+export function buildShieldedSendCalldataLegacyArgs({ nullifierIn, merkleRoot, commitmentOut, encryptedNote, encryptedSelfEntry }) {
+  return buildShieldedSendCalldata({ nullifier: nullifierIn, root: merkleRoot, commitmentOut, encryptedNote, encryptedSelfEntry });
 }
 
 // ─── PRIVATE SWAP ─────────────────────────────────────────────────────────────
@@ -458,14 +490,17 @@ export function buildSwapAdapterRouteData({ tokenIn, tokenOut, amountIn, minAmou
 // Total head = 19 words = 0x260
 // Tail: routeData at 0x260, publicInputs follows
 
-// ── PrivarShieldVault.privateSwap() — atomic confidential swap (v3.0.0) ──
-// This IS the v3.0.0 vault's actual swap function. NOT payable — no flatFeeUsdc/value.
-// Selector verified: keccak256("privateSwap(bytes32,bytes32,address,address,uint256,uint256,bytes32,uint256)")
+// ── PrivarShieldVault.privateSwap() — atomic confidential swap (v3.4.0) ──
+// This IS the v3.x vault's actual swap function. NOT payable — no flatFeeUsdc/value.
+// v3.4.0 adds a trailing optional `encryptedEntry` (protocol-wide note-
+// journal persistence — see PrivarShieldVault.sol's NoteJournal event doc
+// comment).
 export function buildAtomicSwapCalldata({
   nullifier, root, tokenIn, tokenOut,
   amountIn, minAmountOut, commitmentOut,
   deadline = BigInt(Math.floor(Date.now()/1000) + 600),
   flatFeeUsdc = 0n,
+  encryptedEntry = "0x",
 }) {
   // amountIn is forwarded VERBATIM as SwapParams.amountIn — same convention
   // as buildDepositCalldata: for native USDC, in native 18-dec wei, not the
@@ -482,6 +517,7 @@ export function buildAtomicSwapCalldata({
     ? "0x" + (BigInt(flatFeeUsdc) * NATIVE_TO_ERC20).toString(16)
     : "0x0";
 
+  // 9 args, 1 dynamic (encryptedEntry) → head = 9 words = 0x120
   const data = SEL.privateSwap
     + nullifier.slice(2).padStart(64,"0")
     + root.slice(2).padStart(64,"0")
@@ -490,23 +526,29 @@ export function buildAtomicSwapCalldata({
     + amountInForCalldata.toString(16).padStart(64,"0")
     + minAmountOutForCalldata.toString(16).padStart(64,"0")
     + commitmentOut.slice(2).padStart(64,"0")
-    + BigInt(deadline).toString(16).padStart(64,"0");
+    + BigInt(deadline).toString(16).padStart(64,"0")
+    + encodeUint256(0x120n)
+    + encodeBytes(encryptedEntry);
 
   return { data, value };
 }
 
-// ── PrivarShieldVault.privateSwapWithRoute() — v3.2, forwards routeData ──
+// ── PrivarShieldVault.privateSwapWithRoute() — v3.4, forwards routeData ──
 // Same as buildAtomicSwapCalldata but appends a dynamic `routeData` blob that
 // swapRouter.executeSwap() actually receives. Required whenever swapRouter is
 // LiFiPrivacyAdapter — it reverts on an empty routeData (TowerSwapAdapter, by
 // contrast, ignores it). `routeData` here should already be the encoded
 // (target, calldata) tuple — see encodeLiFiRouteData() below.
+// v3.4.0 adds a SECOND trailing optional `encryptedEntry` (protocol-wide
+// note-journal persistence — see PrivarShieldVault.sol's NoteJournal event
+// doc comment).
 export function buildSwapWithRouteCalldata({
   nullifier, root, tokenIn, tokenOut,
   amountIn, minAmountOut, commitmentOut,
   deadline = BigInt(Math.floor(Date.now()/1000) + 600),
   routeData = "0x",
   flatFeeUsdc = 0n,
+  encryptedEntry = "0x",
 }) {
   // Same reasoning as buildAtomicSwapCalldata above: amountIn is scaled for
   // the calldata field but NEVER sent as msg.value for a native tokenIn
@@ -520,7 +562,9 @@ export function buildSwapWithRouteCalldata({
     ? "0x" + (BigInt(flatFeeUsdc) * NATIVE_TO_ERC20).toString(16)
     : "0x0";
 
-  const offRoute = encodeUint256(0x120n); // 9 head words × 32 = 0x120
+  // 10 args, 2 dynamic (routeData, encryptedEntry) → head = 10 words = 0x140
+  const offRoute = 0x140n;
+  const offEntry = offRoute + BigInt(encodedBytesSize(routeData));
   const data = SEL.privateSwapWithRoute
     + nullifier.slice(2).padStart(64,"0")
     + root.slice(2).padStart(64,"0")
@@ -530,8 +574,10 @@ export function buildSwapWithRouteCalldata({
     + minAmountOutForCalldata.toString(16).padStart(64,"0")
     + commitmentOut.slice(2).padStart(64,"0")
     + BigInt(deadline).toString(16).padStart(64,"0")
-    + offRoute
-    + encodeBytes(routeData);
+    + encodeUint256(offRoute)
+    + encodeUint256(offEntry)
+    + encodeBytes(routeData)
+    + encodeBytes(encryptedEntry);
 
   return { data, value };
 }
@@ -702,17 +748,21 @@ export function buildPrivateBridgeCalldata({ nullifier, merkleRoot, destinationD
 
 // ─── LI.FI PRIVACY BRIDGE (v3.2) ──────────────────────────────────────────────
 // LiFiPrivacyBridge.privateBridge(bytes32 nullifier, bytes32 root, address token,
-//   uint256 amount, address relayer, uint256 relayerFee, bytes routeData) payable
+//   uint256 amount, address relayer, uint256 relayerFee, bytes routeData, bytes encryptedEntry) payable
 //
 // Replaces buildPrivateBridgeCalldata()'s CCTP path: unshields the note and
 // executes the LI.FI route in ONE transaction, targeting LiFiPrivacyBridge
 // (NOT PrivarShieldVault) directly. For EURC/cirBTC, `flatFeeUsdc` is still
 // forwarded as msg.value exactly like a plain withdraw() — see
 // LiFiPrivacyBridge.sol's `vaultFee` handling.
+// v3.4.0 adds a trailing optional `encryptedEntry`, forwarded to
+// ShieldVault.withdraw() and emitted there via NoteJournal(msg.sender, ...)
+// in the SAME transaction as the bridge itself (protocol-wide note-journal
+// persistence — see PrivarShieldVault.sol's NoteJournal event doc comment).
 export function buildLiFiBridgeCalldata({
   nullifier, root, token, amount,
   relayer = "0x0000000000000000000000000000000000000000", relayerFee = 0n,
-  routeData, flatFeeUsdc = 0n,
+  routeData, flatFeeUsdc = 0n, encryptedEntry = "0x",
 }) {
   // Same conversion as buildWithdrawCalldata — LiFiPrivacyBridge.privateBridge()
   // forwards `amount`/`relayerFee` verbatim into ShieldVault.withdraw(), whose
@@ -721,7 +771,9 @@ export function buildLiFiBridgeCalldata({
   const amountForCalldata     = isNativeUsdc ? BigInt(amount) * NATIVE_TO_ERC20     : BigInt(amount);
   const relayerFeeForCalldata = isNativeUsdc ? BigInt(relayerFee) * NATIVE_TO_ERC20 : BigInt(relayerFee);
 
-  const offRoute = encodeUint256(0xE0n); // 7 head words × 32 = 0xE0
+  // 8 args, 2 dynamic (routeData, encryptedEntry) → head = 8 words = 0x100
+  const offRoute = 0x100n;
+  const offEntry = offRoute + BigInt(encodedBytesSize(routeData));
   const data = SEL.lifiPrivateBridge
     + encodeBytes32(nullifier)
     + encodeBytes32(root)
@@ -729,8 +781,10 @@ export function buildLiFiBridgeCalldata({
     + encodeUint256(amountForCalldata)
     + encodeAddress(relayer)
     + encodeUint256(relayerFeeForCalldata)
-    + offRoute
-    + encodeBytes(routeData);
+    + encodeUint256(offRoute)
+    + encodeUint256(offEntry)
+    + encodeBytes(routeData)
+    + encodeBytes(encryptedEntry);
 
   const value = isNativeUsdc ? "0x0" : "0x" + (BigInt(flatFeeUsdc) * NATIVE_TO_ERC20).toString(16);
 
