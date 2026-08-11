@@ -1,46 +1,60 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v3.4.0-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v3.4.1-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
-![contracts](https://img.shields.io/badge/Contracts-v3.4.0-4ade80?style=flat-square&labelColor=0a1628)
+![contracts](https://img.shields.io/badge/Contracts-v3.4.1-4ade80?style=flat-square&labelColor=0a1628)
 ![status](https://img.shields.io/badge/status-testnet-4ade80?style=flat-square&labelColor=0a1628)
 
 Confidential on-chain capital management built on **Arc Testnet** (Circle L1, USDC native gas): shield, swap, send, withdraw, and bridge USDC/EURC/cirBTC privately, with protocol-wide note-journal persistence embedded directly in every shielding transaction (v3.4) — no separate broadcast that can silently fail.
 
 ---
 
-## Deployed contracts — Arc Testnet (v3.4.0)
+## Deployed contracts — Arc Testnet (v3.4.1)
 
 Deployer / treasury: `0x1Dc72450B3e2782AcD669D7C27073f2C8F2c9894`
-Deployed: 2026-08-09T11:20:37Z — full protocol redeployment (not a migration; see [Note-journal persistence](#note-journal-persistence-v34) below).
+Deployed: 2026-08-11T01:58:43Z — full protocol redeployment (not a migration; see [Swap accounting fix](#swap-accounting-fix-v341) below).
 
 | Contract | Address | Frontend key (`src/contracts.js`) |
 |---|---|---|
-| **PrivarShieldVault** ³ | `0xf80D237A730788B3673EA4660B67E87232905CB0` | `PrivarShieldVault` |
-| PrivarMerkleTreeManager | `0xddDB0e99F1d1170A4aa4717a4DeD34120cC64f2e` | `PrivarMerkleTreeManager` |
-| PrivarNullifierRegistry | `0xd16a588Ef75e991c1A4774f3863391051C44d9e0` | `PrivarNullifierRegistry` |
-| PrivarDepositManager | `0xC0873536178607567c1172947ec477f4F0176C7F` | `PrivarDepositManager` |
-| PrivarWithdrawManager | `0x76F8Ee057FBe72009B576e96889873b51591dfeD` | `WithdrawalManager` |
-| PrivarStaking (public, no notes — see below) | `0x9288AcdeB38d0ebfE5b0A85857A5CF04f80B442e` | `PrivarStaking` |
-| VerifierZK (Mock¹) | `0x9643E2494ca2d695376939e2416B04ea58A92863` | `MockVerifierZK` |
-| **PrivarCloudVault** ² | `0x16505F02E7C759ddF921e75acEf9afFfd7d43Eb7` | `PrivarCloudVault` |
+| **PrivarShieldVault** ⁴ | `0xfC622C2DbF6458a7D1Bb6a7637299EbC098dD202` | `PrivarShieldVault` |
+| PrivarMerkleTreeManager | `0xf7e4015EA54bD1DADF2ADEe2dFaB39b7cE09bD5D` | `PrivarMerkleTreeManager` |
+| PrivarNullifierRegistry | `0xbFa2587FDBd61BA55670F5642e0EaF0B5b64553f` | `PrivarNullifierRegistry` |
+| PrivarDepositManager | `0x6F10eCD7de99988A28AAfF4d045f32664F81Ad4A` | `PrivarDepositManager` |
+| PrivarWithdrawManager | `0x168DdE786F669914C4Da0C5879d0fCD114336d93` | `WithdrawalManager` |
+| PrivarStaking (public, no notes — see below) | `0x1d794E327A949c27386293aA743D9CCbb6DF2D0C` | `PrivarStaking` |
+| VerifierZK (Mock¹) | `0xD25C3527281b7004B82f69892e57Fdc677D21740` | `MockVerifierZK` |
+| **PrivarCloudVault** ² | `0x07C82F9A3bcd2c20daD0510D7b2A4E51ceaD9735` | `PrivarCloudVault` |
 | ViewKeyRegistry (unchanged since v1.0.0) | `0x590D1FDC3FbD4CAb151cb7E1557D9C4ecEa2C24b` | `ViewKeyRegistry` |
-| LiFiPrivacyAdapter (active swap router) | `0x731c81A345D1f0C47571bf3472d6Cb92b40E2Dac` | `LiFiPrivacyAdapter` |
-| LiFiPrivacyBridge ³ | `0x171DA0e3Ae1234645f59cC9ACB532d23B52d30b6` | `LiFiPrivacyBridge` |
+| LiFiPrivacyAdapter (active swap router) | `0x4B1E04899d29D30937eA13969711F84f46662E62` | `LiFiPrivacyAdapter` |
+| LiFiPrivacyBridge ³ | `0xE2d8541a4a88134279769Ef9fFb41D21B82C3108` | `LiFiPrivacyBridge` |
 | LiFiDiamond | `0xFf70F4A1d11995621854F3692acF286d8aCd04b2` | `LiFiDiamond` |
-| TowerSwapAdapter (documented rollback target, not routed) | `0x3DAAcBc477CdeC3Ef66804C946254Af04cd30826` | `TowerSwapAdapter` |
+| TowerSwapAdapter (documented rollback target, not routed) | `0x3C7f295387049c827077092f1cA5e5592Da46De9` | `TowerSwapAdapter` |
 | USDC (native gas token) | `0x3600000000000000000000000000000000000000` | `NATIVE_USDC` |
 | EURC | `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a` | `EURC` |
 | cirBTC | `0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF` | `cirBTC` |
 | CCTP TokenMessenger | `0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA` | `CCTP_TokenMessenger` |
 
 ¹ Testnet only — `MockVerifierZK` accepts all well-formed proofs; not the production Groth16 verifier.
-² Standalone, additive deployment — no constructor args, no dependency on ShieldVault or any other contract. Since v3.4, ShieldVault's own `NoteJournal` event is the *primary* persistence path for new activity — CloudVault stays deployed for backward compatibility with pre-v3.4 journal entries and as the manual "Sync Notes to Cloud" backfill in Settings. See [Note-journal persistence](#note-journal-persistence-v34) below.
-³ Redeployed for v3.4 — gained a `NoteJournal` event and, on `withdraw()`, an explicit `noteOwner` parameter. See below.
+² Standalone, additive deployment — no constructor args, no dependency on ShieldVault or any other contract. ShieldVault's own `NoteJournal` event is the *primary* persistence path for new activity — CloudVault stays deployed for backward compatibility with pre-v3.4 journal entries and as the manual "Sync Notes to Cloud" backfill in Settings.
+³ Repointed at the new ShieldVault via `setShieldVault()` — logic unchanged since v3.4.0.
+⁴ Redeployed for v3.4.1 — fixes a real swap accounting bug. See [Swap accounting fix](#swap-accounting-fix-v341) below.
 
 All fallback addresses are hardcoded in `src/contracts.js` and can be overridden per-deployment with `VITE_*` env vars (Vercel) without touching code.
+
+---
+
+## Swap accounting fix (v3.4.1)
+
+`PrivarShieldVault._privateSwap()` had an asymmetry between its two branches:
+
+- **`isNativeIn` (USDC → X)**: always measured `tokenOut`'s balance before/after the router call and clamped the credited `amountOut` to that real delta — never trusted the router's self-reported value blindly.
+- **`!isNativeIn` (EURC/cirBTC → X)**: used the router's reported `amountOut` **directly**, with no verification.
+
+This was confirmed as a real, exploitable accounting gap on Arc Testnet: `totalShieldedByToken(EURC)` read `2,998,471` while `EURC.balanceOf(vault)` was `0` — the vault's internal ledger believed it held ~3 EURC in reserve for user notes that it did not physically have, which surfaced as `"ERC20: transfer amount exceeds balance"` reverts on unrelated later withdrawals and swaps. Both branches now measure the same real balance delta (via the same ERC-20 `balanceOf()` view, including for native USDC) and clamp `amountOut` to it — the router's report is only ever used as a tie-breaker when it doesn't exceed what was actually verified.
+
+This is a full-suite redeploy (every contract fresh) for a clean, internally-consistent v3.4.1 stack, even though only `PrivarShieldVault`'s logic changed. `TowerSwapAdapter`, `LiFiPrivacyAdapter`, and `LiFiPrivacyBridge` all expose a `setShieldVault()` admin function and enforce `onlyShieldVault` access control by stored address — a lighter, ShieldVault-only patch (repointing these three instead of redeploying them) is also possible; see `scripts/deploy-v3.4.1.js` in the contracts repo for that alternative.
 
 ---
 
@@ -169,7 +183,12 @@ Override any address via Vercel env vars (`VITE_SHIELD_VAULT`, `VITE_CLOUD_VAULT
 
 ## Changelog
 
-### v3.4.0 (current) — full protocol redeployment
+### v3.4.1 (current) — full protocol redeployment, swap accounting fix
+- **Fixed a real accounting bug**: `_privateSwap()`'s `!isNativeIn` branch (tokenIn = EURC/cirBTC) trusted the swap router's reported `amountOut` with no verification, unlike the `isNativeIn` branch which always measured a real balance delta — confirmed on-chain via `totalShieldedByToken(EURC) = 2,998,471` while `EURC.balanceOf(vault) = 0`. Both branches now measure the same delta and clamp `amountOut` to it. See [Swap accounting fix](#swap-accounting-fix-v341) above.
+- Full-suite redeployment (every contract fresh) for stack consistency — `TowerSwapAdapter`/`LiFiPrivacyAdapter`/`LiFiPrivacyBridge` repointed via their existing `setShieldVault()`, no logic changes there
+- Not a migration — v3.4.0 shielded balances remain in the old `PrivarShieldVault` address
+
+### v3.4.0 — full protocol redeployment
 - **Protocol-wide note-journal persistence**: `deposit()`/`withdraw()`/`shieldedSend()`/`privateSwap()`/`privateSwapWithRoute()` now embed an encrypted journal entry directly in the same transaction (`NoteJournal` event) instead of a separate follow-up broadcast to PrivarCloudVault — closes the reliability gap where that second transaction could fail after the spend/shield had already succeeded, permanently orphaning the note's journal entry on other devices
 - `withdraw()` gains an explicit `noteOwner` parameter so `LiFiPrivacyBridge.privateBridge()` (which calls `withdraw()` on the user's behalf) attributes the journal entry to the right wallet
 - Fixed a real pre-existing bug in the Confidential Send flow: the calldata builder was called with mismatched field names, leaving `nullifier`/`root` undefined
