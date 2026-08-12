@@ -3897,10 +3897,33 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     }
 
     setLoading(true);
-    const amountBig    = BigInt(Math.round(Number(amount)    * (10 ** tkFr.dec)));
+    let   amountBig    = BigInt(Math.round(Number(amount)    * (10 ** tkFr.dec)));
     let   outAmountBig = BigInt(Math.round(parseFloat(q.out) * (10 ** tkTo.dec)));
     let   minOut       = outAmountBig * 990n / 1000n;
     const deadline     = BigInt(Math.floor(Date.now()/1000) + 600);
+
+    // Find note for tokenIn BEFORE fetching the LI.FI quote — this used to
+    // happen after the quote fetch, using the original (possibly too-large,
+    // e.g. MAX-button-rounded) amountBig. If the best available note was
+    // slightly short, the code fell back to "largest note" but kept quoting/
+    // spending the original amountBig, guaranteeing a real on-chain
+    // "ERC20: transfer amount exceeds balance" revert. Now we clamp first,
+    // so every downstream step (quote, routeData, calldata) is built for the
+    // amount we can actually spend.
+    const notes      = getNotes(account?.address);
+    const tokenNotes = notes.filter(n => n.token?.toLowerCase() === tkFr.addr.toLowerCase());
+    let note = tokenNotes.find(n => BigInt(Math.round(Number(n.amount)||0)) >= amountBig);
+    if (!note && tokenNotes.length > 0) {
+      note = tokenNotes.reduce((best, n) =>
+        BigInt(Math.round(Number(n.amount)||0)) > BigInt(Math.round(Number(best.amount)||0)) ? n : best
+      );
+      const noteRaw = BigInt(Math.round(Number(note.amount)||0));
+      if (noteRaw < amountBig) amountBig = noteRaw;
+    }
+    if (!note) {
+      notify("Swap",`No shielded ${fr} note found.`,"error");
+      setLoading(false); return;
+    }
 
     // Fetch the real LI.FI route BEFORE spending the note — if no route
     // exists for this pair/amount we want to fail early, not mid-swap.
@@ -3935,20 +3958,6 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     } catch { merkleRoot = null; }
     if (!merkleRoot) {
       notify("Swap","Could not read the Merkle root.","error");
-      setLoading(false); return;
-    }
-
-    // Find note for tokenIn
-    const notes      = getNotes(account?.address);
-    const tokenNotes = notes.filter(n => n.token?.toLowerCase() === tkFr.addr.toLowerCase());
-    let note = tokenNotes.find(n => BigInt(Math.round(Number(n.amount)||0)) >= amountBig);
-    if (!note && tokenNotes.length > 0) {
-      note = tokenNotes.reduce((best, n) =>
-        BigInt(Math.round(Number(n.amount)||0)) > BigInt(Math.round(Number(best.amount)||0)) ? n : best
-      );
-    }
-    if (!note) {
-      notify("Swap",`No shielded ${fr} note found.`,"error");
       setLoading(false); return;
     }
 
@@ -4039,7 +4048,7 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
         </div>
       )}
       <ShieldedWallet bals={bals} actionableFilter={["USDC","EURC","cirBTC"]}
-        onMax={(sym, val, _raw, dec) => { setFr(sym); if (sym===to) setTo(TK.find(t=>t!==sym)||"EURC"); setAmount(val.toFixed(dec===8?5:2)); }}
+        onMax={(sym, val, _raw, dec) => { setFr(sym); if (sym===to) setTo(TK.find(t=>t!==sym)||"EURC"); setAmount((Number(_raw)/10**dec).toFixed(dec)); }}
         protocolStats={protocolStats}/>
       <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
         <div style={{ flex:1 }}>
@@ -4117,15 +4126,19 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     setLoading(true);
 
     const notes     = getNotes(account?.address);
-    const amountBig = BigInt(Math.round(Number(amount) * (10 ** tkSend.dec)));
+    let   amountBig = BigInt(Math.round(Number(amount) * (10 ** tkSend.dec)));
 
     // Float-safe note lookup filtered by token
     const tokenNotes = notes.filter(n => n.token?.toLowerCase() === tkSend.addr.toLowerCase());
     let note = tokenNotes.find(n => BigInt(Math.round(Number(n.amount)||0)) >= amountBig);
     if (!note && tokenNotes.length > 0) {
+      // Fallback to largest note — clamp amountBig so we never request more
+      // than the note's real raw balance (avoids a guaranteed on-chain revert).
       note = tokenNotes.reduce((best, n) =>
         BigInt(Math.round(Number(n.amount)||0)) > BigInt(Math.round(Number(best.amount)||0)) ? n : best
       );
+      const noteRaw = BigInt(Math.round(Number(note.amount)||0));
+      if (noteRaw < amountBig) amountBig = noteRaw;
     }
     if (!note) {
       notify("Send", `No shielded ${sendToken} found. Shield ${sendToken} first.`, "error");
@@ -4284,7 +4297,7 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       {mode==="shielded"
         ? <>
             <ShieldedWallet bals={bals} actionableFilter={["USDC","EURC","cirBTC"]}
-              onMax={(sym, val, _raw, dec) => { setSendToken(sym); setAmount(val.toFixed(dec===8?5:2)); }}
+              onMax={(sym, val, _raw, dec) => { setSendToken(sym); setAmount((Number(_raw)/10**dec).toFixed(dec)); }}
               protocolStats={protocolStats}/>
             {/* Token selector pills */}
             <div style={{ display:"flex", gap:5, marginBottom:10 }}>
@@ -4353,7 +4366,7 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
     setLoading(true);
 
     const notes     = getNotes(account?.address);
-    const amountBig = BigInt(Math.round(Number(amount) * (10 ** tk.dec)));
+    let   amountBig = BigInt(Math.round(Number(amount) * (10 ** tk.dec)));
 
     // Find best note for this token:
     // 1. Prefer exact/sufficient note (amount >= requested)
@@ -4362,10 +4375,17 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
     const tokenNotes = notes.filter(n => n.token.toLowerCase() === tk.addr.toLowerCase());
     let note = tokenNotes.find(n => BigInt(Math.round(Number(n.amount)||0)) >= amountBig);
     if (!note && tokenNotes.length > 0) {
-      // Fallback: use the largest note and clamp amount to its value
+      // Fallback: use the largest note and clamp amount to its value — this
+      // is the actual clamp (previously only promised in this comment: the
+      // fallback picked a note but kept the original, too-large amountBig,
+      // guaranteeing a real "ERC20: transfer amount exceeds balance" revert
+      // on-chain whenever the displayed/rounded MAX amount exceeded the
+      // note's true raw balance).
       note = tokenNotes.reduce((best, n) =>
         BigInt(Math.round(Number(n.amount)||0)) > BigInt(Math.round(Number(best.amount)||0)) ? n : best
       );
+      const noteRaw = BigInt(Math.round(Number(note.amount)||0));
+      if (noteRaw < amountBig) amountBig = noteRaw;
     }
     if (!note) {
       notify("Withdraw", `No shielded ${tk.sym} note found. Shield ${tk.sym} first.`, "error");
@@ -4455,7 +4475,7 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
       <PH icon="↙" title="WITHDRAW" sub="Unshield — exit confidential balance to public address"/>
       <NotOnArcWarning/>
 
-      <ShieldedWallet bals={bals} actionableFilter={["USDC","EURC","cirBTC"]} onMax={(sym, val, _raw, dec) => { setToken(sym); setAmount(val.toFixed(dec === 8 ? 5 : 2)); }} protocolStats={protocolStats}/>
+      <ShieldedWallet bals={bals} actionableFilter={["USDC","EURC","cirBTC"]} onMax={(sym, val, _raw, dec) => { setToken(sym); setAmount((Number(_raw)/10**dec).toFixed(dec)); }} protocolStats={protocolStats}/>
 
       <div style={{ background:"rgba(0,255,176,.03)", border:"1px solid rgba(0,255,176,.15)", borderRadius:4, padding:"9px 12px", marginBottom:10, fontSize:9, color:"#94a3b8", fontFamily:"monospace", lineHeight:1.6 }}>
         🛡 Unshield — exit the confidential balance to a public address. Governed visibility: only you and parties you authorize can link deposit and withdrawal.
@@ -4561,7 +4581,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
       ? recipient.trim() : account?.address;
 
     setLoading(true);
-    const amountBig = BigInt(Math.round(Number(amount) * (10 ** tk.dec)));
+    let amountBig = BigInt(Math.round(Number(amount) * (10 ** tk.dec)));
 
     // 1. Merkle root
     setStep("Étape 1/3 — Lecture du Merkle root…");
@@ -4580,9 +4600,13 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
     const tokenNotes = notes.filter(n => n.token?.toLowerCase() === tk.addr.toLowerCase());
     let note = tokenNotes.find(n => BigInt(Math.round(Number(n.amount)||0)) >= amountBig);
     if (!note && tokenNotes.length > 0) {
+      // Fallback to largest note — clamp amountBig so we never request more
+      // than the note's real raw balance (avoids a guaranteed on-chain revert).
       note = tokenNotes.reduce((best, n) =>
         BigInt(Math.round(Number(n.amount)||0)) > BigInt(Math.round(Number(best.amount)||0)) ? n : best
       );
+      const noteRaw = BigInt(Math.round(Number(note.amount)||0));
+      if (noteRaw < amountBig) amountBig = noteRaw;
     }
     if (!note) {
       notify("Bridge", `No shielded ${token} note found.`, "error");
@@ -4666,7 +4690,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
       <NotOnArcWarning/>
 
       <ShieldedWallet bals={bals} actionableFilter={["USDC","EURC","cirBTC"]}
-        onMax={(sym, val, _raw, dec) => { setToken(sym); setAmount(val.toFixed(dec===8?5:2)); }}
+        onMax={(sym, val, _raw, dec) => { setToken(sym); setAmount((Number(_raw)/10**dec).toFixed(dec)); }}
         protocolStats={protocolStats}/>
 
       <div style={{ marginBottom:12 }}>
