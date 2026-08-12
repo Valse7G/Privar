@@ -3964,18 +3964,19 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     const nullifier     = randomBytes32();
     const commitmentOut = randomBytes32();
 
-    // v3.4.2 — the contract now credits totalShieldedByToken/the re-shielded
-    // note at native 18-dec scale when tokenOut is NATIVE_USDC (see
-    // PrivarShieldVault.sol's shieldedAmountOut). outAmountBig above is the
-    // raw 6-dec ERC20-pseudo-view quote — mirror the same scaling here (same
-    // NATIVE_TO_ERC20 constant already used for amountIn/fees elsewhere) so
-    // the locally-journaled note amount matches what's actually on-chain.
-    // NOTE: minAmountOut/minOut sent in the calldata stays UNSCALED — the
-    // contract's own amountOut<minAmountOut check still runs on the raw
-    // 6-dec value, BEFORE the new native-scale credit (see
-    // buildAtomicSwapCalldata's comment on this exact point).
-    const isNativeOutToken = tkTo.addr.toLowerCase() === NATIVE_USDC.toLowerCase();
-    const noteAmountOut = isNativeOutToken ? outAmountBig * NATIVE_TO_ERC20 : outAmountBig;
+    // v3.4.2 correction: local notes are tracked in the SAME "display
+    // decimals" convention everywhere (6-dec for USDC/EURC, matching
+    // token.decimals) — see ShieldPanel's deposit note, which stores
+    // netAmount BEFORE the *1e12 native-wei conversion (that conversion is
+    // applied only once, at calldata-build time, inside
+    // buildDepositCalldata/buildWithdrawCalldata via NATIVE_TO_ERC20). The
+    // contract-side fix (shieldedAmountOut in PrivarShieldVault.sol) only
+    // changes what's stored ON-CHAIN in totalShieldedByToken/the real note;
+    // it does not change this local-tracking convention. Scaling
+    // outAmountBig here would double-apply the conversion (it's re-applied
+    // again by buildWithdrawCalldata later), inflating the displayed
+    // shielded balance by 1e12 — confirmed exactly by this bug report.
+    const noteAmountOut = outAmountBig;
 
     // Protocol fee — only flatFeeUsdc is real; there's no separate swapFeeBps()
     // on this contract (single unified protocolFeeBps applies everywhere).
