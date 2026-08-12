@@ -3335,11 +3335,61 @@ async function reconcileNotesOnChain(address) {
   }
 }
 
+// ── Plausibility ceiling for a single note ──────────────────────────────────
+// Defense-in-depth against decimal-scale bugs (like the LI.FI/NATIVE_USDC
+// 1e12 inflation fixed above) or any other corruption path (bad cloud-journal
+// restore, manual localStorage tampering, a future regression): no single
+// legitimate testnet note should ever be worth more than this in raw 6/8-dec
+// units. This is deliberately generous ($1M-equivalent) — it exists only to
+// catch orders-of-magnitude corruption, not to second-guess real amounts.
+// A note that fails this check is not "probably fine" — the on-chain vault
+// has no matching balance for it (any spend attempt reverts), so quarantining
+// it is strictly safer than displaying/offering to spend a ghost balance.
+// Keyed lowercase — always look this up via .toLowerCase() on the token
+// address being checked (same convention used elsewhere in this file for
+// address comparisons, e.g. useShieldedBalances' `acc` matching below).
+const MAX_PLAUSIBLE_RAW = {
+  [NATIVE_USDC.toLowerCase()]:      10n ** 12n,
+  [CONTRACTS.EURC.toLowerCase()]:   10n ** 12n,
+  [CONTRACTS.cirBTC.toLowerCase()]: 10n ** 14n,
+};
+const quarantineKey = (addr) => notesKey(addr) + "_quarantined";
+
+// Sweep local notes for implausible amounts, moving anything corrupt to a
+// separate "quarantined" bucket (kept for audit/manual recovery, never
+// summed into the displayed balance) instead of leaving it in the active
+// notes array where it silently inflates the ShieldedWallet total forever.
+// Returns the count actually quarantined this call (0 = nothing to do).
+function quarantineCorruptNotes(address) {
+  if (!address) return 0;
+  const notes = getNotes(address);
+  const good = [], bad = [];
+  for (const n of notes) {
+    const ceiling = MAX_PLAUSIBLE_RAW[n.token?.toLowerCase?.()] ?? (10n ** 12n);
+    let raw;
+    try {
+      raw = n.amount == null ? 0n : typeof n.amount === "bigint" ? n.amount : BigInt(Math.round(Number(n.amount)));
+    } catch { raw = null; }
+    if (raw == null || raw < 0n || raw > ceiling) bad.push(n); else good.push(n);
+  }
+  if (bad.length > 0) {
+    saveNotes(address, good);
+    try {
+      const existingBad = JSON.parse(localStorage.getItem(quarantineKey(address)) || "[]");
+      localStorage.setItem(quarantineKey(address), JSON.stringify([...existingBad, ...bad]));
+    } catch {}
+    console.warn(`[Privar] Quarantined ${bad.length} implausible note(s) for ${address.slice(0,8)}… — these exceeded the sanity ceiling and were excluded from the shielded balance.`);
+  }
+  return bad.length;
+}
+
 function useShieldedBalances(prices, address) {
-  const SAFE_BALS = { usdc:0, eurc:0, cbtc:0, totalUsd:0, rawUsdc:0n, rawEurc:0n, rawCbtc:0n, noteCount:0 };
+  const SAFE_BALS = { usdc:0, eurc:0, cbtc:0, totalUsd:0, rawUsdc:0n, rawEurc:0n, rawCbtc:0n, noteCount:0, quarantined:0 };
   const [bals, setBals] = useState(SAFE_BALS);
 
   const compute = useCallback(() => {
+    // Sanity sweep FIRST — never sum a note past the plausibility ceiling.
+    const quarantinedNow = quarantineCorruptNotes(address);
     // Wallet-scoped notes — address-keyed to prevent cross-account leakage
     const notes = getNotes(address);
     const acc = {
@@ -3379,6 +3429,7 @@ function useShieldedBalances(prices, address) {
       rawEurc:  acc[CONTRACTS.EURC],
       rawCbtc:  acc[CONTRACTS.cirBTC],
       noteCount: notes.length,
+      quarantined: quarantinedNow,
     });
   }, [prices, address]);
 
@@ -3464,12 +3515,22 @@ function ShieldedWallet({ bals, onMax, tokenFilter, actionableFilter, compact = 
           ≈ ${totalUsd.toFixed(2)} <span style={{ fontSize:8, color:"#4a7c5f" }}>USD</span>
         </span>
       </div>
+      {bals.quarantined > 0 && (
+        <div style={{ background:"rgba(248,113,113,.08)", border:"1px solid rgba(248,113,113,.25)", borderRadius:4, padding:"7px 10px", marginBottom:8, fontSize:8, color:"#fca5a5", fontFamily:"monospace", lineHeight:1.6 }}>
+          ⚠ Removed {bals.quarantined} corrupted local note{bals.quarantined>1?"s":""} with an
+          implausible amount (kept in a quarantine bucket, not deleted, in case manual
+          recovery is needed). These never matched a real on-chain balance and could not
+          have been spent — the shielded balance shown now excludes them.
+        </div>
+      )}
       {hasStale && (
         <div style={{ background:"rgba(248,113,113,.08)", border:"1px solid rgba(248,113,113,.25)", borderRadius:4, padding:"7px 10px", marginBottom:8, fontSize:8, color:"#fca5a5", fontFamily:"monospace", lineHeight:1.6 }}>
           ⚠ Local balance is currently higher than the protocol-wide TVL reading — this
-          can happen right after a fresh shield or sync while on-chain stats catch up,
-          and resolves automatically. Any note actually spent on-chain is pruned
-          automatically in the background — no action needed here.
+          can happen right after a fresh shield or sync while on-chain stats catch up.
+          Any note actually spent on-chain is pruned automatically in the background;
+          notes with implausible amounts are quarantined automatically (see above if
+          that just happened). If this persists after a refresh, treat it as worth
+          investigating rather than assuming it will resolve on its own.
         </div>
       )}
       <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:5 }}>
@@ -3932,17 +3993,39 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     let routeData = "0x";
     if (usingLiFi) {
       try {
+        // BUG FIX (decimal-scale, matches the contract-side NATIVE_USDC bug
+        // documented in contracts.js): NATIVE_USDC is a pseudo-native token
+        // on-chain (18-dec, msg.value-based) but this app tracks it in
+        // 6-dec "display" convention everywhere (local notes, shielded
+        // balance totals, ShieldPanel/Withdraw amounts — see NATIVE_TO_ERC20
+        // = 1e12 used consistently elsewhere). LI.FI's quote API reports
+        // amounts in ITS OWN understanding of that token's decimals, which
+        // for the native-registered address is 18-dec, not our 6-dec
+        // convention. Sending/reading raw quote amounts without converting
+        // is exactly what inflated a swap landing in NATIVE_USDC by 1e12x
+        // when written to the local note / shielded balance (confirmed:
+        // observed shielded USDC balance was ~1e12x real TVL).
+        const fromAmountForLiFi = tkFr.addr.toLowerCase() === NATIVE_USDC.toLowerCase()
+          ? (amountBig * NATIVE_TO_ERC20).toString()
+          : amountBig.toString();
+
         const quote = await fetchLiFiQuote({
           fromChain: ARC_CHAIN_ID, toChain: ARC_CHAIN_ID,
           fromToken: tkFr.addr, toToken: tkTo.addr,
-          fromAmount: amountBig.toString(),
+          fromAmount: fromAmountForLiFi,
           fromAddress: CONTRACTS.LiFiPrivacyAdapter,
         });
         routeData = encodeLiFiRouteData(quote.transactionRequest.to, quote.transactionRequest.value, quote.transactionRequest.data);
-        // Prefer LI.FI's own slippage-protected minimum over our local estimate.
+        // Prefer LI.FI's own slippage-protected minimum over our local estimate —
+        // but convert back to OUR 6-dec display convention if tokenOut is
+        // the native-registered USDC pseudo-token, or this re-inflates the
+        // note by 1e12x exactly as before.
         if (quote?.estimate?.toAmountMin) {
-          outAmountBig = BigInt(quote.estimate.toAmount);
-          minOut       = BigInt(quote.estimate.toAmountMin);
+          const toIsNative = tkTo.addr.toLowerCase() === NATIVE_USDC.toLowerCase();
+          const rawOut    = BigInt(quote.estimate.toAmount);
+          const rawOutMin = BigInt(quote.estimate.toAmountMin);
+          outAmountBig = toIsNative ? rawOut    / NATIVE_TO_ERC20 : rawOut;
+          minOut       = toIsNative ? rawOutMin / NATIVE_TO_ERC20 : rawOutMin;
         }
       } catch (e) {
         notify("Swap", `LI.FI route unavailable: ${e.message}`, "error");
