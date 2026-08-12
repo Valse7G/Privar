@@ -1299,7 +1299,7 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
     }
   }, [account?.address]);
 
-  const { bals: shieldedBals, recompute: recomputeShielded, verifyNow: verifyShieldedNow } = useShieldedBalances(prices, account?.address);
+  const { bals: shieldedBals, recompute: recomputeShielded } = useShieldedBalances(prices, account?.address);
   const { sendRealTx: sendViewKeyTx } = useTxSend({ account, onArc, notify, refreshBalance });
 
   // Scan chain for ECDH stealth notes addressed to this wallet on every connect,
@@ -1340,9 +1340,6 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
   // Expose address + recompute for ShieldedWallet stale-notes purge button
   useEffect(() => { window._privarAccount = account?.address || ""; }, [account?.address]);
   useEffect(() => { window._privarRecomputeShielded = recomputeShielded; }, [recomputeShielded]);
-  // Expose a forced (grace-window-bypassing) on-chain existence re-check —
-  // see ShieldedWallet's "Vérifier maintenant" button.
-  useEffect(() => { window._privarVerifyShieldedNow = verifyShieldedNow; }, [verifyShieldedNow]);
 
   return (
     <div style={{ display:"flex", height:"100vh", width:"100%", maxWidth:960, margin:"0 auto", position:"relative", zIndex:2 }}>
@@ -3363,12 +3360,10 @@ async function reconcileNotesOnChain(address) {
 // delay), so a fresh legitimate shield is never mistaken for a phantom.
 const VERIFY_SKIP_WINDOW_MS = 10 * 60 * 1000; // 10 min grace period
 
-async function verifyNotesBackedOnChain(address, { force = false } = {}) {
+async function verifyNotesBackedOnChain(address) {
   if (!address) return 0;
   const notes = getNotes(address);
-  const toCheck = force
-    ? notes.filter(n => n.commitment)
-    : notes.filter(n => n.commitment && (Date.now() - (n.ts || 0)) > VERIFY_SKIP_WINDOW_MS);
+  const toCheck = notes.filter(n => n.commitment && (Date.now() - (n.ts || 0)) > VERIFY_SKIP_WINDOW_MS);
   if (toCheck.length === 0) return 0;
 
   try {
@@ -3513,31 +3508,30 @@ function useShieldedBalances(prices, address) {
     const key = notesKey(address);
     const handler = (e) => { if (e.key === key || e.key === "privarc_notes") compute(); };
     window.addEventListener("storage", handler);
-    // On-chain reconciliation on mount: prune SPENT notes (nullifier matches
-    // a Withdrawn event) AND prune UNBACKED notes (commitment has no
-    // matching Deposited event — see verifyNotesBackedOnChain's doc comment
-    // for why this is the definitive fix for a local balance that exceeds
+    if (!address) return () => window.removeEventListener("storage", handler);
+
+    // On-chain reconciliation: prune SPENT notes (nullifier matches a
+    // Withdrawn event) AND prune UNBACKED notes (commitment has no matching
+    // Deposited event — see verifyNotesBackedOnChain's doc comment for why
+    // this is the definitive fix for a local balance that exceeds
     // protocol-wide TVL, which amount-based quarantine alone cannot catch).
+    // Runs on mount AND on the same periodic cadence as the other
+    // background resyncs (scanStealthNotes / resyncFromCloudVault / etc.)
+    // so it's fully automatic — no manual action ever required.
     unbackedRemovedRef.current = 0;
-    if (address) {
+    const runChecks = () => {
       reconcileNotesOnChain(address).then(compute).catch(() => {});
       verifyNotesBackedOnChain(address).then(n => {
         unbackedRemovedRef.current += n;
         compute();
       }).catch(() => {});
-    }
-    return () => window.removeEventListener("storage", handler);
+    };
+    runChecks();
+    const id = setInterval(runChecks, 120_000); // 2 min, matches other resyncs
+    return () => { window.removeEventListener("storage", handler); clearInterval(id); };
   }, [compute, address]);
 
-  const verifyNow = useCallback(async () => {
-    if (!address) return 0;
-    const n = await verifyNotesBackedOnChain(address, { force: true });
-    unbackedRemovedRef.current += n;
-    compute();
-    return n;
-  }, [address, compute]);
-
-  return { bals, recompute: compute, verifyNow };
+  return { bals, recompute: compute };
 }
 
 // ── ShieldedWallet mini-panel ─────────────────────────────────────────────────
@@ -3548,14 +3542,7 @@ function ShieldedWallet({ bals, onMax, tokenFilter, actionableFilter, compact = 
   // Both old tokenFilter and new actionableFilter control clickability;
   // ALL 3 tokens are always displayed for visual uniformity across panels.
   const activeFilter = actionableFilter || tokenFilter;
-  const [verifying, setVerifying] = useState(false);
   if (!bals) return null;
-
-  const runVerifyNow = async () => {
-    if (!window._privarVerifyShieldedNow || verifying) return;
-    setVerifying(true);
-    try { await window._privarVerifyShieldedNow(); } finally { setVerifying(false); }
-  };
 
   // ── Stale-note diagnostic (informational only — no destructive action) ──
   // A previous "Clear stale notes" button here compared the LOCAL wallet
@@ -3629,15 +3616,9 @@ function ShieldedWallet({ bals, onMax, tokenFilter, actionableFilter, compact = 
           can happen right after a fresh shield or sync while on-chain stats catch up.
           Any note actually spent on-chain is pruned automatically in the background;
           notes with implausible amounts are quarantined automatically (see above if
-          that just happened). An on-chain existence check also runs automatically
-          10 minutes after each note is created — if you don't want to wait, tap below
-          to run it immediately.
-          <div style={{ marginTop:6 }}>
-            <button onClick={runVerifyNow} disabled={verifying}
-              style={{ fontSize:8, color:"#fca5a5", background:"rgba(248,113,113,.1)", border:"1px solid rgba(248,113,113,.35)", borderRadius:3, padding:"4px 8px", fontFamily:"monospace", cursor: verifying ? "default" : "pointer", opacity: verifying ? .6 : 1 }}>
-              {verifying ? "⏳ Vérification on-chain…" : "🔍 Vérifier maintenant"}
-            </button>
-          </div>
+          that just happened); notes with no matching on-chain deposit are quarantined
+          automatically as well, checked periodically in the background. If this
+          persists for more than a few minutes, treat it as worth investigating.
         </div>
       )}
       <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:5 }}>
