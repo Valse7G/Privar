@@ -1299,7 +1299,7 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
     }
   }, [account?.address]);
 
-  const { bals: shieldedBals, recompute: recomputeShielded } = useShieldedBalances(prices, account?.address);
+  const { bals: shieldedBals, recompute: recomputeShielded, verifyNow: verifyShieldedNow } = useShieldedBalances(prices, account?.address);
   const { sendRealTx: sendViewKeyTx } = useTxSend({ account, onArc, notify, refreshBalance });
 
   // Scan chain for ECDH stealth notes addressed to this wallet on every connect,
@@ -1340,6 +1340,9 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
   // Expose address + recompute for ShieldedWallet stale-notes purge button
   useEffect(() => { window._privarAccount = account?.address || ""; }, [account?.address]);
   useEffect(() => { window._privarRecomputeShielded = recomputeShielded; }, [recomputeShielded]);
+  // Expose a forced (grace-window-bypassing) on-chain existence re-check —
+  // see ShieldedWallet's "Vérifier maintenant" button.
+  useEffect(() => { window._privarVerifyShieldedNow = verifyShieldedNow; }, [verifyShieldedNow]);
 
   return (
     <div style={{ display:"flex", height:"100vh", width:"100%", maxWidth:960, margin:"0 auto", position:"relative", zIndex:2 }}>
@@ -3360,10 +3363,12 @@ async function reconcileNotesOnChain(address) {
 // delay), so a fresh legitimate shield is never mistaken for a phantom.
 const VERIFY_SKIP_WINDOW_MS = 10 * 60 * 1000; // 10 min grace period
 
-async function verifyNotesBackedOnChain(address) {
+async function verifyNotesBackedOnChain(address, { force = false } = {}) {
   if (!address) return 0;
   const notes = getNotes(address);
-  const toCheck = notes.filter(n => n.commitment && (Date.now() - (n.ts || 0)) > VERIFY_SKIP_WINDOW_MS);
+  const toCheck = force
+    ? notes.filter(n => n.commitment)
+    : notes.filter(n => n.commitment && (Date.now() - (n.ts || 0)) > VERIFY_SKIP_WINDOW_MS);
   if (toCheck.length === 0) return 0;
 
   try {
@@ -3524,7 +3529,15 @@ function useShieldedBalances(prices, address) {
     return () => window.removeEventListener("storage", handler);
   }, [compute, address]);
 
-  return { bals, recompute: compute };
+  const verifyNow = useCallback(async () => {
+    if (!address) return 0;
+    const n = await verifyNotesBackedOnChain(address, { force: true });
+    unbackedRemovedRef.current += n;
+    compute();
+    return n;
+  }, [address, compute]);
+
+  return { bals, recompute: compute, verifyNow };
 }
 
 // ── ShieldedWallet mini-panel ─────────────────────────────────────────────────
@@ -3535,7 +3548,14 @@ function ShieldedWallet({ bals, onMax, tokenFilter, actionableFilter, compact = 
   // Both old tokenFilter and new actionableFilter control clickability;
   // ALL 3 tokens are always displayed for visual uniformity across panels.
   const activeFilter = actionableFilter || tokenFilter;
+  const [verifying, setVerifying] = useState(false);
   if (!bals) return null;
+
+  const runVerifyNow = async () => {
+    if (!window._privarVerifyShieldedNow || verifying) return;
+    setVerifying(true);
+    try { await window._privarVerifyShieldedNow(); } finally { setVerifying(false); }
+  };
 
   // ── Stale-note diagnostic (informational only — no destructive action) ──
   // A previous "Clear stale notes" button here compared the LOCAL wallet
@@ -3609,8 +3629,15 @@ function ShieldedWallet({ bals, onMax, tokenFilter, actionableFilter, compact = 
           can happen right after a fresh shield or sync while on-chain stats catch up.
           Any note actually spent on-chain is pruned automatically in the background;
           notes with implausible amounts are quarantined automatically (see above if
-          that just happened). If this persists after a refresh, treat it as worth
-          investigating rather than assuming it will resolve on its own.
+          that just happened). An on-chain existence check also runs automatically
+          10 minutes after each note is created — if you don't want to wait, tap below
+          to run it immediately.
+          <div style={{ marginTop:6 }}>
+            <button onClick={runVerifyNow} disabled={verifying}
+              style={{ fontSize:8, color:"#fca5a5", background:"rgba(248,113,113,.1)", border:"1px solid rgba(248,113,113,.35)", borderRadius:3, padding:"4px 8px", fontFamily:"monospace", cursor: verifying ? "default" : "pointer", opacity: verifying ? .6 : 1 }}>
+              {verifying ? "⏳ Vérification on-chain…" : "🔍 Vérifier maintenant"}
+            </button>
+          </div>
         </div>
       )}
       <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:5 }}>
