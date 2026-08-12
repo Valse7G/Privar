@@ -3335,6 +3335,70 @@ async function reconcileNotesOnChain(address) {
   }
 }
 
+// ── Verify notes are actually BACKED on-chain (not just unspent) ───────────
+// reconcileNotesOnChain (above) only catches notes that were CREATED then
+// later SPENT — it has no way to catch a note that was never really created
+// on-chain in the first place (a tx that reverted after the note was
+// optimistically saved locally, a decimal-scale bug minting a phantom
+// commitment client-side, manual localStorage tampering, etc.). Such a note
+// has no nullifier to match against Withdrawn events, so it passes
+// reconcileNotesOnChain forever.
+//
+// Every real note — from deposit() AND from _privateSwap()'s re-shield of
+// the swap output — emits Deposited(commitment, token, amount, leafIndex,
+// root). A commitment that isn't backed by one of these events is not
+// spendable no matter what amount is stored locally for it: withdraw()/
+// swap() would need a valid Merkle proof for that commitment, which
+// wouldn't exist. So existence-checking by commitment is a safe, precise
+// way to catch phantom notes regardless of their amount — unlike comparing
+// the local total to protocol-wide TVL, which the "Clear stale notes"
+// button above was retired for: it can't tell "phantom" apart from "just
+// shielded, on-chain stats haven't caught up yet".
+//
+// SKIP_WINDOW_MS guards exactly that race: a note younger than this is left
+// alone even if its Deposited event isn't visible yet (RPC lag / indexing
+// delay), so a fresh legitimate shield is never mistaken for a phantom.
+const VERIFY_SKIP_WINDOW_MS = 10 * 60 * 1000; // 10 min grace period
+
+async function verifyNotesBackedOnChain(address) {
+  if (!address) return 0;
+  const notes = getNotes(address);
+  const toCheck = notes.filter(n => n.commitment && (Date.now() - (n.ts || 0)) > VERIFY_SKIP_WINDOW_MS);
+  if (toCheck.length === 0) return 0;
+
+  try {
+    const current = Number(BigInt(await rpcCallWithBackoff("eth_blockNumber", [])));
+    const logs = await fetchLogsPaginated(
+      CONTRACTS.PrivarShieldVault, [EV.Deposited],
+      Math.max(0, current - 5_000_000), "privar_verify_scanprogress", address, "Privar"
+    );
+    if (!Array.isArray(logs)) return 0; // RPC/pagination failure — do NOT treat as "no commitments exist"
+
+    const onChainCommitments = new Set();
+    for (const log of logs) {
+      const c = log.topics?.[1]; // Deposited: bytes32 indexed commitment
+      if (c) onChainCommitments.add(c.toLowerCase());
+    }
+    if (onChainCommitments.size === 0) return 0; // scan came back empty — likely incomplete, don't act on it
+
+    const unbacked = toCheck.filter(n => !onChainCommitments.has(n.commitment.toLowerCase()));
+    if (unbacked.length === 0) return 0;
+
+    const unbackedIds = new Set(unbacked.map(n => n.commitment));
+    const remaining = notes.filter(n => !unbackedIds.has(n.commitment));
+    saveNotes(address, remaining);
+    try {
+      const existingBad = JSON.parse(localStorage.getItem(quarantineKey(address)) || "[]");
+      localStorage.setItem(quarantineKey(address), JSON.stringify([...existingBad, ...unbacked.map(n => ({ ...n, quarantineReason: "no matching Deposited event on-chain" }))]));
+    } catch {}
+    console.warn(`[Privar] Quarantined ${unbacked.length} unbacked note(s) for ${address.slice(0,8)}… — no matching Deposited event found on-chain.`);
+    return unbacked.length;
+  } catch (e) {
+    console.warn("[Privar] verifyNotesBackedOnChain failed:", e.message);
+    return 0;
+  }
+}
+
 // ── Plausibility ceiling for a single note ──────────────────────────────────
 // Defense-in-depth against decimal-scale bugs (like the LI.FI/NATIVE_USDC
 // 1e12 inflation fixed above) or any other corruption path (bad cloud-journal
@@ -3386,6 +3450,11 @@ function quarantineCorruptNotes(address) {
 function useShieldedBalances(prices, address) {
   const SAFE_BALS = { usdc:0, eurc:0, cbtc:0, totalUsd:0, rawUsdc:0n, rawEurc:0n, rawCbtc:0n, noteCount:0, quarantined:0 };
   const [bals, setBals] = useState(SAFE_BALS);
+  // Cumulative count of notes removed THIS SESSION by the async on-chain
+  // existence check (verifyNotesBackedOnChain) — separate from the sync
+  // amount-ceiling check because it resolves later (after an RPC round
+  // trip) and compute() has no other way to know about it.
+  const unbackedRemovedRef = useRef(0);
 
   const compute = useCallback(() => {
     // Sanity sweep FIRST — never sum a note past the plausibility ceiling.
@@ -3429,7 +3498,7 @@ function useShieldedBalances(prices, address) {
       rawEurc:  acc[CONTRACTS.EURC],
       rawCbtc:  acc[CONTRACTS.cirBTC],
       noteCount: notes.length,
-      quarantined: quarantinedNow,
+      quarantined: quarantinedNow + unbackedRemovedRef.current,
     });
   }, [prices, address]);
 
@@ -3439,8 +3508,19 @@ function useShieldedBalances(prices, address) {
     const key = notesKey(address);
     const handler = (e) => { if (e.key === key || e.key === "privarc_notes") compute(); };
     window.addEventListener("storage", handler);
-    // On-chain reconciliation on mount (adds any missed deposits)
-    if (address) reconcileNotesOnChain(address).then(compute).catch(() => {});
+    // On-chain reconciliation on mount: prune SPENT notes (nullifier matches
+    // a Withdrawn event) AND prune UNBACKED notes (commitment has no
+    // matching Deposited event — see verifyNotesBackedOnChain's doc comment
+    // for why this is the definitive fix for a local balance that exceeds
+    // protocol-wide TVL, which amount-based quarantine alone cannot catch).
+    unbackedRemovedRef.current = 0;
+    if (address) {
+      reconcileNotesOnChain(address).then(compute).catch(() => {});
+      verifyNotesBackedOnChain(address).then(n => {
+        unbackedRemovedRef.current += n;
+        compute();
+      }).catch(() => {});
+    }
     return () => window.removeEventListener("storage", handler);
   }, [compute, address]);
 
