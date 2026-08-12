@@ -3964,6 +3964,19 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     const nullifier     = randomBytes32();
     const commitmentOut = randomBytes32();
 
+    // v3.4.2 — the contract now credits totalShieldedByToken/the re-shielded
+    // note at native 18-dec scale when tokenOut is NATIVE_USDC (see
+    // PrivarShieldVault.sol's shieldedAmountOut). outAmountBig above is the
+    // raw 6-dec ERC20-pseudo-view quote — mirror the same scaling here (same
+    // NATIVE_TO_ERC20 constant already used for amountIn/fees elsewhere) so
+    // the locally-journaled note amount matches what's actually on-chain.
+    // NOTE: minAmountOut/minOut sent in the calldata stays UNSCALED — the
+    // contract's own amountOut<minAmountOut check still runs on the raw
+    // 6-dec value, BEFORE the new native-scale credit (see
+    // buildAtomicSwapCalldata's comment on this exact point).
+    const isNativeOutToken = tkTo.addr.toLowerCase() === NATIVE_USDC.toLowerCase();
+    const noteAmountOut = isNativeOutToken ? outAmountBig * NATIVE_TO_ERC20 : outAmountBig;
+
     // Protocol fee — only flatFeeUsdc is real; there's no separate swapFeeBps()
     // on this contract (single unified protocolFeeBps applies everywhere).
     let flatFeeUsdc = 0n;
@@ -3983,7 +3996,7 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     const changeCommitment = remaining > 0n ? randomBytes32() : null;
     const swapOps = [
       { t: 1, commitment: note.commitment },
-      { t: 0, commitment: commitmentOut, amount: outAmountBig.toString(), token: tkTo.addr },
+      { t: 0, commitment: commitmentOut, amount: noteAmountOut.toString(), token: tkTo.addr },
     ];
     if (changeCommitment) swapOps.push({ t: 0, commitment: changeCommitment, amount: remaining.toString(), token: note.token });
     const journalEntry = await encryptJournalBlob(account?.address, { ts: Date.now(), ops: swapOps });
@@ -4016,7 +4029,7 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       // Update local notes
       const updated = notes.filter(n => n.commitment !== note.commitment);
       if (changeCommitment) updated.push({ ...note, amount:remaining.toString(), commitment:changeCommitment, cloudSynced: !!journalEntry });
-      updated.push({ commitment:commitmentOut, amount:outAmountBig.toString(), token:tkTo.addr, ts:Date.now(), cloudSynced: !!journalEntry });
+      updated.push({ commitment:commitmentOut, amount:noteAmountOut.toString(), token:tkTo.addr, ts:Date.now(), cloudSynced: !!journalEntry });
       saveNotes(account?.address, updated);
       recomputeShielded?.();
       notify("Swap ✓",`${amount} ${fr} → ~${q.out} ${to} — swap confidentiel terminé.`,"success");

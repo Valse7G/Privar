@@ -1,36 +1,36 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v3.4.1-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v3.4.2-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
-![contracts](https://img.shields.io/badge/Contracts-v3.4.1-4ade80?style=flat-square&labelColor=0a1628)
+![contracts](https://img.shields.io/badge/Contracts-v3.4.2-4ade80?style=flat-square&labelColor=0a1628)
 ![status](https://img.shields.io/badge/status-testnet-4ade80?style=flat-square&labelColor=0a1628)
 
 Confidential on-chain capital management built on **Arc Testnet** (Circle L1, USDC native gas): shield, swap, send, withdraw, and bridge USDC/EURC/cirBTC privately, with protocol-wide note-journal persistence embedded directly in every shielding transaction (v3.4) — no separate broadcast that can silently fail.
 
 ---
 
-## Deployed contracts — Arc Testnet (v3.4.1)
+## Deployed contracts — Arc Testnet (v3.4.2)
 
 Deployer / treasury: `0x1Dc72450B3e2782AcD669D7C27073f2C8F2c9894`
-Deployed: 2026-08-11T01:58:43Z — full protocol redeployment (not a migration; see [Swap accounting fix](#swap-accounting-fix-v341) below).
+Deployed: 2026-08-12T04:55:47Z — full protocol redeployment (not a migration; see [Swap decimal-scale fix](#swap-decimal-scale-fix-v342) below).
 
 | Contract | Address | Frontend key (`src/contracts.js`) |
 |---|---|---|
-| **PrivarShieldVault** ⁴ | `0xfC622C2DbF6458a7D1Bb6a7637299EbC098dD202` | `PrivarShieldVault` |
-| PrivarMerkleTreeManager | `0xf7e4015EA54bD1DADF2ADEe2dFaB39b7cE09bD5D` | `PrivarMerkleTreeManager` |
-| PrivarNullifierRegistry | `0xbFa2587FDBd61BA55670F5642e0EaF0B5b64553f` | `PrivarNullifierRegistry` |
-| PrivarDepositManager | `0x6F10eCD7de99988A28AAfF4d045f32664F81Ad4A` | `PrivarDepositManager` |
-| PrivarWithdrawManager | `0x168DdE786F669914C4Da0C5879d0fCD114336d93` | `WithdrawalManager` |
-| PrivarStaking (public, no notes — see below) | `0x1d794E327A949c27386293aA743D9CCbb6DF2D0C` | `PrivarStaking` |
-| VerifierZK (Mock¹) | `0xD25C3527281b7004B82f69892e57Fdc677D21740` | `MockVerifierZK` |
-| **PrivarCloudVault** ² | `0x07C82F9A3bcd2c20daD0510D7b2A4E51ceaD9735` | `PrivarCloudVault` |
+| **PrivarShieldVault** ⁴ | `0x583118A37deD8F617CDDE07E45dbb1BcdD724928` | `PrivarShieldVault` |
+| PrivarMerkleTreeManager | `0x91450D2D0cabFf4EB8E0ba712e322e1A0523BCEc` | `PrivarMerkleTreeManager` |
+| PrivarNullifierRegistry | `0x0D30e947768c8008CA2d4d0ded98BDc9476f0ecB` | `PrivarNullifierRegistry` |
+| PrivarDepositManager | `0xdf601820Cfb927A74EFAC18D7312D3488301b3AD` | `PrivarDepositManager` |
+| PrivarWithdrawManager | `0x264C32F4bEB3E3e7DFC25E6019A8bDDc75C96222` | `WithdrawalManager` |
+| PrivarStaking (public, no notes — see below) | `0x028D9bF3C0F2F542aC5Da5dD992100CC75A98f3B` | `PrivarStaking` |
+| VerifierZK (Mock¹) | `0x4434d7F436e8C3aA51f2153536814A067F44C1B3` | `MockVerifierZK` |
+| **PrivarCloudVault** ² | `0x5822354636710f2A3ee35798E113cf8223FDBf93` | `PrivarCloudVault` |
 | ViewKeyRegistry (unchanged since v1.0.0) | `0x590D1FDC3FbD4CAb151cb7E1557D9C4ecEa2C24b` | `ViewKeyRegistry` |
-| LiFiPrivacyAdapter (active swap router) | `0x4B1E04899d29D30937eA13969711F84f46662E62` | `LiFiPrivacyAdapter` |
-| LiFiPrivacyBridge ³ | `0xE2d8541a4a88134279769Ef9fFb41D21B82C3108` | `LiFiPrivacyBridge` |
+| LiFiPrivacyAdapter (active swap router) | `0x71bb5DA1f496972108128681E7F9a8478679e665` | `LiFiPrivacyAdapter` |
+| LiFiPrivacyBridge ³ | `0xC2bD215b89E4CB4451CE8aA220bAad1DbE1Cc416` | `LiFiPrivacyBridge` |
 | LiFiDiamond | `0xFf70F4A1d11995621854F3692acF286d8aCd04b2` | `LiFiDiamond` |
-| TowerSwapAdapter (documented rollback target, not routed) | `0x3C7f295387049c827077092f1cA5e5592Da46De9` | `TowerSwapAdapter` |
+| TowerSwapAdapter (documented rollback target, not routed) | `0x162e71EcE67E1F4e9e591571A48CDDf36cADDd5D` | `TowerSwapAdapter` |
 | USDC (native gas token) | `0x3600000000000000000000000000000000000000` | `NATIVE_USDC` |
 | EURC | `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a` | `EURC` |
 | cirBTC | `0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF` | `cirBTC` |
@@ -39,9 +39,23 @@ Deployed: 2026-08-11T01:58:43Z — full protocol redeployment (not a migration; 
 ¹ Testnet only — `MockVerifierZK` accepts all well-formed proofs; not the production Groth16 verifier.
 ² Standalone, additive deployment — no constructor args, no dependency on ShieldVault or any other contract. ShieldVault's own `NoteJournal` event is the *primary* persistence path for new activity — CloudVault stays deployed for backward compatibility with pre-v3.4 journal entries and as the manual "Sync Notes to Cloud" backfill in Settings.
 ³ Repointed at the new ShieldVault via `setShieldVault()` — logic unchanged since v3.4.0.
-⁴ Redeployed for v3.4.1 — fixes a real swap accounting bug. See [Swap accounting fix](#swap-accounting-fix-v341) below.
+⁴ Redeployed for v3.4.2 — fixes a decimal-scale accounting bug on swaps landing in native USDC. See [Swap decimal-scale fix](#swap-decimal-scale-fix-v342) below.
 
 All fallback addresses are hardcoded in `src/contracts.js` and can be overridden per-deployment with `VITE_*` env vars (Vercel) without touching code.
+
+---
+
+## Swap decimal-scale fix (v3.4.2)
+
+`PrivarShieldVault._privateSwap()` measures a swap's real `amountOut` via `IERC20(tokenOut).balanceOf()` before/after the router call (this delta-measurement itself was the v3.4.1 fix — see below). For a regular ERC-20 `tokenOut` (EURC, cirBTC) that `balanceOf()` reading is already in the token's own native decimals, so no further conversion is needed.
+
+`NATIVE_USDC` is different: it has a dual representation on Arc — genuine native transfers (`deposit()`'s `msg.value`, `withdraw()`'s `call{value:...}`) use 18-decimal wei, while its ERC-20 pseudo-view (`balanceOf()`, used for the delta measurement above) reports 6-decimal amounts. `totalShieldedByToken` and the re-shielded note must be in the native 18-decimal convention — the code already scaled `feesCollectedByToken[NATIVE_USDC] += fee * 1e12` correctly a few lines above, but the `totalShieldedByToken[tokenOut] += amountOut` line right after it, and the `processDeposit(tokenOut, amountOut, commitmentOut)` call, both used the raw, un-scaled 6-decimal `amountOut` directly.
+
+This was confirmed as a real accounting gap on Arc Testnet: after a successful EURC→USDC swap, `feesCollectedByToken(NATIVE_USDC)` read `150104000000000000` (native 18-dec scale) while `totalShieldedByToken(NATIVE_USDC)` read `3085477` (raw 6-dec scale) for the *same token* — a ~10¹² discrepancy. Every swap landing in native USDC credited the vault's ledger, and the user's own re-shielded note, with roughly one-trillionth of what was actually received, making that output effectively unspendable — surfacing as a local wallet balance higher than protocol TVL, partial withdrawals, and `ERC20: transfer amount exceeds balance` reverts on any further attempt to move the affected note.
+
+Fix: `_privateSwap()` now scales `amountOut` by `1e12` before crediting `totalShieldedByToken`/the note whenever `tokenOut == NATIVE_USDC` (`shieldedAmountOut` in the contract). The frontend's swap flow mirrors the same scaling when journaling the new note locally (`noteAmountOut` in `DApp.jsx`), so the client-side note stays consistent with the on-chain ledger. `minAmountOut` in the calldata is intentionally left unscaled — the contract's own `amountOut < minAmountOut` check still runs on the raw 6-dec value, *before* this new native-scale credit.
+
+This is again a full-suite redeploy for a clean, internally-consistent stack, even though only `PrivarShieldVault`'s logic changed.
 
 ---
 
@@ -183,7 +197,14 @@ Override any address via Vercel env vars (`VITE_SHIELD_VAULT`, `VITE_CLOUD_VAULT
 
 ## Changelog
 
-### v3.4.1 (current) — full protocol redeployment, swap accounting fix
+### v3.4.2 (current) — full protocol redeployment, swap decimal-scale fix
+- **Fixed a real accounting bug**: `_privateSwap()` credited `totalShieldedByToken[tokenOut]` and the re-shielded note with the raw 6-decimal ERC20-pseudo-view `amountOut` whenever `tokenOut == NATIVE_USDC`, instead of the native 18-decimal scale used everywhere else for that token — confirmed on-chain via `feesCollectedByToken(NATIVE_USDC) = 150104000000000000` (native 18-dec) vs `totalShieldedByToken(NATIVE_USDC) = 3085477` (raw 6-dec) for the same token. Every swap landing in native USDC credited ~10⁻¹² of what was actually received. See [Swap decimal-scale fix](#swap-decimal-scale-fix-v342) above.
+- Frontend: swap flow now mirrors the same `*1e12` scaling when journaling the new note locally (`noteAmountOut`), keeping client-side notes consistent with the on-chain ledger for native-USDC swap outputs
+- Frontend: MAX-amount buttons (swap/send/withdraw/bridge) now use the exact raw note balance instead of a 2-decimal-rounded display value, and the note-selection fallback now actually clamps the requested amount to the note's real balance instead of only promising to in a comment — both were causing spurious `ERC20: transfer amount exceeds balance` reverts independent of the decimal-scale bug above
+- Full-suite redeployment (every contract fresh) for stack consistency
+- Not a migration — v3.4.1 shielded balances remain in the old `PrivarShieldVault` address (`0xfC622C2DbF6458a7D1Bb6a7637299EbC098dD202`)
+
+### v3.4.1 — full protocol redeployment, swap accounting fix
 - **Fixed a real accounting bug**: `_privateSwap()`'s `!isNativeIn` branch (tokenIn = EURC/cirBTC) trusted the swap router's reported `amountOut` with no verification, unlike the `isNativeIn` branch which always measured a real balance delta — confirmed on-chain via `totalShieldedByToken(EURC) = 2,998,471` while `EURC.balanceOf(vault) = 0`. Both branches now measure the same delta and clamp `amountOut` to it. See [Swap accounting fix](#swap-accounting-fix-v341) above.
 - Full-suite redeployment (every contract fresh) for stack consistency — `TowerSwapAdapter`/`LiFiPrivacyAdapter`/`LiFiPrivacyBridge` repointed via their existing `setShieldVault()`, no logic changes there
 - Not a migration — v3.4.0 shielded balances remain in the old `PrivarShieldVault` address
