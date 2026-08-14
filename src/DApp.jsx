@@ -4102,11 +4102,19 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
           ? (amountBig * NATIVE_TO_ERC20).toString()
           : amountBig.toString();
 
+        // Both legs are stablecoins (USDC/EURC) — LI.FI's "stablecoin" preset
+        // uses tighter, purpose-built defaults for slippage/price-impact/tool
+        // selection on this class of pair instead of generic ones, which
+        // otherwise can mis-price a simulated small-amount stable swap.
+        const isStableLeg = (s) => s === "USDC" || s === "EURC";
+        const preset = (isStableLeg(fr) && isStableLeg(to)) ? "stablecoin" : undefined;
+
         const quote = await fetchLiFiQuote({
           fromChain: ARC_CHAIN_ID, toChain: ARC_CHAIN_ID,
           fromToken: tkFr.addr, toToken: tkTo.addr,
           fromAmount: fromAmountForLiFi,
           fromAddress: CONTRACTS.LiFiPrivacyAdapter,
+          preset,
         });
         routeData = encodeLiFiRouteData(quote.transactionRequest.to, quote.transactionRequest.value, quote.transactionRequest.data);
         // Prefer LI.FI's own slippage-protected minimum over our local estimate —

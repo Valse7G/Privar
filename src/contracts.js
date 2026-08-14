@@ -617,7 +617,7 @@ export async function fetchLiFiDestinations(fromChain = ARC_CHAIN_ID) {
 // tx) sees the contract as counterparty, not the user. For a same-chain swap,
 // toAddress should equal fromAddress (funds return to the contract to be
 // re-shielded). For a bridge, toAddress is the destination recipient.
-export async function fetchLiFiQuote({ fromChain, toChain, fromToken, toToken, fromAmount, fromAddress, toAddress, slippage = 0.01 }) {
+export async function fetchLiFiQuote({ fromChain, toChain, fromToken, toToken, fromAmount, fromAddress, toAddress, slippage = 0.01, preset }) {
   const params = new URLSearchParams({
     fromChain:  String(fromChain),
     toChain:    String(toChain),
@@ -627,7 +627,18 @@ export async function fetchLiFiQuote({ fromChain, toChain, fromToken, toToken, f
     fromAddress,
     toAddress:  toAddress || fromAddress,
     slippage:   String(slippage),
+    // CRITICAL: without this, LI.FI simulates the route against fromAddress
+    // BEFORE returning it — but fromAddress here is LiFiPrivacyAdapter,
+    // which never holds tokenIn ahead of time (funds only ever arrive
+    // atomically, within the same on-chain tx as the ShieldVault call —
+    // that's the whole point of the privacy design, see comment above).
+    // Simulating against an account with a real balance of zero at quote
+    // time produces a degraded/failed route — this is very likely why every
+    // quote was coming back "no available quotes / price impact 99.99999%"
+    // regardless of whether real liquidity actually existed for the pair.
+    skipSimulation: "true",
   });
+  if (preset) params.set("preset", preset);
   const res = await fetch(`https://li.quest/v1/quote?${params.toString()}`);
   if (!res.ok) {
     const body = await res.text().catch(() => "");
