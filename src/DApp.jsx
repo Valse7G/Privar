@@ -4086,39 +4086,32 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     let routeData = "0x";
     if (usingLiFi) {
       try {
-        // BUG FIX (decimal-scale, matches the contract-side NATIVE_USDC bug
-        // documented in contracts.js): NATIVE_USDC is a pseudo-native token
-        // on-chain (18-dec, msg.value-based) but this app tracks it in
-        // 6-dec "display" convention everywhere (local notes, shielded
-        // balance totals, ShieldPanel/Withdraw amounts — see NATIVE_TO_ERC20
-        // = 1e12 used consistently elsewhere). LI.FI's quote API reports
-        // amounts in ITS OWN understanding of that token's decimals, which
-        // for the native-registered address is 18-dec, not our 6-dec
-        // convention. Sending/reading raw quote amounts without converting
-        // is exactly what inflated a swap landing in NATIVE_USDC by 1e12x
-        // when written to the local note / shielded balance (confirmed:
-        // observed shielded USDC balance was ~1e12x real TVL).
-        const fromAmountForLiFi = tkFr.addr.toLowerCase() === NATIVE_USDC.toLowerCase()
-          ? (amountBig * NATIVE_TO_ERC20).toString()
-          : amountBig.toString();
-
+        // CORRECTION: an earlier version of this code scaled fromAmount up
+        // (and toAmount/toAmountMin down) by NATIVE_TO_ERC20 (1e12) for
+        // NATIVE_USDC legs, on the assumption that LI.FI reports amounts
+        // for that token in native 18-dec. That assumption was WRONG and
+        // introduced a real regression: a verified live quote response
+        // confirms LI.FI's own token registry reports NATIVE_USDC as
+        // 6-decimal on this chain ("decimals":6), matching Privar's normal
+        // display convention exactly — there is no LI.FI-side scale
+        // mismatch to correct for. The 1e12-inflated fromAmount this
+        // produced (e.g. 4e18 instead of 4000000 for a 4 USDC swap) is
+        // almost certainly what caused every quote to come back "no
+        // available quotes / price impact 99.99999%" — LI.FI was being
+        // asked to route a nonsensical multi-trillion-dollar amount.
+        // Passing amountBig/quote values straight through (as the
+        // original pre-regression code did) is correct.
         const quote = await fetchLiFiQuote({
           fromChain: ARC_CHAIN_ID, toChain: ARC_CHAIN_ID,
           fromToken: tkFr.addr, toToken: tkTo.addr,
-          fromAmount: fromAmountForLiFi,
+          fromAmount: amountBig.toString(),
           fromAddress: CONTRACTS.LiFiPrivacyAdapter,
         });
         routeData = encodeLiFiRouteData(quote.transactionRequest.to, quote.transactionRequest.value, quote.transactionRequest.data);
-        // Prefer LI.FI's own slippage-protected minimum over our local estimate —
-        // but convert back to OUR 6-dec display convention if tokenOut is
-        // the native-registered USDC pseudo-token, or this re-inflates the
-        // note by 1e12x exactly as before.
+        // Prefer LI.FI's own slippage-protected minimum over our local estimate.
         if (quote?.estimate?.toAmountMin) {
-          const toIsNative = tkTo.addr.toLowerCase() === NATIVE_USDC.toLowerCase();
-          const rawOut    = BigInt(quote.estimate.toAmount);
-          const rawOutMin = BigInt(quote.estimate.toAmountMin);
-          outAmountBig = toIsNative ? rawOut    / NATIVE_TO_ERC20 : rawOut;
-          minOut       = toIsNative ? rawOutMin / NATIVE_TO_ERC20 : rawOutMin;
+          outAmountBig = BigInt(quote.estimate.toAmount);
+          minOut       = BigInt(quote.estimate.toAmountMin);
         }
       } catch (e) {
         notify("Swap", `LI.FI route unavailable: ${e.message}`, "error");
