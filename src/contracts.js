@@ -617,7 +617,7 @@ export async function fetchLiFiDestinations(fromChain = ARC_CHAIN_ID) {
 // tx) sees the contract as counterparty, not the user. For a same-chain swap,
 // toAddress should equal fromAddress (funds return to the contract to be
 // re-shielded). For a bridge, toAddress is the destination recipient.
-export async function fetchLiFiQuote({ fromChain, toChain, fromToken, toToken, fromAmount, fromAddress, toAddress, slippage = 0.01, preset }) {
+export async function fetchLiFiQuote({ fromChain, toChain, fromToken, toToken, fromAmount, fromAddress, toAddress, slippage = 0.01 }) {
   const params = new URLSearchParams({
     fromChain:  String(fromChain),
     toChain:    String(toChain),
@@ -636,9 +636,13 @@ export async function fetchLiFiQuote({ fromChain, toChain, fromToken, toToken, f
     // time produces a degraded/failed route — this is very likely why every
     // quote was coming back "no available quotes / price impact 99.99999%"
     // regardless of whether real liquidity actually existed for the pair.
+    // NOTE: a "stablecoin" preset was tried alongside this and reverted —
+    // it 400'd with "Failed to apply ... preset 'stablecoin'" (code 1011),
+    // most likely because EURC isn't registered under LI.FI's stablecoin
+    // tag on this testnet, or the preset conflicts with the manual
+    // `slippage` param above. Not worth the added failure surface.
     skipSimulation: "true",
   });
-  if (preset) params.set("preset", preset);
   const res = await fetch(`https://li.quest/v1/quote?${params.toString()}`);
   if (!res.ok) {
     const body = await res.text().catch(() => "");
