@@ -3565,8 +3565,16 @@ function ShieldedWallet({ bals, onMax, tokenFilter, actionableFilter, compact = 
   const globalUsdc = protocolStats?.shieldedUsdc != null ? Number(protocolStats.shieldedUsdc) / 1e6 : null;
   const globalEurc = protocolStats?.shieldedEurc != null ? Number(protocolStats.shieldedEurc) / 1e6 : null;
   const globalCbtc = protocolStats?.shieldedBtc  != null ? Number(protocolStats.shieldedBtc)  / 1e8 : null;
-  const staleUsdc = globalUsdc != null && bals.usdc > 0 && bals.usdc > globalUsdc + 0.01;
-  const staleEurc = globalEurc != null && bals.eurc > 0 && bals.eurc > globalEurc + 0.01;
+  // Tolerance widened from $0.01 to $0.03 — protocolStats.shieldedUsdc
+  // (the on-chain TVL) polls every 30s, while the local shielded balance
+  // updates INSTANTLY on any note change (storage listener). A single
+  // recent shield/swap/withdraw can legitimately put the local balance
+  // ~$0.01-0.02 ahead of TVL for up to 30s while the next poll catches up —
+  // $0.01 was tight enough to false-positive on exactly that normal lag.
+  // Real phantom/unbacked notes are still caught precisely (regardless of
+  // amount) by verifyNotesBackedOnChain, not by this coarse comparison.
+  const staleUsdc = globalUsdc != null && bals.usdc > 0 && bals.usdc > globalUsdc + 0.03;
+  const staleEurc = globalEurc != null && bals.eurc > 0 && bals.eurc > globalEurc + 0.03;
   const staleCbtc = globalCbtc != null && bals.cbtc > 0 && bals.cbtc > globalCbtc + 0.000001;
   const hasStale  = staleUsdc || staleEurc || staleCbtc;
   const usdc  = bals.usdc  ?? 0;
