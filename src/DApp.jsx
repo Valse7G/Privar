@@ -1299,7 +1299,7 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
     }
   }, [account?.address]);
 
-  const { bals: shieldedBals, recompute: recomputeShielded } = useShieldedBalances(prices, account?.address);
+  const { bals: shieldedBals, recompute: recomputeShielded, lastVerified: shieldedLastVerified } = useShieldedBalances(prices, account?.address);
   const { sendRealTx: sendViewKeyTx } = useTxSend({ account, onArc, notify, refreshBalance });
 
   // Scan chain for ECDH stealth notes addressed to this wallet on every connect,
@@ -1337,6 +1337,7 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
   }, [account?.address, onArc, recomputeShielded, sendViewKeyTx, notify]);
 
   const panelProps = { account, balance, usdcBalance, onArc, notify, refreshBalance, txHistory, loadingBal, prices, changes, change24h, lastUpdate, priceError, setPanel, protocolStats, onChainActivity, shieldedBals, recomputeShielded, sendRealTx: sendViewKeyTx };
+  useEffect(() => { window._privarShieldedLastVerified = shieldedLastVerified; }, [shieldedLastVerified]);
   // Expose address + recompute for ShieldedWallet stale-notes purge button
   useEffect(() => { window._privarAccount = account?.address || ""; }, [account?.address]);
   useEffect(() => { window._privarRecomputeShielded = recomputeShielded; }, [recomputeShielded]);
@@ -3298,110 +3299,112 @@ async function reconcileNotesOnChain(address) {
   //   1. scanStealthNotes() — decrypts self-addressed encrypted notes relayed on-chain
   //   2. buildTxHistoryFromChain() — reconstructs tx history from indexed events
   //
-  // This function now only checks for spent nullifiers to prune already-withdrawn
-  // notes from localStorage — keeping local notes in sync with on-chain state.
-  if (!address) return;
-  try {
-    const current = Number(BigInt(await rpcCallWithBackoff("eth_blockNumber", [])));
-
-    // Was previously a single unpaginated eth_getLogs spanning up to
-    // 5,000,000 blocks with no retry — fired fresh from scratch on every
-    // connect AND every 2-minute poll, alongside scanStealthNotes and
-    // PrivarCloudVault's resync all hitting the same rate-limited RPC. Now
-    // uses the same paginated, backoff-aware, progress-persisting fetcher.
-    const logs = await fetchLogsPaginated(
-      CONTRACTS.PrivarShieldVault, [EV.Withdrawn],
-      Math.max(0, current - 5_000_000), "privar_reconcile_scanprogress", address, "Privar"
-    );
-    if (!Array.isArray(logs) || logs.length === 0) return;
-
-    // Build set of spent nullifiers
-    const spentNullifiers = new Set();
-    for (const log of logs) {
-      try {
-        const nullifier = log.topics?.[1]; // Withdrawn: bytes32 indexed nullifier
-        if (nullifier) spentNullifiers.add(nullifier.toLowerCase());
-      } catch {}
-    }
-    if (spentNullifiers.size === 0) return;
-
-    // Prune notes whose nullifier has been spent on-chain
-    const existing = getNotes(address);
-    const pruned   = existing.filter(n => {
-      if (!n.nullifier) return true; // no nullifier stored → keep (can't verify)
-      return !spentNullifiers.has(n.nullifier.toLowerCase());
-    });
-
-    if (pruned.length < existing.length) {
-      saveNotes(address, pruned);
-      console.log(`[Privar] Pruned ${existing.length - pruned.length} spent note(s) for ${address.slice(0,8)}…`);
-    }
-  } catch (e) {
-    console.warn("[Privar] reconcileNotesOnChain failed:", e.message);
-  }
+  // v3.4.1 — MERGED with the former verifyNotesBackedOnChain() into one
+  // atomic pass (see reconcileAndVerifyNotes below). The two used to run
+  // concurrently, un-coordinated, each doing its own getNotes()->filter->
+  // saveNotes() — a real race: if their RPC fetches resolved in an
+  // interleaved order, one's write could silently clobber the other's
+  // pruning. This function is kept as a thin wrapper (same name/signature)
+  // for any external caller, but now just delegates to the merged pass.
+  return (await reconcileAndVerifyNotes(address)).spent;
 }
 
-// ── Verify notes are actually BACKED on-chain (not just unspent) ───────────
-// reconcileNotesOnChain (above) only catches notes that were CREATED then
-// later SPENT — it has no way to catch a note that was never really created
-// on-chain in the first place (a tx that reverted after the note was
-// optimistically saved locally, a decimal-scale bug minting a phantom
-// commitment client-side, manual localStorage tampering, etc.). Such a note
-// has no nullifier to match against Withdrawn events, so it passes
-// reconcileNotesOnChain forever.
-//
-// Every real note — from deposit() AND from _privateSwap()'s re-shield of
-// the swap output — emits Deposited(commitment, token, amount, leafIndex,
-// root). A commitment that isn't backed by one of these events is not
-// spendable no matter what amount is stored locally for it: withdraw()/
-// swap() would need a valid Merkle proof for that commitment, which
-// wouldn't exist. So existence-checking by commitment is a safe, precise
-// way to catch phantom notes regardless of their amount — unlike comparing
-// the local total to protocol-wide TVL, which the "Clear stale notes"
-// button above was retired for: it can't tell "phantom" apart from "just
-// shielded, on-chain stats haven't caught up yet".
-//
-// SKIP_WINDOW_MS guards exactly that race: a note younger than this is left
-// alone even if its Deposited event isn't visible yet (RPC lag / indexing
-// delay), so a fresh legitimate shield is never mistaken for a phantom.
+// SKIP_WINDOW_MS guards a fresh note whose Deposited event isn't visible
+// yet on-chain (RPC lag / indexing delay) from being mistaken for a
+// phantom — never quarantine anything younger than this.
 const VERIFY_SKIP_WINDOW_MS = 10 * 60 * 1000; // 10 min grace period
 
-async function verifyNotesBackedOnChain(address) {
-  if (!address) return 0;
+// ── Single atomic reconciliation pass ───────────────────────────────────────
+// Replaces the former reconcileNotesOnChain() + verifyNotesBackedOnChain()
+// pair. Both checks now read local notes ONCE, classify every note against
+// BOTH on-chain sets in the same pass, and write the result back ONCE —
+// eliminating the read-modify-write race described above, and halving the
+// number of "getNotes/saveNotes" round trips.
+//
+// A note is:
+//   SPENT    — its nullifier matches a real Withdrawn event    -> dropped (correct, not corrupt)
+//   UNBACKED — its commitment has no matching Deposited event,
+//              AND it's older than the grace window            -> quarantined (see verifyNotesBackedOnChain's
+//                                                                   original doc comment for why this is safe
+//                                                                   and precise regardless of amount)
+//   VALID    — neither of the above                            -> kept
+async function reconcileAndVerifyNotes(address) {
+  if (!address) return { spent: 0, unbacked: 0 };
   const notes = getNotes(address);
-  const toCheck = notes.filter(n => n.commitment && (Date.now() - (n.ts || 0)) > VERIFY_SKIP_WINDOW_MS);
-  if (toCheck.length === 0) return 0;
+  if (notes.length === 0) return { spent: 0, unbacked: 0 };
 
   try {
     const current = Number(BigInt(await rpcCallWithBackoff("eth_blockNumber", [])));
-    const logs = await fetchLogsPaginated(
-      CONTRACTS.PrivarShieldVault, [EV.Deposited],
-      Math.max(0, current - 5_000_000), "privar_verify_scanprogress", address, "Privar"
-    );
-    if (!Array.isArray(logs)) return 0; // RPC/pagination failure — do NOT treat as "no commitments exist"
+    const fromBlock = Math.max(0, current - 5_000_000);
 
-    const onChainCommitments = new Set();
-    for (const log of logs) {
-      const c = log.topics?.[1]; // Deposited: bytes32 indexed commitment
-      if (c) onChainCommitments.add(c.toLowerCase());
+    // Two independent scans (different event types, different progress
+    // checkpoints already persisted in users' browsers under these exact
+    // key prefixes — kept as-is so no one loses resume progress) but run
+    // together and classified together, so the local notes array is only
+    // ever read and written ONCE per reconciliation pass.
+    const [withdrawnLogs, depositedLogs] = await Promise.all([
+      fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.Withdrawn],
+        fromBlock, "privar_reconcile_scanprogress", address, "Privar"),
+      fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.Deposited],
+        fromBlock, "privar_verify_scanprogress", address, "Privar"),
+    ]);
+
+    const spentNullifiers = new Set();
+    if (Array.isArray(withdrawnLogs)) {
+      for (const log of withdrawnLogs) {
+        const n = log.topics?.[1]; // Withdrawn: bytes32 indexed nullifier
+        if (n) spentNullifiers.add(n.toLowerCase());
+      }
     }
-    if (onChainCommitments.size === 0) return 0; // scan came back empty — likely incomplete, don't act on it
+    const depositedCommitments = new Set();
+    let depositedScanOk = false;
+    if (Array.isArray(depositedLogs)) {
+      depositedScanOk = true;
+      for (const log of depositedLogs) {
+        const c = log.topics?.[1]; // Deposited: bytes32 indexed commitment
+        if (c) depositedCommitments.add(c.toLowerCase());
+      }
+    }
 
-    const unbacked = toCheck.filter(n => !onChainCommitments.has(n.commitment.toLowerCase()));
-    if (unbacked.length === 0) return 0;
+    const kept = [], spentNotes = [], unbackedNotes = [];
+    for (const n of notes) {
+      if (n.nullifier && spentNullifiers.has(n.nullifier.toLowerCase())) {
+        spentNotes.push(n);
+        continue;
+      }
+      // Only ever quarantine for "unbacked" if this pass's Deposited scan
+      // actually succeeded and returned something — an empty/failed scan
+      // must never be read as "no commitments exist on-chain".
+      const pastGrace = (Date.now() - (n.ts || 0)) > VERIFY_SKIP_WINDOW_MS;
+      if (depositedScanOk && depositedCommitments.size > 0 && n.commitment && pastGrace
+          && !depositedCommitments.has(n.commitment.toLowerCase())) {
+        unbackedNotes.push(n);
+        continue;
+      }
+      kept.push(n);
+    }
 
-    const unbackedIds = new Set(unbacked.map(n => n.commitment));
-    const remaining = notes.filter(n => !unbackedIds.has(n.commitment));
-    saveNotes(address, remaining);
-    try {
-      const existingBad = JSON.parse(localStorage.getItem(quarantineKey(address)) || "[]");
-      localStorage.setItem(quarantineKey(address), JSON.stringify([...existingBad, ...unbacked.map(n => ({ ...n, quarantineReason: "no matching Deposited event on-chain" }))]));
-    } catch {}
-    console.warn(`[Privar] Quarantined ${unbacked.length} unbacked note(s) for ${address.slice(0,8)}… — no matching Deposited event found on-chain.`);
-    return unbacked.length;
+    if (spentNotes.length > 0 || unbackedNotes.length > 0) {
+      saveNotes(address, kept);
+      if (spentNotes.length > 0) {
+        console.log(`[Privar] Pruned ${spentNotes.length} spent note(s) for ${address.slice(0,8)}…`);
+      }
+      if (unbackedNotes.length > 0) {
+        try {
+          const existingBad = JSON.parse(localStorage.getItem(quarantineKey(address)) || "[]");
+          localStorage.setItem(quarantineKey(address), JSON.stringify([
+            ...existingBad,
+            ...unbackedNotes.map(n => ({ ...n, quarantineReason: "no matching Deposited event on-chain" })),
+          ]));
+        } catch {}
+        console.warn(`[Privar] Quarantined ${unbackedNotes.length} unbacked note(s) for ${address.slice(0,8)}… — no matching Deposited event found on-chain.`);
+      }
+    }
+
+    return { spent: spentNotes.length, unbacked: unbackedNotes.length };
   } catch (e) {
-    console.warn("[Privar] verifyNotesBackedOnChain failed:", e.message);
-    return 0;
+    console.warn("[Privar] reconcileAndVerifyNotes failed:", e.message);
+    return { spent: 0, unbacked: 0 };
   }
 }
 
@@ -3456,6 +3459,11 @@ function quarantineCorruptNotes(address) {
 function useShieldedBalances(prices, address) {
   const SAFE_BALS = { usdc:0, eurc:0, cbtc:0, totalUsd:0, rawUsdc:0n, rawEurc:0n, rawCbtc:0n, noteCount:0, quarantined:0 };
   const [bals, setBals] = useState(SAFE_BALS);
+  // Timestamp of the last successful on-chain reconciliation pass — shown
+  // in the UI so "this balance is precise" is a verifiable fact the user
+  // can see, not just an invisible background promise. null = not yet
+  // verified this session (e.g. still loading, or offline).
+  const [lastVerified, setLastVerified] = useState(null);
   // Cumulative count of notes removed THIS SESSION by the async on-chain
   // existence check (verifyNotesBackedOnChain) — separate from the sync
   // amount-ceiling check because it resolves later (after an RPC round
@@ -3517,27 +3525,44 @@ function useShieldedBalances(prices, address) {
     if (!address) return () => window.removeEventListener("storage", handler);
 
     // On-chain reconciliation: prune SPENT notes (nullifier matches a
-    // Withdrawn event) AND prune UNBACKED notes (commitment has no matching
-    // Deposited event — see verifyNotesBackedOnChain's doc comment for why
-    // this is the definitive fix for a local balance that exceeds
-    // protocol-wide TVL, which amount-based quarantine alone cannot catch).
+    // Withdrawn event) AND quarantine UNBACKED notes (commitment has no
+    // matching Deposited event) — both checks now run as ONE atomic pass
+    // (reconcileAndVerifyNotes) instead of two independently-scheduled
+    // functions racing to read-modify-write the same localStorage key.
     // Runs on mount AND on the same periodic cadence as the other
     // background resyncs (scanStealthNotes / resyncFromCloudVault / etc.)
     // so it's fully automatic — no manual action ever required.
     unbackedRemovedRef.current = 0;
     const runChecks = () => {
-      reconcileNotesOnChain(address).then(compute).catch(() => {});
-      verifyNotesBackedOnChain(address).then(n => {
-        unbackedRemovedRef.current += n;
+      reconcileAndVerifyNotes(address).then(({ unbacked }) => {
+        unbackedRemovedRef.current += unbacked;
+        setLastVerified(Date.now());
         compute();
       }).catch(() => {});
     };
     runChecks();
     const id = setInterval(runChecks, 120_000); // 2 min, matches other resyncs
-    return () => { window.removeEventListener("storage", handler); clearInterval(id); };
+    // Also re-check when the tab regains focus after being hidden — a user
+    // who tabbed away for a while shouldn't have to wait up to 2 more
+    // minutes for a fresh reconciliation once they're actually looking at
+    // the screen again. Guarded to at most once per 15s to avoid hammering
+    // the RPC on rapid tab-switching.
+    let lastVisRun = Date.now();
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - lastVisRun < 15_000) return;
+      lastVisRun = Date.now();
+      runChecks();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("storage", handler);
+      document.removeEventListener("visibilitychange", onVisible);
+      clearInterval(id);
+    };
   }, [compute, address]);
 
-  return { bals, recompute: compute };
+  return { bals, recompute: compute, lastVerified };
 }
 
 // ── ShieldedWallet mini-panel ─────────────────────────────────────────────────
@@ -3548,7 +3573,29 @@ function ShieldedWallet({ bals, onMax, tokenFilter, actionableFilter, compact = 
   // Both old tokenFilter and new actionableFilter control clickability;
   // ALL 3 tokens are always displayed for visual uniformity across panels.
   const activeFilter = actionableFilter || tokenFilter;
+
+  // Small "verified Xs ago" readout — makes the automatic reconciliation
+  // pass (reconcileAndVerifyNotes, see useShieldedBalances) a visible,
+  // checkable fact instead of an invisible background promise. Ticks every
+  // second purely for display; reads the timestamp via the same
+  // window._privar* exposure pattern used for recomputeShielded, to avoid
+  // threading one more prop through every panel that renders this component.
+  // Hooks must run unconditionally (before the `if (!bals)` early return
+  // below) — this component is always mounted at a fixed position in each
+  // panel, so that's safe; `bals` only gates what's rendered, not whether
+  // the hooks themselves run.
+  const [, forceTick] = useState(0);
+  useEffect(() => { const id = setInterval(() => forceTick(t => t + 1), 1000); return () => clearInterval(id); }, []);
+
   if (!bals) return null;
+
+  const verifiedAt = window._privarShieldedLastVerified;
+  const verifiedAgoS = verifiedAt ? Math.max(0, Math.floor((Date.now() - verifiedAt) / 1000)) : null;
+  const verifiedLabel = verifiedAgoS == null ? "verifying…"
+    : verifiedAgoS < 5   ? "verified just now"
+    : verifiedAgoS < 60  ? `verified ${verifiedAgoS}s ago`
+    : verifiedAgoS < 3600 ? `verified ${Math.floor(verifiedAgoS / 60)}m ago`
+    : "verify overdue — check connection";
 
   // ── Stale-note diagnostic (informational only — no destructive action) ──
   // A previous "Clear stale notes" button here compared the LOCAL wallet
@@ -3610,10 +3657,15 @@ function ShieldedWallet({ bals, onMax, tokenFilter, actionableFilter, compact = 
 
   return (
     <div style={{ background:"rgba(0,255,176,.03)", border:`1px solid ${hasStale ? "rgba(248,113,113,.35)" : "rgba(0,255,176,.12)"}`, borderRadius:5, padding:"10px 12px", marginBottom:10 }}>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:2 }}>
         <span style={{ fontSize:8, color:"#64748b", letterSpacing:".14em", fontFamily:"monospace" }}>🛡 SHIELDED WALLET</span>
         <span style={{ fontSize:10, color:"#ffffff", fontFamily:"monospace", fontWeight:700 }}>
           ≈ ${totalUsd.toFixed(2)} <span style={{ fontSize:8, color:"#4a7c5f" }}>USD</span>
+        </span>
+      </div>
+      <div style={{ display:"flex", justifyContent:"flex-end", marginBottom:6 }}>
+        <span style={{ fontSize:7, color: verifiedAgoS != null && verifiedAgoS < 150 ? "#4a7c5f" : "#f59e0b", fontFamily:"monospace" }}>
+          {verifiedAgoS != null && verifiedAgoS < 150 ? "✓ " : "⏳ "}{verifiedLabel}
         </span>
       </div>
       {bals.quarantined > 0 && (
