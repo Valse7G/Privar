@@ -1615,7 +1615,7 @@ function get24hDelta(vaultAddr, current) {
 function useProtocolStats(onArc) {
   const [stats, setStats] = useState({
     shieldedUsdc:null, shieldedEurc:null, shieldedBtc:null, leafCount:null,
-    pauseState:null, depositsAllowed:null, vaultPaused:null, tokenSupport:{},
+    depositsAllowed:null, vaultPaused:null, tokenSupport:{},
     version:null, totalTxCount:null,
     volumeUsdc:null, volumeEurc:null, volumeBtc:null,
     feesUsdc:null, feesEurc:null, feesBtc:null,
@@ -1662,10 +1662,14 @@ function useProtocolStats(onArc) {
           () => call(CONTRACTS.PrivarShieldVault, SEL.totalShielded + encodeAddress(CONTRACTS.EURC)),
           () => call(CONTRACTS.PrivarShieldVault, SEL.totalShielded + encodeAddress(CONTRACTS.cirBTC)),
           () => call(CONTRACTS.PrivarMerkleTreeManager,   SEL.nextIndex),
-          // EmergencyController IS a real, separately-deployed contract
-          // (0xa788E9...), live since the v2.x deployment.
-          () => call(CONTRACTS.EmergencyController, SEL.pauseState),
-          () => call(CONTRACTS.EmergencyController, SEL.depositsAllowed),
+          // v3.4.1 — the legacy EmergencyController contract (v2.x era) is
+          // gone from every recent redeploy and was never re-pointed at a
+          // real address afterward; these two calls always failed silently
+          // (allSettled swallowed the rejection) and fed a "pauseState"
+          // field that vaultState below never actually trusted anyway (it
+          // already prioritized vaultPaused, the real paused() bool on
+          // ShieldVault itself — the SAME call still made two lines below).
+          // Removed to stop wasting 2 of ~23 RPC calls every 30s poll.
           () => call(CONTRACTS.PrivarShieldVault, SEL.paused),
           () => call(CONTRACTS.PrivarShieldVault, SEL.supportedTokens + encodeAddress(CONTRACTS.USDC)),
           () => call(CONTRACTS.PrivarShieldVault, SEL.supportedTokens + encodeAddress(CONTRACTS.EURC)),
@@ -1697,7 +1701,7 @@ function useProtocolStats(onArc) {
         );
       const v = (i) => results[i].status === "fulfilled" ? results[i].value : null;
       const [
-        su, se, sb, leaf, pause, depsOk, vaultPaused, tUsdc, tEurc, tBtc,
+        su, se, sb, leaf, vaultPaused, tUsdc, tEurc, tBtc,
         ver, protoFeeBpsRes, flatFeeUsdcRes,
         txCount, volU, volE, volB, feeU, feeE, feeB,
         swapFeeBpsRes, bridgeFeeBpsRes, treasuryRes,
@@ -1712,12 +1716,14 @@ function useProtocolStats(onArc) {
           shieldedEurc:    se   != null ? Number(decodeUint256(se))   : prev.shieldedEurc,
           shieldedBtc:     sb   != null ? Number(decodeUint256(sb))   : prev.shieldedBtc,
           leafCount:       leaf != null ? Number(decodeUint256(leaf)) : prev.leafCount,
-          // pauseState specifically: keep previous value rather than null on failure —
-          // null was being interpreted as "paused" by the UI (null !== 0). A transient
-          // RPC hiccup should never visually flip the vault into "paused".
-          pauseState:      pause != null ? decodeUint8(pause) : prev.pauseState,
-          depositsAllowed: depsOk != null ? decodeUint8(depsOk) !== 0 : prev.depositsAllowed,
+          // vaultPaused is the ONLY trustworthy pause signal — the real
+          // paused() bool on ShieldVault itself. depositsAllowed is derived
+          // from it (the old EmergencyController-backed depositsAllowed()
+          // read was removed — see the calls array above).
+          // Keep previous value rather than null on a transient RPC failure —
+          // null was being interpreted as "paused" by the UI (null !== 0).
           vaultPaused:     vaultPaused != null ? decodeUint8(vaultPaused) !== 0 : prev.vaultPaused,
+          depositsAllowed: vaultPaused != null ? decodeUint8(vaultPaused) === 0 : prev.depositsAllowed,
           tokenSupport: {
             [CONTRACTS.USDC]:   tUsdc != null && tUsdc !== "0x" ? BigInt(tUsdc) === 1n : prev.tokenSupport[CONTRACTS.USDC],
             [CONTRACTS.EURC]:   tEurc != null && tEurc !== "0x" ? BigInt(tEurc) === 1n : prev.tokenSupport[CONTRACTS.EURC],
@@ -3857,14 +3863,13 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
   const tvlBtc   = ps?.shieldedBtc   != null ? "₿"+(Number(ps.shieldedBtc)/1e8).toFixed(4)   : "—";
   // FIX: null (never successfully fetched) is NOT the same as "paused" — a transient
   // RPC failure used to display as 🔴 PAUSED even though the vault was fine and
-  // deposits/withdrawals kept succeeding. Three explicit states now: unknown/active/paused.
-  // Two independent pause layers: EmergencyController's circuit breaker
-  // (pauseState: 0=ACTIVE/1=PAUSED/2=EMERGENCY) and ShieldVault's own admin
-  // pause flag. The vault is only really "active" if neither is engaged.
-  const vaultState = (ps?.pauseState == null && ps?.vaultPaused == null) ? "unknown"
-    : (ps?.vaultPaused === true || (ps?.pauseState != null && ps.pauseState > 0))
-      ? (ps?.pauseState === 2 ? "emergency" : "paused")
-      : "active";
+  // deposits/withdrawals kept succeeding. Three explicit states: unknown/active/paused.
+  // v3.4.1 — dropped the old "emergency" 3rd state: it was sourced from the
+  // long-gone EmergencyController contract's pauseState()==2, a concept the
+  // current ShieldVault never had (just a single `paused` bool) — so that
+  // branch could never fire from real on-chain data, only from a stale read.
+  const vaultState = ps?.vaultPaused == null ? "unknown"
+    : ps.vaultPaused ? "paused" : "active";
   const leafCnt  = ps?.leafCount != null ? ps.leafCount.toString() : "—";
 
   // ── Item 4: USD-blended protocol-wide totals across ALL tokens ─────────────
@@ -3911,8 +3916,8 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
           { l:"TVL EURC",    v:tvlEurc,  c:"#4ade80" },
           { l:"TVL cirBTC",  v:tvlBtc,   c:"#F7931A" },
           { l:"COMMITMENTS (tree, all-time)", v:leafCnt,  c:"#a78bfa" },
-          { l:"VAULT",       v: vaultState==="active" ? "🟢 ACTIVE" : vaultState==="emergency" ? "⛔ EMERGENCY" : vaultState==="paused" ? "🔴 PAUSED" : "⚪ —",
-                              c: vaultState==="active" ? "#4ade80"   : vaultState==="emergency" ? "#dc2626" : vaultState==="paused" ? "#f87171"   : "#64748b" },
+          { l:"VAULT",       v: vaultState==="active" ? "🟢 ACTIVE" : vaultState==="paused" ? "🔴 PAUSED" : "⚪ —",
+                              c: vaultState==="active" ? "#4ade80"   : vaultState==="paused" ? "#f87171"   : "#64748b" },
           { l:"VERSION",     v:ps?.version ? "v"+ps.version : "—", c:"#64748b" },
           { l:"PROTOCOL TXS",  v: ps?.totalTxCount != null ? ps.totalTxCount.toString() : (onChainActivity?.ready ? onChainActivity.totalTxCount.toString() : (onChainActivity?.loading ? "loading…" : "—")), c:"#38bdf8" },
           { l:"VOLUME (TOTAL)", v:protocolVolumeUsd, c:"#facc15" },

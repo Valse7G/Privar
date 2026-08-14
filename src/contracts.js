@@ -1,22 +1,19 @@
 // ════════════════════════════════════════════════════════════════════════════
-//  Privar OS — Contract Config v3.4.2
+//  Privar OS — Contract Config v3.4.1
 //
-//  Addresses synced with latest.json v3.4.2 — Arc Testnet — deployed 2026-08-12T04:55:47Z
-//  Full protocol redeployment. Fixes a decimal-scale bug in _privateSwap():
-//  amountOut for a swap landing in NATIVE_USDC was measured via the 6-dec
-//  ERC20 pseudo-view (IERC20(NATIVE_USDC).balanceOf()) but credited directly
-//  to totalShieldedByToken[tokenOut] and the re-shielded note WITHOUT scaling
-//  to the native 18-dec convention used everywhere else for that token
-//  (deposit()'s msg.value, withdraw()'s call{value:...}, and this same
-//  function's own fee accounting, which DID scale by 1e12). Confirmed
-//  on-chain via feesCollectedByToken(NATIVE_USDC) = 150104000000000000
-//  (native 18-dec) vs totalShieldedByToken(NATIVE_USDC) = 3085477 (raw
-//  6-dec) for the SAME token — a ~1e12 discrepancy. Every swap landing in
-//  native USDC credited ~1e-12 of what was actually received, making that
-//  output effectively unspendable. See PrivarShieldVault.sol's
-//  shieldedAmountOut for the fix.
-//  NOT a migration — this is a fresh vault; any v3.4.1 shielded balances
-//  remain in the prior ShieldVault address (0xfC622C2DbF6458a7D1Bb6a7637299EbC098dD202).
+//  Addresses synced with latest.json v3.4.1 — Arc Testnet — deployed 2026-08-13T21:46:34Z
+//  Full protocol redeployment (every contract fresh). Ships two accounting
+//  fixes in PrivarShieldVault: (1) v3.4.1 — the EURC/cirBTC-input swap branch
+//  used to trust swapRouter.executeSwap()'s return value directly with no
+//  balance-delta verification, letting totalShieldedByToken[tokenOut] be
+//  credited beyond what the vault actually held (confirmed on-chain:
+//  totalShieldedByToken(EURC) = 2,998,471 while EURC.balanceOf(vault) = 0);
+//  (2) the earlier native-USDC decimal-scale fix (swap output measured via
+//  the 6-dec ERC20 pseudo-view but credited without scaling to native 18-dec).
+//  Both branches now share one measurement routine (_executeMeasuredSwap) so
+//  they can't drift apart again — see PrivarShieldVault.sol.
+//  NOT a migration — this is a fresh vault; any prior shielded balances
+//  remain in the old ShieldVault address and must be withdrawn from there.
 //  Deployer: 0x1Dc72450B3e2782AcD669D7C27073f2C8F2c9894
 //
 //  ADDRESSES: sourced from VITE_ env vars (Vercel) or hardcoded fallbacks
@@ -26,19 +23,13 @@ export const ARC_CHAIN_ID = 5042002;
 
 // ── Contract addresses ────────────────────────────────────────────────────────
 const _c = {
-  PrivarShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0x583118A37deD8F617CDDE07E45dbb1BcdD724928",
+  PrivarShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0x27DbF0dEBF9430290e5975F17934f4a52b225A7f",
   Timelock:            import.meta.env.VITE_TIMELOCK              ?? "0x8DF7C02012EBec968bdEc100F4fEAF772AcAab99",
   Governance:          import.meta.env.VITE_GOVERNANCE            ?? "0x89F08E2BBc963e48986D8A0FfA23858bA643C78A",
-  PrivarStaking:             import.meta.env.VITE_STAKING               ?? "0x028D9bF3C0F2F542aC5Da5dD992100CC75A98f3B",
-  PrivarNullifierRegistry:   import.meta.env.VITE_NULLIFIER_REGISTRY    ?? "0x0D30e947768c8008CA2d4d0ded98BDc9476f0ecB",
-  PrivarMerkleTreeManager:   import.meta.env.VITE_MERKLE_TREE_MANAGER   ?? "0x91450D2D0cabFf4EB8E0ba712e322e1A0523BCEc",
-  PrivarDepositManager:      import.meta.env.VITE_DEPOSIT_MANAGER       ?? "0xdf601820Cfb927A74EFAC18D7312D3488301b3AD",
-  WithdrawalManager:   import.meta.env.VITE_WITHDRAWAL_MANAGER    ?? "0x264C32F4bEB3E3e7DFC25E6019A8bDDc75C96222",
-  ShieldedTransfer:    import.meta.env.VITE_SHIELDED_TRANSFER     ?? "0xa880603916611a0e624f9A04c7f08b62f0532543",
-  PrivateSwap:         import.meta.env.VITE_PRIVATE_SWAP          ?? "0xd16F252FFc0a406dFcF58eBAF7EA49f9e1DF78Eb",
-  PrivateBridge:       import.meta.env.VITE_PRIVATE_BRIDGE        ?? "0x1C22eEb6c422BeF73B335e1E5668ec3109839B40",
-  EmergencyController: import.meta.env.VITE_EMERGENCY_CONTROLLER  ?? "0xa788E96DcF4dBf348995bc5b8D0C7BbaD8e5e88F",
-  MockVerifierZK:      import.meta.env.VITE_VERIFIER_ZK           ?? "0x4434d7F436e8C3aA51f2153536814A067F44C1B3",
+  PrivarStaking:             import.meta.env.VITE_STAKING               ?? "0x21274f97023FcFCB3eCA73a39E03692fb1B4b669",
+  PrivarNullifierRegistry:   import.meta.env.VITE_NULLIFIER_REGISTRY    ?? "0x46F668F99175b7De7698fD0e274f3817D809d500",
+  PrivarMerkleTreeManager:   import.meta.env.VITE_MERKLE_TREE_MANAGER   ?? "0x5F8629BE70a4a7cAB72E7bE907d4b0b96Dee7478",
+  PrivarDepositManager:      import.meta.env.VITE_DEPOSIT_MANAGER       ?? "0x1FDf079B20667233c25BEFa612459A1739B0071F",
   // ViewKeyRegistry v1.0.0 — deployed 2026-06-20. Confidential-send auto-discovery
   // (real ECDH stealth notes) is feature-gated on this being non-null — see
   // DApp.jsx ensureViewKeyRegistered()/scanStealthNotes(). NOT part of the
@@ -51,10 +42,10 @@ const _c = {
   // in DApp.jsx) — this stays deployed for backward compatibility with
   // journal entries pushed before the v3.4 upgrade, and as the manual
   // "Sync Notes to Cloud" backfill path in Settings.
-  PrivarCloudVault:    import.meta.env.VITE_CLOUD_VAULT           ?? "0x5822354636710f2A3ee35798E113cf8223FDBf93",
-  // LI.FI privacy adapters — redeployed 2026-08-12 as part of the full v3.4.2 suite.
-  LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0x71bb5DA1f496972108128681E7F9a8478679e665",
-  LiFiPrivacyBridge:   import.meta.env.VITE_LIFI_BRIDGE           ?? "0xC2bD215b89E4CB4451CE8aA220bAad1DbE1Cc416",
+  PrivarCloudVault:    import.meta.env.VITE_CLOUD_VAULT           ?? "0xc1015ADDc48b39D48d5f300036e42EA2F38163e4",
+  // LI.FI privacy adapters — redeployed 2026-08-13 as part of the full v3.4.1 suite.
+  LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0xae5e789D5e520aaA5F8Fa06ccd4baFfd6dAC1019",
+  LiFiPrivacyBridge:   import.meta.env.VITE_LIFI_BRIDGE           ?? "0x31d70AB2EF8Cd3F90A59F3b3FeA1Ae4233D3903c",
   LiFiDiamond:         import.meta.env.VITE_LIFI_DIAMOND          ?? "0xFf70F4A1d11995621854F3692acF286d8aCd04b2",
 };
 
@@ -76,21 +67,12 @@ export const CONTRACTS = {
   PrivarNullifierRegistry:   _c.PrivarNullifierRegistry,
   PrivarMerkleTreeManager:   _c.PrivarMerkleTreeManager,
   PrivarDepositManager:      _c.PrivarDepositManager,
-  WithdrawalManager:   _c.WithdrawalManager,
-  ShieldedTransfer:    _c.ShieldedTransfer,
-  PrivateSwap:         _c.PrivateSwap,
-  // PrivateSwapAdapter — production router whitelisted in PrivateSwap.
-  // Arc Testnet: simulation mode (no Uniswap V3). Mainnet: Uniswap V3.
-  // Deploy: npx hardhat run scripts/deploy-private-swap-adapter.js --network arc_testnet
-  // TowerSwapAdapter — Tower Exchange (StableFX) router for confidential swaps
-  // Deployed by: npx hardhat run scripts/deploy.js --network arc_testnet
+  // TowerSwapAdapter — Tower Exchange (StableFX) router for confidential swaps.
   // NOTE: as of the v3.2 LI.FI deployment, ShieldVault.swapRouter() points to
   // LiFiPrivacyAdapter, NOT this address — TowerSwapAdapter is kept deployed
-  // only as a documented rollback target (see scripts/deploy-lifi.js).
-  TowerSwapAdapter:    import.meta.env.VITE_TOWER_SWAP_ADAPTER ?? "0x162e71EcE67E1F4e9e591571A48CDDf36cADDd5D",
-  PrivateBridge:       _c.PrivateBridge,
-  EmergencyController: _c.EmergencyController,
-  MockVerifierZK:      _c.MockVerifierZK,
+  // only as a documented rollback target (see scripts/deploy-v3.4.1-full.js).
+  // Redeployed 2026-08-13 as part of the v3.4.1 full-suite redeploy.
+  TowerSwapAdapter:    import.meta.env.VITE_TOWER_SWAP_ADAPTER ?? "0xe07BBF8899D4aBBF20F4B17768C698063a99cB18",
   ViewKeyRegistry:     _c.ViewKeyRegistry,
   PrivarCloudVault:    _c.PrivarCloudVault,
   // LI.FI privacy adapters — active default swap router + confidential bridge.
@@ -221,13 +203,6 @@ export const SEL = {
   getLastRoot:        "0xba70f757",  // getLastRoot()
   isKnownRoot:        "0x6d9833e3",  // isKnownRoot(bytes32)
 
-  // EmergencyController
-  pauseState:         "0xd7118351",  // pauseState()
-  depositsAllowed:    "0x8f76137f",  // depositsAllowed()
-  withdrawalsAllowed: "0x4843b358",  // withdrawalsAllowed()
-  transfersAllowed:   "0xb0660c3d",  // transfersAllowed()
-  adminReset:         "0x8c5b9b00",  // adminReset()
-
   // PrivarDepositManager
   isTokenSupported:   "0x75151b63",  // isTokenSupported(address)
   getSupportedTokens: "0xd3c7c2c7",  // getSupportedTokens()
@@ -255,7 +230,7 @@ export const SEL = {
 
   // Live protocol stats (PrivarShieldVault v2.5.0) — item 4: real-time dashboard
   VERSION:              "0x54fd4d50",  // version() returns (string) — was wrongly calling VERSION() (0xffa1ad74, uppercase), which doesn't exist; PrivarShieldVault only has lowercase version()
-  paused:               "0x5c975abb",  // paused() — real public bool on PrivarShieldVault, used instead of the unverifiable EmergencyController.pauseState()
+  paused:               "0x5c975abb",  // paused() — real public bool on PrivarShieldVault (single source of truth for vault pause state; the old EmergencyController-based selectors were removed, see v3.4.1 header comment)
   supportedTokens:      "0x68c4ac26",  // supportedTokens(address) — real public mapping on PrivarShieldVault; PrivarDepositManager.isTokenSupported(address) does NOT exist (only a tokens(address) struct getter)
   totalTxCount:         "0x9b4f50e7",  // totalTxCount() returns (uint256)
   totalVolumeByToken:   "0x38caed9f",  // totalVolumeByToken(address) returns (uint256)
