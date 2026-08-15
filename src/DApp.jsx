@@ -2903,8 +2903,10 @@ async function _resyncFromCloudVaultImpl(address, recompute) {
     // because it's missing from this pass's reconstructed active set.
     const local = getNotes(address);
     const merged = local.filter(n => !n.commitment || !spentCommitments.has(n.commitment));
+    const quarantined = loadQuarantinedCommitments(address);
     let added = 0;
     for (const [commitment, n] of state) {
+      if (quarantined.has(commitment.toLowerCase())) continue; // don't resurrect a deliberately-quarantined note
       if (!merged.some(x => x.commitment === commitment)) {
         merged.push({ ...n, cloudSynced: true, source: "cloudvault" });
         added++;
@@ -2972,8 +2974,10 @@ async function _resyncFromShieldVaultJournalImpl(address, recompute) {
     // Same conservative merge as resyncFromCloudVault — only remove on positive SPEND evidence.
     const local = getNotes(address);
     const merged = local.filter(n => !n.commitment || !spentCommitments.has(n.commitment));
+    const quarantined = loadQuarantinedCommitments(address);
     let added = 0;
     for (const [commitment, n] of state) {
+      if (quarantined.has(commitment.toLowerCase())) continue; // don't resurrect a deliberately-quarantined note
       if (!merged.some(x => x.commitment === commitment)) {
         merged.push({ ...n, cloudSynced: true, source: "shieldvault-journal" });
         added++;
@@ -3011,6 +3015,7 @@ async function scanStealthNotes(address, recompute) {
 
     const existing  = getNotes(address);
     const existingSet = new Set(existing.map(n => n.commitment).filter(Boolean));
+    const quarantined = loadQuarantinedCommitments(address);
     let added = 0;
 
     for (const log of logs) {
@@ -3034,6 +3039,7 @@ async function scanStealthNotes(address, recompute) {
         const note = await eciesDecryptNoteWithViewKey(address, encHex, ephHex);
         if (!note || !note.commitment) continue;
         if (existingSet.has(note.commitment)) continue;
+        if (quarantined.has(note.commitment.toLowerCase())) continue; // don't resurrect a deliberately-quarantined note
         // FIX (v2.9): a note's commitment only exists in the Merkle tree of the
         // PrivarShieldVault it was created against. Without this check, a confidential
         // send or self-backup made before the latest PrivarShieldVault redeploy would
@@ -3428,6 +3434,23 @@ const MAX_PLAUSIBLE_RAW = {
 };
 const quarantineKey = (addr) => notesKey(addr) + "_quarantined";
 
+// Returns the set of commitments currently sitting in the quarantine
+// bucket for this address, lowercased. Used by every resync path
+// (resyncFromCloudVault, resyncFromShieldVaultJournal, scanStealthNotes)
+// to avoid resurrecting a note that was deliberately quarantined — without
+// this check, each resync re-discovers the SAME commitment from its
+// on-chain/CloudVault source (which has no concept of "quarantined"), adds
+// it back to active notes, the next reconciliation pass quarantines it
+// again, and the cycle repeats every sync interval indefinitely. This is
+// exactly what produced the "Removed 1 corrupted local note" banner
+// reappearing every ~2 minutes instead of firing once and staying resolved.
+function loadQuarantinedCommitments(address) {
+  try {
+    const bad = JSON.parse(localStorage.getItem(quarantineKey(address)) || "[]");
+    return new Set(bad.map(n => n.commitment).filter(Boolean).map(c => c.toLowerCase()));
+  } catch { return new Set(); }
+}
+
 // Sweep local notes for implausible amounts, moving anything corrupt to a
 // separate "quarantined" bucket (kept for audit/manual recovery, never
 // summed into the displayed balance) instead of leaving it in the active
@@ -3535,7 +3558,14 @@ function useShieldedBalances(prices, address) {
     unbackedRemovedRef.current = 0;
     const runChecks = () => {
       reconcileAndVerifyNotes(address).then(({ unbacked }) => {
-        unbackedRemovedRef.current += unbacked;
+        // OVERWRITE, not accumulate: this ref should reflect "how many were
+        // found unbacked in the MOST RECENT check", not a running session
+        // total. Accumulating meant the "Removed N corrupted notes" banner
+        // would stay visible for the rest of the session even after the
+        // condition was fully resolved (0 new removals on every check
+        // since) — because old counts from earlier, already-resolved
+        // incidents kept being added to new ones instead of being replaced.
+        unbackedRemovedRef.current = unbacked;
         setLastVerified(Date.now());
         compute();
       }).catch(() => {});
