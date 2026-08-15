@@ -1217,13 +1217,13 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
   const notify = useCallback((label, message, status, hash, amount) => {
     setTx({ label, message, status, hash });
     if (status==="success"&&hash) {
-      const entry = { hash, label, ts:tc(), status:"success", amount: amount || "—" };
+      const entry = { hash, label, ts:tc(), tsRaw: Date.now(), status:"success", amount: amount || "—" };
       setTxHistory(p => {
         // Deduplicate by hash — if chain-rebuild already added this tx, don't double it
         if (p.some(e => e.hash === hash)) return p;
         const updated = [entry, ...p.slice(0, 199)];
         if (account?.address) {
-          const key = `privar_txhistory_${account.address.toLowerCase()}`;
+          const key = txHistoryKey(account.address);
           try { localStorage.setItem(key, JSON.stringify(updated)); } catch {}
         }
         return updated;
@@ -1262,7 +1262,7 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
   // Load wallet-scoped tx history when account connects — cross-device: rebuild from chain
   useEffect(() => {
     if (!account?.address) { setTxHistory([]); return; }
-    const key = `privar_txhistory_${account.address.toLowerCase()}`;
+    const key = txHistoryKey(account.address);
     // 1. Immediately show cached localStorage entries so UI isn't blank
     let cached = [];
     try { cached = JSON.parse(localStorage.getItem(key) || "[]"); } catch {}
@@ -1271,9 +1271,15 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
     buildTxHistoryFromChain(account.address).then(onchain => {
       if (!onchain || onchain.length === 0) return;
       // Merge: on-chain entries take priority; cached entries that have no on-chain
-      // counterpart (e.g. very recent, not yet indexed) are appended if not duplicate
+      // counterpart are only kept if RECENT (genuinely "not yet indexed" — see
+      // TX_HISTORY_LOCAL_GRACE_MS) — older ones with no on-chain match are stale
+      // (e.g. survivors from a retired vault whose hash will never appear in the
+      // current vault's logs) and are dropped instead of being re-persisted forever.
       const seen = new Set(onchain.map(e => e.hash));
-      const localOnly = cached.filter(e => e.hash && !seen.has(e.hash));
+      const now = Date.now();
+      const localOnly = cached.filter(e =>
+        e.hash && !seen.has(e.hash) && (now - (e.tsRaw || 0)) < TX_HISTORY_LOCAL_GRACE_MS
+      );
       const merged = [...onchain, ...localOnly].slice(0, 200);
       setTxHistory(merged);
       try { localStorage.setItem(key, JSON.stringify(merged)); } catch {}
@@ -3086,6 +3092,20 @@ const notesKey  = (addr) => addr ? `privar_notes_${addr.toLowerCase()}_${CONTRAC
 const getNotes  = (addr) => { try { return JSON.parse(localStorage.getItem(notesKey(addr)) || "[]"); } catch { return []; } };
 const saveNotes = (addr, notes) => { try { localStorage.setItem(notesKey(addr), JSON.stringify(notes)); } catch {} };
 
+// Same vault-scoping fix as notesKey above, applied to tx history. Without
+// this, a vault redeploy left the OLD vault's transactions (including any
+// leftover corrupted/implausible amounts from a prior bug generation)
+// permanently stuck in this cache forever — they don't match any hash in
+// the NEW vault's on-chain events, so the "keep local-only entries" merge
+// logic in the tx-history-loading effect kept re-adding and re-persisting
+// them on every single page load, indefinitely, with no way to age out.
+const txHistoryKey = (addr) => addr ? `privar_txhistory_${addr.toLowerCase()}_${CONTRACTS.PrivarShieldVault.toLowerCase()}` : null;
+// A local-only entry (no on-chain match yet) is only trusted for this long
+// after being recorded — past that, it's treated as genuinely stale (from
+// a retired vault, a dropped/replaced tx, etc.) rather than "just not
+// indexed yet", and is dropped instead of being kept and re-persisted forever.
+const TX_HISTORY_LOCAL_GRACE_MS = 10 * 60 * 1000; // 10 min
+
 // ── Migration / manual resync: push THIS device's local-only notes to the
 // cloud backup, for notes created before the self-backup-key fix shipped
 // (or where the backup tx silently failed at the time). Run this on the
@@ -3177,6 +3197,30 @@ async function buildTxHistoryFromChain(address) {
 
     const tc = (tsMs) => tsMs ? new Date(tsMs).toLocaleString("fr-FR", { dateStyle:"short", timeStyle:"short" }) : "—";
 
+    // FIX: every entry used to be stamped with tc(Date.now()) — the moment
+    // the query ran, NOT the transaction's real on-chain date. A shield from
+    // days ago and one from 5 seconds ago both displayed "now". Real dates
+    // require looking up each log's block timestamp — eth_getLogs doesn't
+    // include it, only blockNumber, so batch-fetch eth_getBlockByNumber for
+    // every DISTINCT block referenced across all 8 event types (small
+    // concurrency to stay RPC-friendly, matches this function's existing
+    // "fire-and-forget, not time-critical" posture).
+    const allLogs = [...depLogs, ...wdLogs, ...swLogs, ...bridgeLogs, ...sendLogs, ...stakeLogs, ...unstakeLogs, ...claimLogs];
+    const uniqueBlocks = [...new Set(allLogs.map(l => l.blockNumber).filter(Boolean))];
+    const blockTsMap = new Map();
+    const BLOCK_TS_CONCURRENCY = 5;
+    for (let i = 0; i < uniqueBlocks.length; i += BLOCK_TS_CONCURRENCY) {
+      const batch = uniqueBlocks.slice(i, i + BLOCK_TS_CONCURRENCY);
+      const results = await Promise.all(batch.map(async (bn) => {
+        try {
+          const block = await rpcCallWithBackoff("eth_getBlockByNumber", [bn, false]);
+          return [bn, block?.timestamp ? Number(BigInt(block.timestamp)) * 1000 : null];
+        } catch { return [bn, null]; }
+      }));
+      for (const [bn, ts] of results) if (ts) blockTsMap.set(bn, ts);
+    }
+    const tsFor = (log) => blockTsMap.get(log.blockNumber) || null;
+
     const entries = [];
 
     // Helper to extract uint256 from 32-byte hex chunk
@@ -3187,38 +3231,38 @@ async function buildTxHistoryFromChain(address) {
       const amount = data.length >= 64 ? u256(data,0) : 0n;
       const tok = log.topics?.[2] ? "0x"+log.topics[2].slice(26) : "";
       const sym = tok.toLowerCase()===CONTRACTS.EURC?.toLowerCase() ? "EURC" : tok.toLowerCase()===CONTRACTS.cirBTC?.toLowerCase() ? "cirBTC" : "USDC";
-      entries.push({ hash:log.transactionHash, label:"Shield", ts:tc(Date.now()), status:"success", amount: (Number(amount)/1e6).toFixed(2)+" "+sym, blockHex:log.blockNumber });
+      entries.push({ hash:log.transactionHash, label:"Shield", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount: (Number(amount)/1e6).toFixed(2)+" "+sym, blockHex:log.blockNumber });
     }
     for (const log of wdLogs) {
       const data = (log.data||"0x").replace("0x","");
       const amount = data.length >= 64 ? u256(data,0) : 0n;
-      entries.push({ hash:log.transactionHash, label:"Withdraw", ts:tc(Date.now()), status:"success", amount:(Number(amount)/1e6).toFixed(2)+" USDC", blockHex:log.blockNumber });
+      entries.push({ hash:log.transactionHash, label:"Withdraw", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:(Number(amount)/1e6).toFixed(2)+" USDC", blockHex:log.blockNumber });
     }
     for (const log of swLogs) {
-      entries.push({ hash:log.transactionHash, label:"Swap", ts:tc(Date.now()), status:"success", amount:"—", blockHex:log.blockNumber });
+      entries.push({ hash:log.transactionHash, label:"Swap", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:"—", blockHex:log.blockNumber });
     }
     for (const log of bridgeLogs) {
       const data = (log.data||"0x").replace("0x","");
       const amount = data.length >= 64 ? u256(data,0) : 0n;
-      entries.push({ hash:log.transactionHash, label:"Bridge", ts:tc(Date.now()), status:"success", amount:(Number(amount)/1e6).toFixed(2)+" EURC", blockHex:log.blockNumber });
+      entries.push({ hash:log.transactionHash, label:"Bridge", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:(Number(amount)/1e6).toFixed(2)+" EURC", blockHex:log.blockNumber });
     }
     for (const log of sendLogs) {
-      entries.push({ hash:log.transactionHash, label:"Send", ts:tc(Date.now()), status:"success", amount:"—", blockHex:log.blockNumber });
+      entries.push({ hash:log.transactionHash, label:"Send", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:"—", blockHex:log.blockNumber });
     }
     for (const log of stakeLogs) {
       const data = (log.data||"0x").replace("0x","");
       const amount = data.length >= 64 ? u256(data,0) : 0n;
-      entries.push({ hash:log.transactionHash, label:"Stake", ts:tc(Date.now()), status:"success", amount:(Number(amount)/1e6).toFixed(2)+" USDC", blockHex:log.blockNumber });
+      entries.push({ hash:log.transactionHash, label:"Stake", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:(Number(amount)/1e6).toFixed(2)+" USDC", blockHex:log.blockNumber });
     }
     for (const log of unstakeLogs) {
       const data = (log.data||"0x").replace("0x","");
       const amount = data.length >= 64 ? u256(data,0) : 0n;
-      entries.push({ hash:log.transactionHash, label:"Unstake", ts:tc(Date.now()), status:"success", amount:(Number(amount)/1e6).toFixed(2)+" USDC", blockHex:log.blockNumber });
+      entries.push({ hash:log.transactionHash, label:"Unstake", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:(Number(amount)/1e6).toFixed(2)+" USDC", blockHex:log.blockNumber });
     }
     for (const log of claimLogs) {
       const data = (log.data||"0x").replace("0x","");
       const amount = data.length >= 64 ? u256(data,0) : 0n;
-      entries.push({ hash:log.transactionHash, label:"Claim Rewards", ts:tc(Date.now()), status:"success", amount:(Number(amount)/1e6).toFixed(4)+" USDC", blockHex:log.blockNumber });
+      entries.push({ hash:log.transactionHash, label:"Claim Rewards", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:(Number(amount)/1e6).toFixed(4)+" USDC", blockHex:log.blockNumber });
     }
 
     // Deduplicate by txHash (keep first seen)
