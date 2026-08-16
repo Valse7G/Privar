@@ -6,8 +6,8 @@ import {
   decodeUint256, decodeUint8, formatToken,
   buildDepositCalldata, buildWithdrawCalldata,
   buildShieldedSendCalldata, buildPrivateSwapCalldata, buildPrivateBridgeCalldata,
-  buildSwapAdapterRouteData, buildAtomicSwapCalldata,
-  buildSwapWithRouteCalldata, buildLiFiBridgeCalldata,
+  buildSwapAdapterRouteData,
+  buildSwapWithRouterCalldata, buildLiFiBridgeCalldata,
   encodeLiFiRouteData, fetchLiFiQuote, fetchLiFiDestinations,
   buildApproveCalldata, buildStakeCalldata, needsApproveBeforeDeposit,
   randomBytes32, buildGetLastRootCall,
@@ -4164,24 +4164,26 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
 
   const flip = () => { const t=fr; setFr(to); setTo(t); setAmount(""); setQ(null); };
 
+  const ZERO_ADDR = "0x0000000000000000000000000000000000000000";
+  const isRouterSet = (a) => a && a.toLowerCase() !== ZERO_ADDR;
+
   const swap = async () => {
     if (!amount || !q || !onArc) return;
     if (fr === to) { notify("Swap","Sélectionnez deux tokens différents.","error"); return; }
     if (tkFr.bal <= 0) { notify("Swap",`Insufficient shielded ${fr} balance.`,"error"); return; }
 
-    // Atomic swap via PrivarShieldVault.privateSwap() / privateSwapWithRoute()
-    // Funds NEVER touch user wallet — atomically re-shielded after swap.
-    // v3.2: ShieldVault.swapRouter() is LiFiPrivacyAdapter by default — that
-    // adapter REQUIRES a non-empty routeData (an off-chain LI.FI quote) or it
-    // reverts with EmptyRoute(). TowerSwapAdapter (rollback target) ignores
-    // routeData entirely, so the legacy no-route call still works against it.
-    const usingLiFi = CONTRACTS.LiFiPrivacyAdapter && CONTRACTS.LiFiPrivacyAdapter !== "0x0000000000000000000000000000000000000000";
-    if (!usingLiFi) {
-      const swapAdapter = CONTRACTS.TowerSwapAdapter;
-      if (!swapAdapter || swapAdapter === "0x0000000000000000000000000000000000000000") {
-        notify("Swap","No swapRouter configured (neither LiFiPrivacyAdapter nor TowerSwapAdapter).","error");
-        return;
-      }
+    // v3.4.2 — MULTI-ROUTER: privateSwapWithRouter() lets the frontend pick
+    // ANY whitelisted adapter per call, instead of being locked into the
+    // single admin-configured default swapRouter. This is what actually
+    // fixes "LI.FI is down for hours, every swap fails" — confirmed via
+    // real curl testing that this was a genuine external LI.FI outage, not
+    // a code bug, and it recurred. Rather than requiring an admin
+    // transaction (scripts/set-swap-router.js) every time, the swap now
+    // tries each whitelisted router in priority order automatically.
+    if (!isRouterSet(CONTRACTS.LiFiPrivacyAdapter) && !isRouterSet(CONTRACTS.TowerSwapAdapter)
+        && !isRouterSet(CONTRACTS.UniswapPrivacyAdapter) && !isRouterSet(CONTRACTS.CurvePrivacyAdapter)) {
+      notify("Swap","No swap router configured at all (LI.FI/Tower/Uniswap/Curve all unset).","error");
+      return;
     }
 
     setLoading(true);
@@ -4190,7 +4192,7 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     let   minOut       = outAmountBig * 990n / 1000n;
     const deadline     = BigInt(Math.floor(Date.now()/1000) + 600);
 
-    // Find note for tokenIn BEFORE fetching the LI.FI quote — this used to
+    // Find note for tokenIn BEFORE fetching any quote — this used to
     // happen after the quote fetch, using the original (possibly too-large,
     // e.g. MAX-button-rounded) amountBig. If the best available note was
     // slightly short, the code fell back to "largest note" but kept quoting/
@@ -4213,45 +4215,66 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       setLoading(false); return;
     }
 
-    // Fetch the real LI.FI route BEFORE spending the note — if no route
-    // exists for this pair/amount we want to fail early, not mid-swap.
-    // fromAddress/toAddress are the ADAPTER contract, never the user's EOA:
-    // that's what keeps the swap's counterparty private on-chain.
-    let routeData = "0x";
-    if (usingLiFi) {
+    // ── Try each whitelisted router in priority order ────────────────────
+    // LI.FI first (best real-market pricing when available), then Uniswap
+    // (also real on-chain pricing, if a verified router is configured),
+    // then TowerSwapAdapter last (simulated pricing, but always succeeds —
+    // the guaranteed final fallback so a swap NEVER hard-fails just
+    // because one external aggregator is having a bad day).
+    // fromAddress/toAddress for LI.FI are the ADAPTER contract, never the
+    // user's EOA: that's what keeps the swap's counterparty private on-chain.
+    async function attemptLiFi() {
+      if (!isRouterSet(CONTRACTS.LiFiPrivacyAdapter)) return null;
       try {
-        // CORRECTION: an earlier version of this code scaled fromAmount up
-        // (and toAmount/toAmountMin down) by NATIVE_TO_ERC20 (1e12) for
-        // NATIVE_USDC legs, on the assumption that LI.FI reports amounts
-        // for that token in native 18-dec. That assumption was WRONG and
-        // introduced a real regression: a verified live quote response
-        // confirms LI.FI's own token registry reports NATIVE_USDC as
-        // 6-decimal on this chain ("decimals":6), matching Privar's normal
-        // display convention exactly — there is no LI.FI-side scale
-        // mismatch to correct for. The 1e12-inflated fromAmount this
-        // produced (e.g. 4e18 instead of 4000000 for a 4 USDC swap) is
-        // almost certainly what caused every quote to come back "no
-        // available quotes / price impact 99.99999%" — LI.FI was being
-        // asked to route a nonsensical multi-trillion-dollar amount.
-        // Passing amountBig/quote values straight through (as the
-        // original pre-regression code did) is correct.
         const quote = await fetchLiFiQuote({
           fromChain: ARC_CHAIN_ID, toChain: ARC_CHAIN_ID,
           fromToken: tkFr.addr, toToken: tkTo.addr,
           fromAmount: amountBig.toString(),
           fromAddress: CONTRACTS.LiFiPrivacyAdapter,
         });
-        routeData = encodeLiFiRouteData(quote.transactionRequest.to, quote.transactionRequest.value, quote.transactionRequest.data);
-        // Prefer LI.FI's own slippage-protected minimum over our local estimate.
-        if (quote?.estimate?.toAmountMin) {
-          outAmountBig = BigInt(quote.estimate.toAmount);
-          minOut       = BigInt(quote.estimate.toAmountMin);
-        }
+        const routeData = encodeLiFiRouteData(quote.transactionRequest.to, quote.transactionRequest.value, quote.transactionRequest.data);
+        return {
+          router: CONTRACTS.LiFiPrivacyAdapter,
+          routeData,
+          outAmountBig: quote?.estimate?.toAmountMin ? BigInt(quote.estimate.toAmount) : outAmountBig,
+          minOut:       quote?.estimate?.toAmountMin ? BigInt(quote.estimate.toAmountMin) : minOut,
+          label: "LI.FI",
+        };
       } catch (e) {
-        notify("Swap", `LI.FI route unavailable: ${e.message}`, "error");
-        setLoading(false); return;
+        console.warn("[Swap] LI.FI attempt failed, trying next router:", e.message);
+        return null;
       }
     }
+    function attemptUniswap() {
+      if (!isRouterSet(CONTRACTS.UniswapPrivacyAdapter)) return null;
+      // No off-chain quote call needed — Uniswap V2 pricing is on-chain and
+      // atomic; the adapter itself reverts (SlippageExceeded) if the real
+      // output undercuts minOut, so it's safe to submit with our local
+      // naive estimate + the existing 1% slippage tolerance.
+      return { router: CONTRACTS.UniswapPrivacyAdapter, routeData: "0x", outAmountBig, minOut, label: "Uniswap" };
+    }
+    function attemptTower() {
+      if (!isRouterSet(CONTRACTS.TowerSwapAdapter)) return null;
+      return { router: CONTRACTS.TowerSwapAdapter, routeData: "0x", outAmountBig, minOut, label: "TowerSwapAdapter (simulated pricing)" };
+    }
+    // Curve intentionally omitted from the automatic chain for now: routing
+    // through it requires a (pool, i, j) triple specific to each token
+    // pair, which needs a verified real pool address wired in first — see
+    // CurvePrivacyAdapter.sol's doc comment. Once a real pool is
+    // whitelisted, add a similar attemptCurve() here.
+
+    let chosen = null;
+    for (const attempt of [attemptLiFi, attemptUniswap, attemptTower]) {
+      chosen = await attempt();
+      if (chosen) break;
+    }
+    if (!chosen) {
+      notify("Swap", "No route available on any configured router (LI.FI/Uniswap/Tower).", "error");
+      setLoading(false); return;
+    }
+    const { router: chosenRouter, routeData, label: routerLabel } = chosen;
+    outAmountBig = chosen.outAmountBig;
+    minOut       = chosen.minOut;
 
     // Read Merkle root
     let merkleRoot;
@@ -4305,27 +4328,19 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     if (changeCommitment) swapOps.push({ t: 0, commitment: changeCommitment, amount: remaining.toString(), token: note.token });
     const journalEntry = await encryptJournalBlob(account?.address, { ts: Date.now(), ops: swapOps });
 
-    // Build calldata for PrivarShieldVault.privateSwap() / privateSwapWithRoute()
-    // Atomic: ShieldVault spends nullifier → swapRouter.executeSwap() → re-shield
-    const { data, value } = usingLiFi
-      ? buildSwapWithRouteCalldata({
-          nullifier, root: merkleRoot, tokenIn: tkFr.addr, tokenOut: tkTo.addr,
-          amountIn: amountBig, minAmountOut: minOut,
-          commitmentOut, deadline, routeData, flatFeeUsdc,
-          encryptedEntry: journalEntry || "0x",
-        })
-      : buildAtomicSwapCalldata({
-          nullifier, root: merkleRoot, tokenIn: tkFr.addr, tokenOut: tkTo.addr,
-          amountIn: amountBig, minAmountOut: minOut,
-          commitmentOut, deadline, flatFeeUsdc,
-          encryptedEntry: journalEntry || "0x",
-        });
+    // Build calldata for PrivarShieldVault.privateSwapWithRouter() — always
+    // explicit about which whitelisted router executes the swap now (see
+    // the attempt-chain above), instead of the old binary LI.FI/Tower choice.
+    const { data, value } = buildSwapWithRouterCalldata({
+      nullifier, root: merkleRoot, tokenIn: tkFr.addr, tokenOut: tkTo.addr,
+      amountIn: amountBig, minAmountOut: minOut,
+      commitmentOut, deadline, dexRouter: chosenRouter, routeData, flatFeeUsdc,
+      encryptedEntry: journalEntry || "0x",
+    });
 
     const ok = await sendRealTx({
       label: `Swap ${fr}→${to}`,
-      description: usingLiFi
-        ? `Private swap ${amount} ${fr} → ~${q.out} ${to} via PrivarShieldVault + LI.FI`
-        : `Private swap ${amount} ${fr} → ~${q.out} ${to} via PrivarShieldVault + TowerSwapAdapter`,
+      description: `Private swap ${amount} ${fr} → ~${q.out} ${to} via PrivarShieldVault + ${routerLabel}`,
       buildTx: () => ({ to: CONTRACTS.PrivarShieldVault, value, data }),
     });
 
@@ -4349,9 +4364,16 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     </select>
   );
 
-  const routerOk = (CONTRACTS.LiFiPrivacyAdapter && CONTRACTS.LiFiPrivacyAdapter !== "0x0000000000000000000000000000000000000000")
-                || (CONTRACTS.TowerSwapAdapter   && CONTRACTS.TowerSwapAdapter   !== "0x0000000000000000000000000000000000000000");
-  const usingLiFi = CONTRACTS.LiFiPrivacyAdapter && CONTRACTS.LiFiPrivacyAdapter !== "0x0000000000000000000000000000000000000000";
+  // v3.4.2 — reflects the SAME priority chain as swap()'s attemptLiFi/
+  // attemptUniswap/attemptTower, for the "Adapter" info badge below. Not a
+  // binary choice anymore — shows whichever router would be tried FIRST.
+  const availableRouters = [
+    isRouterSet(CONTRACTS.LiFiPrivacyAdapter)    && "LiFiPrivacyAdapter",
+    isRouterSet(CONTRACTS.UniswapPrivacyAdapter) && "UniswapPrivacyAdapter",
+    isRouterSet(CONTRACTS.TowerSwapAdapter)      && "TowerSwapAdapter",
+  ].filter(Boolean);
+  const routerOk = availableRouters.length > 0;
+  const primaryRouterLabel = availableRouters[0] || "none";
 
   return (
     <div style={{ animation:"fi .3s ease" }}>
@@ -4392,7 +4414,7 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
           </div>
         </div>
       )}
-      <IG items={[["Privacy","✓ PrivarShieldVault","1 tx"],["Adapter", usingLiFi ? "LiFiPrivacyAdapter" : "TowerSwapAdapter", usingLiFi ? "LI.FI" : "simulation"],["Available",tkFr.bal.toFixed(tkFr.dec===8?5:2)+" "+fr,"shielded"]]}/>
+      <IG items={[["Privacy","✓ PrivarShieldVault","1 tx"],["Adapter", primaryRouterLabel, availableRouters.length > 1 ? `+${availableRouters.length-1} fallback` : (primaryRouterLabel==="TowerSwapAdapter" ? "simulation" : "live")],["Available",tkFr.bal.toFixed(tkFr.dec===8?5:2)+" "+fr,"shielded"]]}/>
       {tkFr.bal <= 0 && (
         <div style={{ background:"rgba(245,158,11,.06)", border:"1px solid rgba(245,158,11,.2)", borderRadius:4, padding:"8px 12px", marginBottom:12, fontSize:9, color:"#F59E0B", fontFamily:"monospace" }}>
           ⚠ Solde shieldé {fr} à zéro. Shieldez des {fr} d'abord.

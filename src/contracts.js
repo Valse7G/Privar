@@ -1,17 +1,18 @@
 // ════════════════════════════════════════════════════════════════════════════
-//  Privar OS — Contract Config v3.4.1
+//  Privar OS — Contract Config v3.4.2
 //
-//  Addresses synced with latest.json v3.4.1 — Arc Testnet — deployed 2026-08-13T21:46:34Z
-//  Full protocol redeployment (every contract fresh). Ships two accounting
-//  fixes in PrivarShieldVault: (1) v3.4.1 — the EURC/cirBTC-input swap branch
-//  used to trust swapRouter.executeSwap()'s return value directly with no
-//  balance-delta verification, letting totalShieldedByToken[tokenOut] be
-//  credited beyond what the vault actually held (confirmed on-chain:
-//  totalShieldedByToken(EURC) = 2,998,471 while EURC.balanceOf(vault) = 0);
-//  (2) the earlier native-USDC decimal-scale fix (swap output measured via
-//  the 6-dec ERC20 pseudo-view but credited without scaling to native 18-dec).
-//  Both branches now share one measurement routine (_executeMeasuredSwap) so
-//  they can't drift apart again — see PrivarShieldVault.sol.
+//  Addresses synced with latest.json v3.4.2 — Arc Testnet — deployed 2026-08-16T17:57:09Z
+//  Full protocol redeployment. Adds the v3.4.2 multi-router whitelist:
+//  PrivarShieldVault.privateSwapWithRouter() lets the frontend pick ANY
+//  whitelisted adapter per swap (LiFiPrivacyAdapter / TowerSwapAdapter /
+//  CurvePrivacyAdapter, and UniswapPrivacyAdapter once a verified router
+//  address is supplied) instead of being locked into a single admin-chosen
+//  default — fixes swaps hard-failing for hours whenever LI.FI's aggregator
+//  itself has an outage (confirmed via direct li.quest API testing: two
+//  separate multi-hour incidents, both external, neither a Privar bug).
+//  See PrivarShieldVault.sol's swapRouterWhitelist / setSwapRouterWhitelist.
+//  Carries forward the same v3.4.1 (balance-delta) and v3.4.2-decimal swap
+//  accounting fixes as the prior redeploy — see _executeMeasuredSwap.
 //  NOT a migration — this is a fresh vault; any prior shielded balances
 //  remain in the old ShieldVault address and must be withdrawn from there.
 //  Deployer: 0x1Dc72450B3e2782AcD669D7C27073f2C8F2c9894
@@ -23,13 +24,13 @@ export const ARC_CHAIN_ID = 5042002;
 
 // ── Contract addresses ────────────────────────────────────────────────────────
 const _c = {
-  PrivarShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0x27DbF0dEBF9430290e5975F17934f4a52b225A7f",
+  PrivarShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0x511AB159df624403D665735B660F7ddBa6B618Af",
   Timelock:            import.meta.env.VITE_TIMELOCK              ?? "0x8DF7C02012EBec968bdEc100F4fEAF772AcAab99",
   Governance:          import.meta.env.VITE_GOVERNANCE            ?? "0x89F08E2BBc963e48986D8A0FfA23858bA643C78A",
-  PrivarStaking:             import.meta.env.VITE_STAKING               ?? "0x21274f97023FcFCB3eCA73a39E03692fb1B4b669",
-  PrivarNullifierRegistry:   import.meta.env.VITE_NULLIFIER_REGISTRY    ?? "0x46F668F99175b7De7698fD0e274f3817D809d500",
-  PrivarMerkleTreeManager:   import.meta.env.VITE_MERKLE_TREE_MANAGER   ?? "0x5F8629BE70a4a7cAB72E7bE907d4b0b96Dee7478",
-  PrivarDepositManager:      import.meta.env.VITE_DEPOSIT_MANAGER       ?? "0x1FDf079B20667233c25BEFa612459A1739B0071F",
+  PrivarStaking:             import.meta.env.VITE_STAKING               ?? "0x3d54CAe40BE68A313418CBe3a35d1141F4A2E629",
+  PrivarNullifierRegistry:   import.meta.env.VITE_NULLIFIER_REGISTRY    ?? "0x0713A78E39931d2061283b9f195113b11098f493",
+  PrivarMerkleTreeManager:   import.meta.env.VITE_MERKLE_TREE_MANAGER   ?? "0x7AA46E24Df2ab75E64f57BC7166f6d8F1Ce22286",
+  PrivarDepositManager:      import.meta.env.VITE_DEPOSIT_MANAGER       ?? "0x136ED5A135E3c0045A80A05AB610b38CBcb44C75",
   // ViewKeyRegistry v1.0.0 — deployed 2026-06-20. Confidential-send auto-discovery
   // (real ECDH stealth notes) is feature-gated on this being non-null — see
   // DApp.jsx ensureViewKeyRegistered()/scanStealthNotes(). NOT part of the
@@ -42,11 +43,26 @@ const _c = {
   // in DApp.jsx) — this stays deployed for backward compatibility with
   // journal entries pushed before the v3.4 upgrade, and as the manual
   // "Sync Notes to Cloud" backfill path in Settings.
-  PrivarCloudVault:    import.meta.env.VITE_CLOUD_VAULT           ?? "0xc1015ADDc48b39D48d5f300036e42EA2F38163e4",
-  // LI.FI privacy adapters — redeployed 2026-08-13 as part of the full v3.4.1 suite.
-  LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0xae5e789D5e520aaA5F8Fa06ccd4baFfd6dAC1019",
-  LiFiPrivacyBridge:   import.meta.env.VITE_LIFI_BRIDGE           ?? "0x31d70AB2EF8Cd3F90A59F3b3FeA1Ae4233D3903c",
+  PrivarCloudVault:    import.meta.env.VITE_CLOUD_VAULT           ?? "0xa278923b202A06301Cc30A070169220960dA9e24",
+  // LI.FI privacy adapters — redeployed 2026-08-16 as part of the full v3.4.2 suite.
+  LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0x1Ef4e6749A48d04Ef5286B3075D9689BC19e2896",
+  LiFiPrivacyBridge:   import.meta.env.VITE_LIFI_BRIDGE           ?? "0xA5f233cca7D7d9882C060F8Fe368fE161cb4DfF3",
   LiFiDiamond:         import.meta.env.VITE_LIFI_DIAMOND          ?? "0xFf70F4A1d11995621854F3692acF286d8aCd04b2",
+  // v3.4.2 — multi-router whitelist additions. "0x000...0" (zero address)
+  // means "not deployed / not verified yet" and the frontend MUST treat
+  // that as "skip this router" — never attempt to call the zero address.
+  // UniswapPrivacyAdapter is still null: no UNISWAP_ROUTER_ADDRESS was
+  // supplied at deploy time (see scripts/deploy-v3.4.1-full.js CONFIG
+  // comment and UniswapPrivacyAdapter.sol's doc comment for why this
+  // wasn't pre-filled with a guessed address) — swap() simply skips it in
+  // the fallback chain until a verified address is deployed and set here.
+  // CurvePrivacyAdapter IS deployed, but with an EMPTY pool whitelist (no
+  // CURVE_POOL_ADDRESS supplied either) — it exists on-chain and could be
+  // whitelisted on the vault, but the frontend doesn't route through it
+  // yet (see DApp.jsx swap()'s comment on why attemptCurve() isn't wired
+  // up: needs a per-pair (pool, i, j) config this repo doesn't have yet).
+  UniswapPrivacyAdapter: import.meta.env.VITE_UNISWAP_ADAPTER ?? "0x0000000000000000000000000000000000000000",
+  CurvePrivacyAdapter:   import.meta.env.VITE_CURVE_ADAPTER   ?? "0x6e1dd26ee3724700b09E34cAc149211f8A615C20",
 };
 
 export const CONTRACTS = {
@@ -80,6 +96,10 @@ export const CONTRACTS = {
   LiFiPrivacyAdapter:  _c.LiFiPrivacyAdapter,
   LiFiPrivacyBridge:   _c.LiFiPrivacyBridge,
   LiFiDiamond:         _c.LiFiDiamond,
+  // v3.4.2 — whitelist-only routers, used via privateSwapWithRouter().
+  // Zero address = not deployed/verified — see _c's comment above.
+  UniswapPrivacyAdapter: _c.UniswapPrivacyAdapter,
+  CurvePrivacyAdapter:   _c.CurvePrivacyAdapter,
 };
 
 // ── Token config ──────────────────────────────────────────────────────────────
@@ -183,6 +203,16 @@ export const SEL = {
   // Selector computed against PrivarShieldVault.sol's exact new signature — see
   // scripts/deploy-lifi.js / contracts/core/PrivarShieldVault.sol.
   privateSwapWithRoute:"0x05e550e9",  // v3.4: privateSwapWithRoute(bytes32,bytes32,address,address,uint256,uint256,bytes32,uint256,bytes,bytes)
+  // v3.4.2 — multi-router: caller picks which whitelisted adapter executes
+  // the swap (LI.FI / Tower / Uniswap / Curve), instead of always using the
+  // single admin-configured default. Selector cross-validated by
+  // recomputing privateSwapWithRoute's own known-good selector with the
+  // same keccak256 implementation before trusting this one — see the git
+  // history for scripts/compute-selectors if this ever needs re-deriving.
+  privateSwapWithRouter:  "0xb4e23fb3", // privateSwapWithRouter(bytes32,bytes32,address,address,uint256,uint256,bytes32,uint256,address,bytes,bytes)
+  setSwapRouterWhitelist: "0x25012238", // setSwapRouterWhitelist(address,bool)
+  getWhitelistedSwapRouters: "0x7b79c1bb", // getWhitelistedSwapRouters()
+  swapRouterWhitelist:    "0x6332c0fb", // swapRouterWhitelist(address) view
 
   // ── DEPRECATED (v2.x struct-based ABI, does NOT exist on v3.0.0 vault) ──────
   // Kept only so old references don't hard-crash; DO NOT call these against the
@@ -573,6 +603,54 @@ export function buildSwapWithRouteCalldata({
     + minAmountOutForCalldata.toString(16).padStart(64,"0")
     + commitmentOut.slice(2).padStart(64,"0")
     + BigInt(deadline).toString(16).padStart(64,"0")
+    + encodeUint256(offRoute)
+    + encodeUint256(offEntry)
+    + encodeBytes(routeData)
+    + encodeBytes(encryptedEntry);
+
+  return { data, value };
+}
+
+// ── PrivarShieldVault.privateSwapWithRouter() — v3.4.2, multi-router ────────
+// Same as buildSwapWithRouteCalldata but with an explicit `dexRouter`
+// address in the head (must be whitelisted on-chain via
+// setSwapRouterWhitelist — see PrivarShieldVault.sol). This is what lets
+// the frontend choose LI.FI / TowerSwapAdapter / UniswapPrivacyAdapter /
+// CurvePrivacyAdapter per-call instead of being locked into the single
+// admin-configured default `swapRouter`.
+export function buildSwapWithRouterCalldata({
+  nullifier, root, tokenIn, tokenOut,
+  amountIn, minAmountOut, commitmentOut,
+  deadline = BigInt(Math.floor(Date.now()/1000) + 600),
+  dexRouter,
+  routeData = "0x",
+  flatFeeUsdc = 0n,
+  encryptedEntry = "0x",
+}) {
+  const tokenInIsNative     = tokenIn.toLowerCase()  === NATIVE_USDC.toLowerCase();
+  const tokenOutIsNative    = tokenOut.toLowerCase() === NATIVE_USDC.toLowerCase();
+  const amountInForCalldata = tokenInIsNative ? BigInt(amountIn) * NATIVE_TO_ERC20 : BigInt(amountIn);
+  // Same convention as buildSwapWithRouteCalldata: minAmountOut is NEVER
+  // scaled, regardless of tokenOut — the contract always compares against
+  // the 6-dec ERC20 balanceOf() view.
+  const minAmountOutForCalldata = BigInt(minAmountOut);
+  const value = (!tokenOutIsNative && flatFeeUsdc > 0n)
+    ? "0x" + (BigInt(flatFeeUsdc) * NATIVE_TO_ERC20).toString(16)
+    : "0x0";
+
+  // 11 args, 2 dynamic (routeData, encryptedEntry) → head = 11 words = 0x160
+  const offRoute = 0x160n;
+  const offEntry = offRoute + BigInt(encodedBytesSize(routeData));
+  const data = SEL.privateSwapWithRouter
+    + nullifier.slice(2).padStart(64,"0")
+    + root.slice(2).padStart(64,"0")
+    + tokenIn.slice(2).padStart(64,"0")
+    + tokenOut.slice(2).padStart(64,"0")
+    + amountInForCalldata.toString(16).padStart(64,"0")
+    + minAmountOutForCalldata.toString(16).padStart(64,"0")
+    + commitmentOut.slice(2).padStart(64,"0")
+    + BigInt(deadline).toString(16).padStart(64,"0")
+    + dexRouter.slice(2).padStart(64,"0")
     + encodeUint256(offRoute)
     + encodeUint256(offEntry)
     + encodeBytes(routeData)
