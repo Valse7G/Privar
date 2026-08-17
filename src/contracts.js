@@ -88,7 +88,7 @@ export const CONTRACTS = {
   // LiFiPrivacyAdapter, NOT this address — TowerSwapAdapter is kept deployed
   // only as a documented rollback target (see scripts/deploy-v3.4.1-full.js).
   // Redeployed 2026-08-13 as part of the v3.4.1 full-suite redeploy.
-  TowerSwapAdapter:    import.meta.env.VITE_TOWER_SWAP_ADAPTER ?? "0xe07BBF8899D4aBBF20F4B17768C698063a99cB18",
+  TowerSwapAdapter:    import.meta.env.VITE_TOWER_SWAP_ADAPTER ?? "0x72fCbeea382230992D585e65bf149742c3692b54",
   ViewKeyRegistry:     _c.ViewKeyRegistry,
   PrivarCloudVault:    _c.PrivarCloudVault,
   // LI.FI privacy adapters — active default swap router + confidential bridge.
