@@ -8,7 +8,7 @@ import {
   buildShieldedSendCalldata, buildPrivateSwapCalldata, buildPrivateBridgeCalldata,
   buildSwapAdapterRouteData,
   buildSwapWithRouterCalldata, buildLiFiBridgeCalldata,
-  encodeLiFiRouteData, fetchLiFiQuote, fetchLiFiDestinations,
+  encodeLiFiRouteData, encodeCurveRouteData, fetchLiFiQuote, fetchLiFiDestinations,
   buildApproveCalldata, buildStakeCalldata, needsApproveBeforeDeposit,
   randomBytes32, buildGetLastRootCall,
   buildRegisterViewKeyCalldata, buildHasViewKeyCall, buildGetViewKeyCall,
@@ -4123,14 +4123,20 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
 }
 
 function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBals, recomputeShielded, protocolStats, onChainActivity }) {
-  // ── Architecture: PrivarShieldVault.privateSwap()/privateSwapWithRoute() ──
+  // ── Architecture: PrivarShieldVault.privateSwap()/privateSwapWithRouter() ──
   // Flow (1 tx via PrivarShieldVault) :
-  //   PrivarShieldVault.privateSwap[WithRoute](...)
-  //     → swapRouter.executeSwap()
-  //       → LiFiPrivacyAdapter (default, v3.2) → LI.FI Diamond, off-chain-quoted route
-  //         (fallback: TowerSwapAdapter, testnet-simulated pricing, ignores routeData)
+  //   PrivarShieldVault.privateSwapWithRouter(dexRouter, ...)
+  //     → dexRouter.executeSwap()
+  //       → LiFiPrivacyAdapter (LI.FI Diamond, off-chain-quoted route)
+  //       → UniswapPrivacyAdapter (real on-chain AMM, if configured)
+  //       → CurvePrivacyAdapter (real on-chain StableSwap, if a pool is wired up)
   //
-  // See scripts/deploy-lifi.js for how swapRouter gets set.
+  // v4.0.0 — TowerSwapAdapter (simulated pricing, always-succeeds fallback)
+  // removed entirely. There is currently no guaranteed-works fallback if
+  // LI.FI has an outage and no Uniswap/Curve router is configured — see
+  // CONTRACTS.LiFiPrivacyAdapter's doc comment in contracts.js.
+  //
+  // See scripts/deploy-v4.0.0-full.js for how the router whitelist gets set.
 
   const TK  = ["USDC","EURC","cirBTC"];
   const [fr, setFr]           = useState("USDC");
@@ -4172,17 +4178,18 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     if (fr === to) { notify("Swap","Sélectionnez deux tokens différents.","error"); return; }
     if (tkFr.bal <= 0) { notify("Swap",`Insufficient shielded ${fr} balance.`,"error"); return; }
 
-    // v3.4.2 — MULTI-ROUTER: privateSwapWithRouter() lets the frontend pick
-    // ANY whitelisted adapter per call, instead of being locked into the
+    // MULTI-ROUTER: privateSwapWithRouter() lets the frontend pick ANY
+    // whitelisted adapter per call, instead of being locked into the
     // single admin-configured default swapRouter. This is what actually
     // fixes "LI.FI is down for hours, every swap fails" — confirmed via
     // real curl testing that this was a genuine external LI.FI outage, not
     // a code bug, and it recurred. Rather than requiring an admin
-    // transaction (scripts/set-swap-router.js) every time, the swap now
-    // tries each whitelisted router in priority order automatically.
-    if (!isRouterSet(CONTRACTS.LiFiPrivacyAdapter) && !isRouterSet(CONTRACTS.TowerSwapAdapter)
+    // transaction (scripts/set-swap-router.js) every time, the swap tries
+    // each whitelisted router in priority order automatically.
+    // v4.0.0 — TowerSwapAdapter removed: no more guaranteed-works fallback.
+    if (!isRouterSet(CONTRACTS.LiFiPrivacyAdapter)
         && !isRouterSet(CONTRACTS.UniswapPrivacyAdapter) && !isRouterSet(CONTRACTS.CurvePrivacyAdapter)) {
-      notify("Swap","No swap router configured at all (LI.FI/Tower/Uniswap/Curve all unset).","error");
+      notify("Swap","No swap router configured at all (LI.FI/Uniswap/Curve all unset).","error");
       return;
     }
 
@@ -4216,11 +4223,11 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     }
 
     // ── Try each whitelisted router in priority order ────────────────────
-    // LI.FI first (best real-market pricing when available), then Uniswap
-    // (also real on-chain pricing, if a verified router is configured),
-    // then TowerSwapAdapter last (simulated pricing, but always succeeds —
-    // the guaranteed final fallback so a swap NEVER hard-fails just
-    // because one external aggregator is having a bad day).
+    // LI.FI first (best real-market pricing when available), then Uniswap,
+    // then Curve. v4.0.0 — TowerSwapAdapter (simulated pricing,
+    // always-succeeds fallback) removed entirely: if all three below are
+    // either unconfigured or fail, the swap fails with no fallback. See
+    // CONTRACTS.LiFiPrivacyAdapter's doc comment in contracts.js.
     // fromAddress/toAddress for LI.FI are the ADAPTER contract, never the
     // user's EOA: that's what keeps the swap's counterparty private on-chain.
     async function attemptLiFi() {
@@ -4253,23 +4260,35 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       // naive estimate + the existing 1% slippage tolerance.
       return { router: CONTRACTS.UniswapPrivacyAdapter, routeData: "0x", outAmountBig, minOut, label: "Uniswap" };
     }
-    function attemptTower() {
-      if (!isRouterSet(CONTRACTS.TowerSwapAdapter)) return null;
-      return { router: CONTRACTS.TowerSwapAdapter, routeData: "0x", outAmountBig, minOut, label: "TowerSwapAdapter (simulated pricing)" };
+    // CURVE_POOLS: per-pair (pool, i, j) config — see CurvePrivacyAdapter.sol's
+    // doc comment for why this can't be derived automatically (Curve pools
+    // identify tokens by index, not address, and no real pool address on
+    // Arc Testnet has been independently verified yet). Empty until a real
+    // pool is confirmed and its token-index mapping is known — attemptCurve
+    // self-activates for whichever pair gets an entry here, no other code
+    // change needed. Key format: "tokenInSymbol->tokenOutSymbol".
+    const CURVE_POOLS = {
+      // "USDC->EURC": { pool: "0x...", i: 0, j: 1 },
+    };
+    function attemptCurve() {
+      if (!isRouterSet(CONTRACTS.CurvePrivacyAdapter)) return null;
+      const cfg = CURVE_POOLS[`${fr}->${to}`];
+      if (!cfg) return null; // this pair isn't wired to a verified pool yet
+      const routeData = encodeCurveRouteData(cfg.pool, cfg.i, cfg.j);
+      // Curve StableSwap pricing is on-chain and atomic, like Uniswap —
+      // the adapter reverts (SlippageExceeded) if the real output
+      // undercuts minOut, so the local naive estimate + slippage tolerance
+      // is safe here too.
+      return { router: CONTRACTS.CurvePrivacyAdapter, routeData, outAmountBig, minOut, label: "Curve" };
     }
-    // Curve intentionally omitted from the automatic chain for now: routing
-    // through it requires a (pool, i, j) triple specific to each token
-    // pair, which needs a verified real pool address wired in first — see
-    // CurvePrivacyAdapter.sol's doc comment. Once a real pool is
-    // whitelisted, add a similar attemptCurve() here.
 
     let chosen = null;
-    for (const attempt of [attemptLiFi, attemptUniswap, attemptTower]) {
+    for (const attempt of [attemptLiFi, attemptUniswap, attemptCurve]) {
       chosen = await attempt();
       if (chosen) break;
     }
     if (!chosen) {
-      notify("Swap", "No route available on any configured router (LI.FI/Uniswap/Tower).", "error");
+      notify("Swap", "No route available on any configured router (LI.FI/Uniswap/Curve).", "error");
       setLoading(false); return;
     }
     const { router: chosenRouter, routeData, label: routerLabel } = chosen;
@@ -4364,13 +4383,16 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     </select>
   );
 
-  // v3.4.2 — reflects the SAME priority chain as swap()'s attemptLiFi/
-  // attemptUniswap/attemptTower, for the "Adapter" info badge below. Not a
+  // v4.0.0 — reflects the SAME priority chain as swap()'s attemptLiFi/
+  // attemptUniswap/attemptCurve, for the "Adapter" info badge below. Not a
   // binary choice anymore — shows whichever router would be tried FIRST.
+  // Curve deliberately excluded here even though CurvePrivacyAdapter may be
+  // deployed: it only actually routes a pair present in swap()'s local
+  // CURVE_POOLS config, which is empty until a real pool is verified — so
+  // showing it as "available" here would be misleading before that.
   const availableRouters = [
     isRouterSet(CONTRACTS.LiFiPrivacyAdapter)    && "LiFiPrivacyAdapter",
     isRouterSet(CONTRACTS.UniswapPrivacyAdapter) && "UniswapPrivacyAdapter",
-    isRouterSet(CONTRACTS.TowerSwapAdapter)      && "TowerSwapAdapter",
   ].filter(Boolean);
   const routerOk = availableRouters.length > 0;
   const primaryRouterLabel = availableRouters[0] || "none";
@@ -4414,7 +4436,7 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
           </div>
         </div>
       )}
-      <IG items={[["Privacy","✓ PrivarShieldVault","1 tx"],["Adapter", primaryRouterLabel, availableRouters.length > 1 ? `+${availableRouters.length-1} fallback` : (primaryRouterLabel==="TowerSwapAdapter" ? "simulation" : "live")],["Available",tkFr.bal.toFixed(tkFr.dec===8?5:2)+" "+fr,"shielded"]]}/>
+      <IG items={[["Privacy","✓ PrivarShieldVault","1 tx"],["Adapter", primaryRouterLabel, availableRouters.length > 1 ? `+${availableRouters.length-1} fallback` : "live"],["Available",tkFr.bal.toFixed(tkFr.dec===8?5:2)+" "+fr,"shielded"]]}/>
       {tkFr.bal <= 0 && (
         <div style={{ background:"rgba(245,158,11,.06)", border:"1px solid rgba(245,158,11,.2)", borderRadius:4, padding:"8px 12px", marginBottom:12, fontSize:9, color:"#F59E0B", fontFamily:"monospace" }}>
           ⚠ Solde shieldé {fr} à zéro. Shieldez des {fr} d'abord.

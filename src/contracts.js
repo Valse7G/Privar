@@ -1,18 +1,30 @@
 // ════════════════════════════════════════════════════════════════════════════
-//  Privar OS — Contract Config v3.4.2
+//  Privar OS — Contract Config v4.0.0
 //
-//  Addresses synced with latest.json v3.4.2 — Arc Testnet — deployed 2026-08-16T17:57:09Z
-//  Full protocol redeployment. Adds the v3.4.2 multi-router whitelist:
-//  PrivarShieldVault.privateSwapWithRouter() lets the frontend pick ANY
-//  whitelisted adapter per swap (LiFiPrivacyAdapter / TowerSwapAdapter /
-//  CurvePrivacyAdapter, and UniswapPrivacyAdapter once a verified router
-//  address is supplied) instead of being locked into a single admin-chosen
-//  default — fixes swaps hard-failing for hours whenever LI.FI's aggregator
-//  itself has an outage (confirmed via direct li.quest API testing: two
-//  separate multi-hour incidents, both external, neither a Privar bug).
-//  See PrivarShieldVault.sol's swapRouterWhitelist / setSwapRouterWhitelist.
-//  Carries forward the same v3.4.1 (balance-delta) and v3.4.2-decimal swap
-//  accounting fixes as the prior redeploy — see _executeMeasuredSwap.
+//  Addresses synced with latest.json v4.0.0 — Arc Testnet — deployed 2026-08-18T10:13:53Z
+//  MAJOR ARCHITECTURE CHANGE: TowerSwapAdapter removed entirely. It was a
+//  simulated/self-funded swap engine (internal exchange-rate math against a
+//  pre-funded balance, no real DEX call) — kept only as a guaranteed
+//  always-succeeds fallback. Decision: real swap routers only — LI.FI,
+//  UniswapPrivacyAdapter, CurvePrivacyAdapter. Real StableFX and Arc App Kit
+//  integrations were both evaluated and rejected for this version:
+//    - StableFX requires Circle KYB/AML institutional approval + API key,
+//      settlement authorized off-chain by Circle — no public on-chain
+//      interface a contract can call permissionlessly.
+//    - Arc App Kit Swap runs server-side only today (per Circle's own FAQ),
+//      the SDK executes swaps itself with a private key it's given directly
+//      — no calldata-generation primitive a smart contract could call.
+//  See contracts repo's PrivarShieldVault.sol / README.md "v3.4.2 → v4.0.0
+//  changes" section for the full writeup.
+//
+//  ⚠ KNOWN RISK: UniswapPrivacyAdapter is not deployed (no
+//  UNISWAP_ROUTER_ADDRESS was verified/supplied), and CurvePrivacyAdapter
+//  has an empty pool whitelist. LiFiPrivacyAdapter is currently the ONLY
+//  working swap router — the exact single-point-of-failure problem the
+//  multi-router whitelist exists to solve, temporarily reintroduced by
+//  removing the simulated fallback. Verify a real Uniswap router or Curve
+//  pool address and configure it as soon as possible.
+//
 //  NOT a migration — this is a fresh vault; any prior shielded balances
 //  remain in the old ShieldVault address and must be withdrawn from there.
 //  Deployer: 0x1Dc72450B3e2782AcD669D7C27073f2C8F2c9894
@@ -24,17 +36,17 @@ export const ARC_CHAIN_ID = 5042002;
 
 // ── Contract addresses ────────────────────────────────────────────────────────
 const _c = {
-  PrivarShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0x511AB159df624403D665735B660F7ddBa6B618Af",
+  PrivarShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0x2F371FBa305c27BDF55037AfD6a95271e43ceD31",
   Timelock:            import.meta.env.VITE_TIMELOCK              ?? "0x8DF7C02012EBec968bdEc100F4fEAF772AcAab99",
   Governance:          import.meta.env.VITE_GOVERNANCE            ?? "0x89F08E2BBc963e48986D8A0FfA23858bA643C78A",
-  PrivarStaking:             import.meta.env.VITE_STAKING               ?? "0x3d54CAe40BE68A313418CBe3a35d1141F4A2E629",
-  PrivarNullifierRegistry:   import.meta.env.VITE_NULLIFIER_REGISTRY    ?? "0x0713A78E39931d2061283b9f195113b11098f493",
-  PrivarMerkleTreeManager:   import.meta.env.VITE_MERKLE_TREE_MANAGER   ?? "0x7AA46E24Df2ab75E64f57BC7166f6d8F1Ce22286",
-  PrivarDepositManager:      import.meta.env.VITE_DEPOSIT_MANAGER       ?? "0x136ED5A135E3c0045A80A05AB610b38CBcb44C75",
+  PrivarStaking:             import.meta.env.VITE_STAKING               ?? "0x524Fdd0295D9Debea90be0d875F60384e73C374C",
+  PrivarNullifierRegistry:   import.meta.env.VITE_NULLIFIER_REGISTRY    ?? "0x0798915E2975e0D3a42565F84ef4eA9B14A50Eb9",
+  PrivarMerkleTreeManager:   import.meta.env.VITE_MERKLE_TREE_MANAGER   ?? "0xAa9bb9C051a520b4c15309baF11b2BD4c3BC3001",
+  PrivarDepositManager:      import.meta.env.VITE_DEPOSIT_MANAGER       ?? "0x77a231f710C82E0c9041528d04282200C963f1bE",
   // ViewKeyRegistry v1.0.0 — deployed 2026-06-20. Confidential-send auto-discovery
   // (real ECDH stealth notes) is feature-gated on this being non-null — see
   // DApp.jsx ensureViewKeyRegistered()/scanStealthNotes(). NOT part of the
-  // v3.4.x ShieldVault-suite redeploys — unchanged, still the original address.
+  // ShieldVault-suite redeploys — unchanged, still the original address.
   ViewKeyRegistry:     import.meta.env.VITE_VIEW_KEY_REGISTRY     ?? "0x590D1FDC3FbD4CAb151cb7E1557D9C4ecEa2C24b",
   // PrivarCloudVault — standalone, additive (no constructor args, no link to
   // ShieldVault). Decentralized events-only backup registry for the shielded
@@ -43,16 +55,16 @@ const _c = {
   // in DApp.jsx) — this stays deployed for backward compatibility with
   // journal entries pushed before the v3.4 upgrade, and as the manual
   // "Sync Notes to Cloud" backfill path in Settings.
-  PrivarCloudVault:    import.meta.env.VITE_CLOUD_VAULT           ?? "0xa278923b202A06301Cc30A070169220960dA9e24",
-  // LI.FI privacy adapters — redeployed 2026-08-16 as part of the full v3.4.2 suite.
-  LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0x1Ef4e6749A48d04Ef5286B3075D9689BC19e2896",
-  LiFiPrivacyBridge:   import.meta.env.VITE_LIFI_BRIDGE           ?? "0xA5f233cca7D7d9882C060F8Fe368fE161cb4DfF3",
+  PrivarCloudVault:    import.meta.env.VITE_CLOUD_VAULT           ?? "0x0807C659EffdA0537D704C8eA262964D5c484481",
+  // LI.FI privacy adapters — redeployed 2026-08-18 as part of the full v4.0.0 suite.
+  LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0x3167c4Df0686B8682b16fC0D0Bc9ad179af0B197",
+  LiFiPrivacyBridge:   import.meta.env.VITE_LIFI_BRIDGE           ?? "0x08FB9D4da6B01CB812752617696CafD59eE8acE5",
   LiFiDiamond:         import.meta.env.VITE_LIFI_DIAMOND          ?? "0xFf70F4A1d11995621854F3692acF286d8aCd04b2",
-  // v3.4.2 — multi-router whitelist additions. "0x000...0" (zero address)
-  // means "not deployed / not verified yet" and the frontend MUST treat
-  // that as "skip this router" — never attempt to call the zero address.
-  // UniswapPrivacyAdapter is still null: no UNISWAP_ROUTER_ADDRESS was
-  // supplied at deploy time (see scripts/deploy-v3.4.1-full.js CONFIG
+  // v4.0.0 — multi-router whitelist. "0x000...0" (zero address) means "not
+  // deployed / not verified yet" and the frontend MUST treat that as "skip
+  // this router" — never attempt to call the zero address.
+  // UniswapPrivacyAdapter is null: no UNISWAP_ROUTER_ADDRESS was supplied
+  // at deploy time (see contracts repo's deploy-v4.0.0-full.js CONFIG
   // comment and UniswapPrivacyAdapter.sol's doc comment for why this
   // wasn't pre-filled with a guessed address) — swap() simply skips it in
   // the fallback chain until a verified address is deployed and set here.
@@ -62,7 +74,7 @@ const _c = {
   // yet (see DApp.jsx swap()'s comment on why attemptCurve() isn't wired
   // up: needs a per-pair (pool, i, j) config this repo doesn't have yet).
   UniswapPrivacyAdapter: import.meta.env.VITE_UNISWAP_ADAPTER ?? "0x0000000000000000000000000000000000000000",
-  CurvePrivacyAdapter:   import.meta.env.VITE_CURVE_ADAPTER   ?? "0x6e1dd26ee3724700b09E34cAc149211f8A615C20",
+  CurvePrivacyAdapter:   import.meta.env.VITE_CURVE_ADAPTER   ?? "0xFDA08d9Ec06612972cF062c49dD6A9e8F6Cb0bf6",
 };
 
 export const CONTRACTS = {
@@ -83,12 +95,9 @@ export const CONTRACTS = {
   PrivarNullifierRegistry:   _c.PrivarNullifierRegistry,
   PrivarMerkleTreeManager:   _c.PrivarMerkleTreeManager,
   PrivarDepositManager:      _c.PrivarDepositManager,
-  // TowerSwapAdapter — Tower Exchange (StableFX) router for confidential swaps.
-  // NOTE: as of the v3.2 LI.FI deployment, ShieldVault.swapRouter() points to
-  // LiFiPrivacyAdapter, NOT this address — TowerSwapAdapter is kept deployed
-  // only as a documented rollback target (see scripts/deploy-v3.4.1-full.js).
-  // Redeployed 2026-08-13 as part of the v3.4.1 full-suite redeploy.
-  TowerSwapAdapter:    import.meta.env.VITE_TOWER_SWAP_ADAPTER ?? "0x72fCbeea382230992D585e65bf149742c3692b54",
+  // TowerSwapAdapter removed in v4.0.0 — see file header. Real swap
+  // routers only now (LiFiPrivacyAdapter always; Uniswap/Curve once
+  // verified/configured).
   ViewKeyRegistry:     _c.ViewKeyRegistry,
   PrivarCloudVault:    _c.PrivarCloudVault,
   // LI.FI privacy adapters — active default swap router + confidential bridge.
@@ -96,7 +105,7 @@ export const CONTRACTS = {
   LiFiPrivacyAdapter:  _c.LiFiPrivacyAdapter,
   LiFiPrivacyBridge:   _c.LiFiPrivacyBridge,
   LiFiDiamond:         _c.LiFiDiamond,
-  // v3.4.2 — whitelist-only routers, used via privateSwapWithRouter().
+  // v4.0.0 — whitelist-only routers, used via privateSwapWithRouter().
   // Zero address = not deployed/verified — see _c's comment above.
   UniswapPrivacyAdapter: _c.UniswapPrivacyAdapter,
   CurvePrivacyAdapter:   _c.CurvePrivacyAdapter,
@@ -203,8 +212,8 @@ export const SEL = {
   // Selector computed against PrivarShieldVault.sol's exact new signature — see
   // scripts/deploy-lifi.js / contracts/core/PrivarShieldVault.sol.
   privateSwapWithRoute:"0x05e550e9",  // v3.4: privateSwapWithRoute(bytes32,bytes32,address,address,uint256,uint256,bytes32,uint256,bytes,bytes)
-  // v3.4.2 — multi-router: caller picks which whitelisted adapter executes
-  // the swap (LI.FI / Tower / Uniswap / Curve), instead of always using the
+  // v4.0.0 — multi-router: caller picks which whitelisted adapter executes
+  // the swap (LI.FI / Uniswap / Curve), instead of always using the
   // single admin-configured default. Selector cross-validated by
   // recomputing privateSwapWithRoute's own known-good selector with the
   // same keccak256 implementation before trusting this one — see the git
@@ -560,9 +569,9 @@ export function buildAtomicSwapCalldata({
 // ── PrivarShieldVault.privateSwapWithRoute() — v3.4, forwards routeData ──
 // Same as buildAtomicSwapCalldata but appends a dynamic `routeData` blob that
 // swapRouter.executeSwap() actually receives. Required whenever swapRouter is
-// LiFiPrivacyAdapter — it reverts on an empty routeData (TowerSwapAdapter, by
-// contrast, ignores it). `routeData` here should already be the encoded
-// (target, calldata) tuple — see encodeLiFiRouteData() below.
+// LiFiPrivacyAdapter — it reverts on an empty routeData. `routeData` here
+// should already be the encoded (target, calldata) tuple — see
+// encodeLiFiRouteData() below.
 // v3.4.0 adds a SECOND trailing optional `encryptedEntry` (protocol-wide
 // note-journal persistence — see PrivarShieldVault.sol's NoteJournal event
 // doc comment).
@@ -611,13 +620,13 @@ export function buildSwapWithRouteCalldata({
   return { data, value };
 }
 
-// ── PrivarShieldVault.privateSwapWithRouter() — v3.4.2, multi-router ────────
+// ── PrivarShieldVault.privateSwapWithRouter() — multi-router ────────────────
 // Same as buildSwapWithRouteCalldata but with an explicit `dexRouter`
 // address in the head (must be whitelisted on-chain via
 // setSwapRouterWhitelist — see PrivarShieldVault.sol). This is what lets
-// the frontend choose LI.FI / TowerSwapAdapter / UniswapPrivacyAdapter /
-// CurvePrivacyAdapter per-call instead of being locked into the single
-// admin-configured default `swapRouter`.
+// the frontend choose LI.FI / UniswapPrivacyAdapter / CurvePrivacyAdapter
+// per-call instead of being locked into the single admin-configured
+// default `swapRouter`.
 export function buildSwapWithRouterCalldata({
   nullifier, root, tokenIn, tokenOut,
   amountIn, minAmountOut, commitmentOut,
@@ -672,6 +681,16 @@ export function encodeLiFiRouteData(diamondAddress, callValue, txCalldataHex) {
   const value   = encodeUint256(BigInt(callValue || 0));
   const offset  = encodeUint256(0x60n); // 3 head words (addr, value, offset) × 32
   return "0x" + addr + value + offset + encodeBytes(txCalldataHex);
+}
+
+// ── Curve routeData encoder ──────────────────────────────────────────────
+// CurvePrivacyAdapter.executeSwap() decodes routeData as
+// abi.encode(address pool, int128 i, int128 j) — see the contract's doc
+// comment. int128 values here are always small non-negative pool token
+// indices (0, 1, 2…) in practice, so a plain unsigned 32-byte encoding is
+// safe (no two's-complement negative-number handling needed).
+export function encodeCurveRouteData(pool, i, j) {
+  return "0x" + encodeAddress(pool) + encodeUint256(BigInt(i)) + encodeUint256(BigInt(j));
 }
 
 // ── LI.FI supported destinations (from Arc Testnet) ───────────────────────
