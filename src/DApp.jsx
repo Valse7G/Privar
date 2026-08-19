@@ -214,9 +214,22 @@ async function sendTransaction(from, to, valueHex, data = "0x") {
 }
 
 // Wait for tx receipt (polling)
-async function waitForReceipt(txHash, maxAttempts = 30) {
-  for (let i = 0; i < maxAttempts; i++) {
-    await sl(2000);
+async function waitForReceipt(txHash) {
+  // Arc Network advertises sub-second finality (<350ms per Arc's own docs
+  // and third-party dApps built on it) — the previous fixed 2s-per-attempt
+  // poll meant even a genuinely fast confirmation never showed up before
+  // 2s had already elapsed, and the worst case (30 attempts x 2s) was a
+  // full 60s of "Processing..." regardless of how fast the chain actually
+  // confirmed. Poll aggressively at first (where the receipt is most
+  // likely to already exist by the time we check), backing off for the
+  // rare genuinely-slow case. Same ~60s total ceiling as before.
+  const INTERVALS = [300, 300, 500, 500, 800, 1000, 1500, 2000];
+  const CEILING_MS = 60_000;
+  const start = Date.now();
+  let i = 0;
+  while (Date.now() - start < CEILING_MS) {
+    await sl(INTERVALS[Math.min(i, INTERVALS.length - 1)]);
+    i++;
     try {
       const receipt = await rpcCall("eth_getTransactionReceipt", [txHash]);
       if (receipt) return receipt;
