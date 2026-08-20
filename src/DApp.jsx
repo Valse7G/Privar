@@ -98,6 +98,23 @@ const sh = (a) => a ? a.slice(0, 8) + "···" + a.slice(-6) : "---";
 const tc = () => { const n = new Date(); return [n.getHours(), n.getMinutes(), n.getSeconds()].map(x => String(x).padStart(2, "0")).join(":"); };
 const toHex = (n) => "0x" + n.toString(16);
 
+// Responsive: below this width the icon sidebar collapses into a
+// hamburger + full-screen menu (see MobileNavMenu).
+const MOBILE_BREAKPOINT = 720;
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== "undefined" ? window.innerWidth < MOBILE_BREAKPOINT : false
+  );
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`);
+    const h = () => setIsMobile(mq.matches);
+    h();
+    mq.addEventListener ? mq.addEventListener("change", h) : mq.addListener(h);
+    return () => { mq.removeEventListener ? mq.removeEventListener("change", h) : mq.removeListener(h); };
+  }, []);
+  return isMobile;
+}
+
 /* ═══════════════════════════════════════════════════════════════
    EIP-1193 HELPERS  (real on-chain calls via window.ethereum)
 ═══════════════════════════════════════════════════════════════ */
@@ -820,6 +837,49 @@ function GlobalSearch({ onSelect, onClose }) {
 }
 
 /* ═══════════════════════════════════════════════════════════════
+   MOBILE NAV MENU — full-screen panel picker for narrow screens.
+   Renders the SAME `NAV` array as the desktop icon sidebar, so it is
+   always in lockstep with the real set of panels in the app.
+═══════════════════════════════════════════════════════════════ */
+function MobileNavMenu({ nav, panel, setPanel, onClose, onArc, account }) {
+  return (
+    <div style={{ position:"fixed", inset:0, zIndex:400, background:"#000A06", overflowY:"auto", animation:"fu .2s ease" }}>
+      <div style={{ height:52, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 16px", borderBottom:"1px solid rgba(0,255,176,.1)" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+          <div style={{ width:26, height:26, border:"1.5px solid #00FFB0", borderRadius:3, display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, color:"#00FFB0" }}>◈</div>
+          <Glitch text="privar" style={{ fontSize:14, fontWeight:800, color:"#00FFB0", fontFamily:"'Syne',sans-serif" }}/>
+        </div>
+        <button onClick={onClose} aria-label="Close menu" style={{ width:32, height:32, background:"rgba(0,255,176,.06)", border:"1px solid rgba(0,255,176,.25)", borderRadius:4, color:"#00FFB0", fontSize:15, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>✕</button>
+      </div>
+
+      <div style={{ padding:"14px 16px 40px" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:16 }}>
+          <span style={{ width:7, height:7, borderRadius:"50%", background:onArc?"#00FFB0":"#f87171", boxShadow:onArc?"0 0 6px #00FFB0":"0 0 6px #f87171" }}/>
+          <span style={{ fontSize:9, color:"#64748b", fontFamily:"monospace", letterSpacing:".1em" }}>{onArc?"ARC TESTNET":"WRONG NETWORK"}</span>
+          {account?.address && <span style={{ fontSize:9, color:"#4a7c5f", fontFamily:"monospace", marginLeft:"auto" }}>{sh(account.address)}</span>}
+        </div>
+
+        {nav.map((n, i) => n === null
+          ? <div key={i} style={{ height:1, background:"rgba(0,255,176,.08)", margin:"10px 0" }} />
+          : (
+            <button key={n.id} onClick={() => { setPanel(n.id); onClose(); }} style={{
+              width:"100%", display:"flex", alignItems:"center", gap:14,
+              background: panel===n.id ? "rgba(0,255,176,.08)" : "none",
+              border: panel===n.id ? "1px solid rgba(0,255,176,.25)" : "1px solid transparent",
+              borderRadius:6, padding:"13px 12px", marginBottom:4, cursor:"pointer", textAlign:"left",
+            }}>
+              <span style={{ fontSize:17, flexShrink:0 }}>{n.icon}</span>
+              <span style={{ fontSize:14, color: panel===n.id ? "#00FFB0" : "#e2e8f0", fontFamily:"'Syne',sans-serif", fontWeight:700 }}>{n.label}</span>
+              {panel===n.id && <span style={{ marginLeft:"auto", fontSize:9, color:"#00FFB0", fontFamily:"monospace" }}>● ACTIVE</span>}
+            </button>
+          )
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
    DISCONNECT CONFIRM MODAL
 ═══════════════════════════════════════════════════════════════ */
 function DisconnectModal({ onConfirm, onCancel, walletName, address }) {
@@ -1205,6 +1265,8 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
   const [showNotif, setShowNotif]   = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [showDisc, setShowDisc]     = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const isMobile = useIsMobile();
   const unread = notifs.filter(n=>!n.read).length;
 
   // Fetch real block number from Arc Testnet
@@ -1362,28 +1424,31 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
   useEffect(() => { window._privarRecomputeShielded = recomputeShielded; }, [recomputeShielded]);
 
   return (
-    <div style={{ display:"flex", height:"100vh", width:"100%", maxWidth:960, margin:"0 auto", position:"relative", zIndex:2 }}>
+    <div style={{ display:"flex", height:"100vh", width:"100%", maxWidth: isMobile ? "100%" : 960, margin:"0 auto", position:"relative", zIndex:2 }}>
       {showSearch   && <GlobalSearch onSelect={p=>{setPanel(p);setShowSearch(false);}} onClose={()=>setShowSearch(false)}/>}
       {showDisc     && <DisconnectModal walletName={account?.walletName} address={account?.address} onConfirm={disconnect} onCancel={()=>setShowDisc(false)}/>}
+      {mobileNavOpen && <MobileNavMenu nav={NAV} panel={panel} setPanel={setPanel} onClose={()=>setMobileNavOpen(false)} onArc={onArc} account={account}/>}
 
-      {/* Sidebar */}
-      <div style={{ width:52, flexShrink:0, background:"rgba(0,5,3,.96)", borderRight:"1px solid rgba(0,255,176,.08)", display:"flex", flexDirection:"column", alignItems:"center", paddingTop:12, paddingBottom:12, gap:1 }}>
-        <div style={{ width:30, height:30, border:"1.5px solid #00FFB0", borderRadius:3, display:"flex", alignItems:"center", justifyContent:"center", fontSize:14, color:"#00FFB0", boxShadow:"0 0 10px rgba(0,255,176,.2)", marginBottom:9 }}>◈</div>
-        <div style={{ width:26, height:1, background:"rgba(0,255,176,.1)", marginBottom:5 }}/>
-        {NAV.map((n, i) => n===null
-          ? <div key={i} style={{ width:24, height:1, background:"rgba(0,255,176,.06)", margin:"3px 0" }}/>
-          : <button key={n.id} onClick={()=>setPanel(n.id)} title={n.label}
-              style={{ width:36, height:33, background:panel===n.id?"rgba(0,255,176,.12)":"transparent", border:`1px solid ${panel===n.id?"rgba(0,255,176,.3)":"transparent"}`, borderRadius:4, cursor:"pointer", color:panel===n.id?"#00FFB0":"#4a7c5f", fontSize:14, display:"flex", alignItems:"center", justifyContent:"center", transition:"all .2s", flexShrink:0 }}
-              onMouseEnter={e=>{if(panel!==n.id){e.currentTarget.style.background="rgba(0,255,176,.06)";e.currentTarget.style.color="#94a3b8";}}}
-              onMouseLeave={e=>{if(panel!==n.id){e.currentTarget.style.background="transparent";e.currentTarget.style.color="#4a7c5f";}}}>
-              {n.icon}
-            </button>
-        )}
-        <div style={{ flex:1 }}/>
-        {/* Network indicator */}
-        <div style={{ width:7, height:7, borderRadius:"50%", background:onArc?"#00FFB0":"#f87171", boxShadow:onArc?"0 0 6px #00FFB0":"0 0 6px #f87171", animation:"pulse 2s infinite", marginBottom:3 }}/>
-        <div style={{ fontSize:7, color:onArc?"#4a7c5f":"#64748b", fontFamily:"monospace", letterSpacing:".04em" }}>{onArc?"TEST":"WRONG"}</div>
-      </div>
+      {/* Sidebar — desktop/tablet only; collapses to a hamburger + MobileNavMenu below MOBILE_BREAKPOINT */}
+      {!isMobile && (
+        <div style={{ width:52, flexShrink:0, background:"rgba(0,5,3,.96)", borderRight:"1px solid rgba(0,255,176,.08)", display:"flex", flexDirection:"column", alignItems:"center", paddingTop:12, paddingBottom:12, gap:1 }}>
+          <div style={{ width:30, height:30, border:"1.5px solid #00FFB0", borderRadius:3, display:"flex", alignItems:"center", justifyContent:"center", fontSize:14, color:"#00FFB0", boxShadow:"0 0 10px rgba(0,255,176,.2)", marginBottom:9 }}>◈</div>
+          <div style={{ width:26, height:1, background:"rgba(0,255,176,.1)", marginBottom:5 }}/>
+          {NAV.map((n, i) => n===null
+            ? <div key={i} style={{ width:24, height:1, background:"rgba(0,255,176,.06)", margin:"3px 0" }}/>
+            : <button key={n.id} onClick={()=>setPanel(n.id)} title={n.label}
+                style={{ width:36, height:33, background:panel===n.id?"rgba(0,255,176,.12)":"transparent", border:`1px solid ${panel===n.id?"rgba(0,255,176,.3)":"transparent"}`, borderRadius:4, cursor:"pointer", color:panel===n.id?"#00FFB0":"#4a7c5f", fontSize:14, display:"flex", alignItems:"center", justifyContent:"center", transition:"all .2s", flexShrink:0 }}
+                onMouseEnter={e=>{if(panel!==n.id){e.currentTarget.style.background="rgba(0,255,176,.06)";e.currentTarget.style.color="#94a3b8";}}}
+                onMouseLeave={e=>{if(panel!==n.id){e.currentTarget.style.background="transparent";e.currentTarget.style.color="#4a7c5f";}}}>
+                {n.icon}
+              </button>
+          )}
+          <div style={{ flex:1 }}/>
+          {/* Network indicator */}
+          <div style={{ width:7, height:7, borderRadius:"50%", background:onArc?"#00FFB0":"#f87171", boxShadow:onArc?"0 0 6px #00FFB0":"0 0 6px #f87171", animation:"pulse 2s infinite", marginBottom:3 }}/>
+          <div style={{ fontSize:7, color:onArc?"#4a7c5f":"#64748b", fontFamily:"monospace", letterSpacing:".04em" }}>{onArc?"TEST":"WRONG"}</div>
+        </div>
+      )}
 
       {/* Main content */}
       <div style={{ flex:1, overflow:"hidden", display:"flex", flexDirection:"column" }}>
@@ -1393,22 +1458,29 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
         {/* Top bar */}
         <div style={{ height:40, flexShrink:0, background:"rgba(0,5,3,.96)", borderBottom:"1px solid rgba(0,255,176,.08)", display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 14px", position:"relative" }}>
           <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            {isMobile && (
+              <button onClick={()=>setMobileNavOpen(true)} aria-label="Open menu" style={{ width:26, height:26, background:"rgba(0,255,176,.08)", border:"1px solid rgba(0,255,176,.2)", borderRadius:3, color:"#00FFB0", fontSize:13, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", marginRight:2, flexShrink:0 }}>
+                ☰
+              </button>
+            )}
             <Glitch text="privar" style={{ fontSize:14, fontWeight:800, color:"#00FFB0", fontFamily:"'Syne',sans-serif" }}/>
-            <span style={{ fontSize:7, color:"#4a7c5f", fontFamily:"monospace", letterSpacing:".1em" }}>OS v12.0</span>
+            {!isMobile && <span style={{ fontSize:7, color:"#4a7c5f", fontFamily:"monospace", letterSpacing:".1em" }}>OS v12.0</span>}
             <span style={{ fontSize:7, background:"rgba(0,255,176,.08)", border:"1px solid rgba(0,255,176,.18)", borderRadius:2, padding:"1px 5px", color:"#00FFB0", fontFamily:"monospace" }}>
-              {onArc?"ARC TESTNET":"WRONG NETWORK"}
+              {isMobile ? (onArc?"ARC":"WRONG") : (onArc?"ARC TESTNET":"WRONG NETWORK")}
             </span>
           </div>
-          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:isMobile?6:8 }}>
             {/* Search */}
-            <button onClick={()=>setShowSearch(true)} style={{ display:"flex", alignItems:"center", gap:5, background:"rgba(0,0,0,.4)", border:"1px solid rgba(0,255,176,.12)", borderRadius:3, padding:"3px 10px", cursor:"pointer", color:"#64748b", fontSize:9, fontFamily:"monospace", transition:"all .2s" }}
-              onMouseEnter={e=>{e.currentTarget.style.borderColor="rgba(0,255,176,.35)";e.currentTarget.style.color="#ffffff";}}
-              onMouseLeave={e=>{e.currentTarget.style.borderColor="rgba(0,255,176,.12)";e.currentTarget.style.color="#64748b";}}>
-              <span>⌕</span><span style={{ fontSize:8 }}>Search</span>
-              <span style={{ fontSize:7, background:"rgba(0,255,176,.08)", border:"1px solid rgba(0,255,176,.18)", borderRadius:2, padding:"0 4px", marginLeft:3, color:"#4a7c5f" }}>⌘K</span>
-            </button>
-            {blockNum && <span style={{ fontSize:8, color:"#4a7c5f", fontFamily:"monospace" }}>#{blockNum.toLocaleString()}</span>}
-            <div style={{ height:12, width:1, background:"rgba(0,255,176,.1)" }}/>
+            {!isMobile && (
+              <button onClick={()=>setShowSearch(true)} style={{ display:"flex", alignItems:"center", gap:5, background:"rgba(0,0,0,.4)", border:"1px solid rgba(0,255,176,.12)", borderRadius:3, padding:"3px 10px", cursor:"pointer", color:"#64748b", fontSize:9, fontFamily:"monospace", transition:"all .2s" }}
+                onMouseEnter={e=>{e.currentTarget.style.borderColor="rgba(0,255,176,.35)";e.currentTarget.style.color="#ffffff";}}
+                onMouseLeave={e=>{e.currentTarget.style.borderColor="rgba(0,255,176,.12)";e.currentTarget.style.color="#64748b";}}>
+                <span>⌕</span><span style={{ fontSize:8 }}>Search</span>
+                <span style={{ fontSize:7, background:"rgba(0,255,176,.08)", border:"1px solid rgba(0,255,176,.18)", borderRadius:2, padding:"0 4px", marginLeft:3, color:"#4a7c5f" }}>⌘K</span>
+              </button>
+            )}
+            {!isMobile && blockNum && <span style={{ fontSize:8, color:"#4a7c5f", fontFamily:"monospace" }}>#{blockNum.toLocaleString()}</span>}
+            {!isMobile && <div style={{ height:12, width:1, background:"rgba(0,255,176,.1)" }}/>}
             {/* Notifications */}
             <div style={{ position:"relative" }}>
               <button onClick={()=>setShowNotif(!showNotif)} style={{ background:"none", border:"none", cursor:"pointer", color:unread>0?"#00FFB0":"#4a7c5f", fontSize:14, position:"relative", transition:"color .2s" }}>
@@ -1418,13 +1490,13 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
             </div>
             <div style={{ height:12, width:1, background:"rgba(0,255,176,.1)" }}/>
             {/* Wallet info */}
-            <span style={{ fontSize:8, color:"#94a3b8", fontFamily:"monospace" }}>{account?.walletName}</span>
+            {!isMobile && <span style={{ fontSize:8, color:"#94a3b8", fontFamily:"monospace" }}>{account?.walletName}</span>}
             <span style={{ fontSize:8, color:"#64748b", fontFamily:"monospace" }}>{sh(account?.address)}</span>
             {/* Disconnect */}
             <button onClick={()=>setShowDisc(true)} style={{ display:"flex", alignItems:"center", gap:5, background:"rgba(239,68,68,.06)", border:"1px solid rgba(239,68,68,.2)", borderRadius:3, padding:"3px 9px", cursor:"pointer", color:"#64748b", fontSize:8, fontFamily:"monospace", letterSpacing:".08em", transition:"all .2s" }}
               onMouseEnter={e=>{e.currentTarget.style.background="rgba(239,68,68,.14)";e.currentTarget.style.borderColor="rgba(239,68,68,.45)";e.currentTarget.style.color="#f87171";}}
               onMouseLeave={e=>{e.currentTarget.style.background="rgba(239,68,68,.06)";e.currentTarget.style.borderColor="rgba(239,68,68,.2)";e.currentTarget.style.color="#64748b";}}>
-              ⏻ DISCONNECT
+              {isMobile ? "⏻" : "⏻ DISCONNECT"}
             </button>
           </div>
         </div>

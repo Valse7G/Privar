@@ -1,4 +1,73 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import {
+  CONTRACTS, SEL, encodeAddress, decodeUint256,
+  buildTotalVolumeByTokenCall, NATIVE_TO_ERC20,
+} from "./contracts.js";
+
+/* ═══════════════════════════════════════════════════════════════
+   LIVE PROTOCOL STATS (read-only, no wallet required)
+   Plain HTTP JSON-RPC to Arc Testnet — deliberately independent of
+   window.ethereum so the landing page shows real numbers even for
+   visitors with no wallet extension installed.
+═══════════════════════════════════════════════════════════════ */
+const ARC_RPC_URL = "https://rpc.testnet.arc.network";
+
+async function httpRpcCall(method, params = []) {
+  const res = await fetch(ARC_RPC_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+  });
+  const json = await res.json();
+  if (json.error) throw new Error(json.error.message || "RPC error");
+  return json.result;
+}
+
+const nativeToUsdc6 = (wei18) => wei18 / NATIVE_TO_ERC20;
+
+function fmtCompact(n) {
+  if (n == null || Number.isNaN(n)) return "···";
+  if (n >= 1_000_000) return "$" + (n / 1_000_000).toFixed(2) + "M";
+  if (n >= 1_000) return "$" + (n / 1_000).toFixed(1) + "K";
+  return "$" + n.toFixed(2);
+}
+
+function useLiveProtocolStats() {
+  const [stats, setStats] = useState({ tvl: null, volume: null, txCount: null, feeBps: null, error: false });
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const call = (data) => httpRpcCall("eth_call", [{ to: CONTRACTS.PrivarShieldVault, data }, "latest"]);
+        const [su, se, volU, volE, tx, feeBps] = await Promise.all([
+          call(SEL.totalShielded + encodeAddress(CONTRACTS.USDC)),
+          call(SEL.totalShielded + encodeAddress(CONTRACTS.EURC)),
+          call(buildTotalVolumeByTokenCall(CONTRACTS.USDC)),
+          call(buildTotalVolumeByTokenCall(CONTRACTS.EURC)),
+          call(SEL.totalTxCount),
+          call(SEL.protocolFeeBps),
+        ]);
+        if (cancelled) return;
+        const tvl = Number(nativeToUsdc6(decodeUint256(su))) + Number(decodeUint256(se));
+        const volume = Number(nativeToUsdc6(decodeUint256(volU))) + Number(decodeUint256(volE));
+        setStats({
+          tvl, volume,
+          txCount: Number(decodeUint256(tx)),
+          feeBps: Number(decodeUint256(feeBps)),
+          error: false,
+        });
+      } catch {
+        if (!cancelled) setStats(s => ({ ...s, error: true }));
+      }
+    };
+    load();
+    const id = setInterval(load, 45_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
+  return stats;
+}
 
 /* ═══════════════════════════════════════════════════════════════
    HEX CANVAS BACKGROUND
@@ -106,6 +175,13 @@ export function Landing({ navigate }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const [tick, setTick] = useState(0);
+  const liveStats = useLiveProtocolStats();
+
+  // Lock body scroll while the mobile menu overlay is open
+  useEffect(() => {
+    document.body.style.overflow = menuOpen ? "hidden" : "";
+    return () => { document.body.style.overflow = ""; };
+  }, [menuOpen]);
 
   useEffect(() => {
     const h = () => setScrolled(window.scrollY > 40);
@@ -128,7 +204,25 @@ export function Landing({ navigate }) {
     "Timelock :: 48h minimum delay on upgrades  ✓",
   ];
 
-  const NAV_LINKS = ["Features", "Architecture", "How It Works", "Roadmap"];
+  // Primary product nav — mirrors the real panels inside Privar OS
+  // (src/DApp.jsx NAV array), so this menu stays in lockstep with what
+  // the app actually offers instead of drifting into generic marketing links.
+  const PRODUCT_LINKS = [
+    { label: "Shield",   icon: "🛡" },
+    { label: "Swap",     icon: "⇄" },
+    { label: "Send",     icon: "↗" },
+    { label: "Withdraw", icon: "↙" },
+    { label: "Bridge",   icon: "⟺" },
+    { label: "History",  icon: "📋" },
+  ];
+  // Secondary / highlighted features — pill-style, matching the live
+  // protocol modules that aren't core transfer actions.
+  const PILL_FEATURES = [
+    { label: "Analytics",  icon: "📈" },
+    { label: "Governance", icon: "🗳" },
+    { label: "Staking",    icon: "💎" },
+  ];
+  const SECTION_LINKS = ["Features", "Architecture", "How It Works", "Roadmap"];
 
   return (
     <div style={{ background: "#000A06", minHeight: "100vh", color: "#ffffff", fontFamily: "'JetBrains Mono', monospace", overflowX: "hidden" }}>
@@ -149,6 +243,14 @@ export function Landing({ navigate }) {
         @keyframes scanline { 0%{top:-10%} 100%{top:110%} }
         @keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-10px)} }
         @keyframes borderGlow { 0%,100%{box-shadow:0 0 20px rgba(0,255,176,.1)} 50%{box-shadow:0 0 40px rgba(0,255,176,.25)} }
+        @keyframes slideIn { from{transform:translateX(100%)} to{transform:translateX(0)} }
+        @media (max-width: 860px) {
+          .desktop-nav { display: none !important; }
+          .mobile-menu-btn { display: flex !important; }
+        }
+        @media (max-width: 480px) {
+          .hero-stats-grid { grid-template-columns: repeat(2, 1fr) !important; }
+        }
       `}</style>
 
       {/* ═══════════════════════════════════════════════════════
@@ -170,18 +272,37 @@ export function Landing({ navigate }) {
           <span style={{ fontSize: 8, color: "#1E5C3A", letterSpacing: ".18em", marginLeft: 2 }}>OS</span>
         </div>
 
-        {/* Desktop nav */}
-        <div style={{ display: "flex", alignItems: "center", gap: 28 }} className="desktop-nav">
-          {NAV_LINKS.map(l => (
-            <a key={l} href={`#${l.toLowerCase().replace(/ /g, "-")}`}
-              style={{ fontSize: 10, color: "#64748b", letterSpacing: ".14em", textDecoration: "none", textTransform: "uppercase", transition: "color .2s" }}
-              onMouseEnter={e => e.target.style.color = "#00FFB0"}
-              onMouseLeave={e => e.target.style.color = "#64748b"}>{l}</a>
+        {/* Desktop nav — product links */}
+        <div style={{ display: "flex", alignItems: "center", gap: 20 }} className="desktop-nav">
+          {PRODUCT_LINKS.map(l => (
+            <button key={l.label} onClick={() => navigate("/app")} style={{
+              background: "none", border: "none", cursor: "pointer",
+              fontSize: 10, color: "#94a3b8", letterSpacing: ".1em",
+              textTransform: "uppercase", fontFamily: "monospace",
+              padding: 0, transition: "color .2s",
+            }}
+              onMouseEnter={e => e.currentTarget.style.color = "#00FFB0"}
+              onMouseLeave={e => e.currentTarget.style.color = "#94a3b8"}>{l.label}</button>
+          ))}
+          <div style={{ height: 16, width: 1, background: "rgba(0,255,176,.12)" }} />
+          {PILL_FEATURES.map(l => (
+            <button key={l.label} onClick={() => navigate("/app")} style={{
+              display: "flex", alignItems: "center", gap: 5,
+              background: "rgba(0,255,176,.06)", border: "1px solid rgba(0,255,176,.22)",
+              borderRadius: 20, padding: "5px 12px", cursor: "pointer",
+              fontSize: 9, color: "#00FFB0", letterSpacing: ".08em",
+              textTransform: "uppercase", fontFamily: "monospace", transition: "all .2s",
+            }}
+              onMouseEnter={e => { e.currentTarget.style.background = "rgba(0,255,176,.14)"; e.currentTarget.style.borderColor = "rgba(0,255,176,.5)"; }}
+              onMouseLeave={e => { e.currentTarget.style.background = "rgba(0,255,176,.06)"; e.currentTarget.style.borderColor = "rgba(0,255,176,.22)"; }}>
+              {l.label}
+              <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#00FFB0", boxShadow: "0 0 5px #00FFB0", animation: "pulse 1.8s infinite" }} />
+            </button>
           ))}
         </div>
 
-        {/* CTA */}
-        <button onClick={() => navigate("/app")} style={{
+        {/* Desktop CTA */}
+        <button onClick={() => navigate("/app")} className="desktop-nav" style={{
           padding: "9px 20px", background: "transparent",
           border: "1px solid #00FFB0", borderRadius: 3,
           color: "#00FFB0", fontSize: 10, fontWeight: 700,
@@ -191,8 +312,25 @@ export function Landing({ navigate }) {
         }}
           onMouseEnter={e => e.currentTarget.style.background = "rgba(0,255,176,.12)"}
           onMouseLeave={e => e.currentTarget.style.background = "transparent"}
-        >Launch App →</button>
+        >Connect Wallet</button>
+
+        {/* Mobile hamburger */}
+        <button onClick={() => setMenuOpen(true)} className="mobile-menu-btn" style={{
+          display: "none", background: "rgba(0,255,176,.06)", border: "1px solid rgba(0,255,176,.25)",
+          borderRadius: 4, width: 34, height: 34, color: "#00FFB0", fontSize: 16,
+          cursor: "pointer", alignItems: "center", justifyContent: "center",
+        }} aria-label="Open menu">☰</button>
       </nav>
+
+      {menuOpen && (
+        <MobileMenu
+          navigate={navigate}
+          onClose={() => setMenuOpen(false)}
+          productLinks={PRODUCT_LINKS}
+          pillFeatures={PILL_FEATURES}
+          sectionLinks={SECTION_LINKS}
+        />
+      )}
 
       {/* ═══════════════════════════════════════════════════════
           HERO
@@ -259,6 +397,23 @@ export function Landing({ navigate }) {
             ))}
             <span style={{ color: "#00FFB0", animation: "pulse .8s infinite", fontSize: 14 }}>▌</span>
           </div>
+        </div>
+
+        {/* Live protocol stats bar */}
+        <div style={{ width: "100%", maxWidth: 680, display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginTop: 22 }} className="hero-stats-grid">
+          {[
+            { label: "Total Value Locked", value: liveStats.error ? "—" : liveStats.tvl != null ? fmtCompact(liveStats.tvl) : "···" },
+            { label: "Total Volume",       value: liveStats.error ? "—" : liveStats.volume != null ? fmtCompact(liveStats.volume) : "···" },
+            { label: "Transactions",       value: liveStats.error ? "—" : liveStats.txCount != null ? liveStats.txCount.toLocaleString() : "···" },
+            { label: "Protocol Fee",       value: liveStats.error ? "—" : liveStats.feeBps != null ? (liveStats.feeBps / 100).toFixed(2) + "%" : "···" },
+          ].map(s => (
+            <div key={s.label} style={{ background: "rgba(0,5,3,.75)", border: "1px solid rgba(0,255,176,.15)", borderRadius: 6, padding: "12px 8px", textAlign: "center" }}>
+              <div style={{ fontSize: "clamp(13px,2vw,17px)", fontWeight: 700, color: "#ffffff", fontFamily: "monospace", lineHeight: 1 }}>
+                {s.value} <span style={{ width: 5, height: 5, display: "inline-block", borderRadius: "50%", background: "#00FFB0", boxShadow: "0 0 5px #00FFB0", marginLeft: 3 }} />
+              </div>
+              <div style={{ fontSize: 8, color: "#4a7c5f", letterSpacing: ".1em", textTransform: "uppercase", marginTop: 6 }}>{s.label}</div>
+            </div>
+          ))}
         </div>
       </section>
 
@@ -566,6 +721,84 @@ export function Landing({ navigate }) {
           </div>
         </div>
       </footer>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   MOBILE MENU (full-screen overlay)
+   Layout mirrors the desktop nav split: core transfer actions as
+   plain rows, then the highlighted protocol modules as pill rows —
+   kept in sync with Privar OS's real feature set (src/DApp.jsx NAV).
+═══════════════════════════════════════════════════════════════ */
+function MobileMenu({ navigate, onClose, productLinks, pillFeatures, sectionLinks }) {
+  const go = () => { onClose(); navigate("/app"); };
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 300, background: "#000A06",
+      overflowY: "auto", animation: "fadeUp .25s ease",
+    }}>
+      {/* Header row */}
+      <div style={{ height: 62, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 5vw", borderBottom: "1px solid rgba(0,255,176,.1)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+          <div style={{ width: 26, height: 26, border: "1.5px solid #00FFB0", borderRadius: 3, display: "flex", alignItems: "center", justifyContent: "center", color: "#00FFB0", fontSize: 12 }}>◈</div>
+          <span style={{ fontSize: 15, fontWeight: 800, color: "#00FFB0", fontFamily: "'Syne', sans-serif" }}>privar</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <button onClick={go} style={{ padding: "8px 16px", background: "#00FFB0", border: "none", borderRadius: 3, color: "#000A06", fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "monospace", letterSpacing: ".1em", textTransform: "uppercase" }}>
+            Connect Wallet
+          </button>
+          <button onClick={onClose} aria-label="Close menu" style={{ background: "rgba(0,255,176,.06)", border: "1px solid rgba(0,255,176,.25)", borderRadius: 4, width: 34, height: 34, color: "#00FFB0", fontSize: 16, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>✕</button>
+        </div>
+      </div>
+
+      {/* Body */}
+      <div style={{ padding: "20px 5vw 50px" }}>
+        <div style={{ fontSize: 9, color: "#4a7c5f", letterSpacing: ".22em", textTransform: "uppercase", margin: "8px 0 4px" }}>Product</div>
+        {productLinks.map(l => (
+          <button key={l.label} onClick={go} style={{
+            width: "100%", display: "flex", alignItems: "center", gap: 12,
+            background: "none", border: "none", borderBottom: "1px solid rgba(0,255,176,.06)",
+            padding: "16px 4px", cursor: "pointer", textAlign: "left",
+          }}>
+            <span style={{ fontSize: 16 }}>{l.icon}</span>
+            <span style={{ fontSize: 15, color: "#e2e8f0", fontFamily: "'Syne', sans-serif", fontWeight: 700 }}>{l.label}</span>
+          </button>
+        ))}
+
+        <div style={{ fontSize: 9, color: "#4a7c5f", letterSpacing: ".22em", textTransform: "uppercase", margin: "22px 0 10px" }}>Modules</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {pillFeatures.map(l => (
+            <button key={l.label} onClick={go} style={{
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+              background: "rgba(0,255,176,.06)", border: "1px solid rgba(0,255,176,.25)",
+              borderRadius: 8, padding: "14px 16px", cursor: "pointer", textAlign: "left",
+            }}>
+              <span style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 14, color: "#00FFB0", fontFamily: "'Syne', sans-serif", fontWeight: 700 }}>
+                <span style={{ fontSize: 16 }}>{l.icon}</span>{l.label}
+              </span>
+              <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#00FFB0", boxShadow: "0 0 6px #00FFB0", animation: "pulse 1.8s infinite" }} />
+            </button>
+          ))}
+        </div>
+
+        <div style={{ height: 1, background: "rgba(0,255,176,.08)", margin: "26px 0" }} />
+
+        <div style={{ fontSize: 9, color: "#4a7c5f", letterSpacing: ".22em", textTransform: "uppercase", margin: "0 0 10px" }}>Learn more</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {sectionLinks.map(l => (
+            <a key={l} href={`#${l.toLowerCase().replace(/ /g, "-")}`} onClick={onClose} style={{
+              fontSize: 10, color: "#64748b", letterSpacing: ".1em", textTransform: "uppercase",
+              textDecoration: "none", border: "1px solid rgba(100,116,139,.2)", borderRadius: 20,
+              padding: "7px 14px",
+            }}>{l}</a>
+          ))}
+        </div>
+
+        <div style={{ marginTop: 30, fontSize: 9, color: "#334155", letterSpacing: ".1em" }}>
+          ARC TESTNET · CHAIN 5042002 · USDC GAS
+        </div>
+      </div>
     </div>
   );
 }
