@@ -2,6 +2,12 @@
 //  Privar OS — Contract Config v5.0.0
 //
 //  Addresses synced with latest.json v5.0.0 — Arc Testnet — deployed 2026-08-20T22:23:28Z
+//  XyloNetPrivacyAdapter redeployed 2026-08-21T04:32:21Z (v5.0.1 bug fix —
+//  native-tokenIn swaps now use payable swapExactETHForTokens instead of
+//  approve+swapExactTokensForTokens; see contracts repo's v5.0.0 → v5.0.1
+//  changelog). Every other address below is unchanged from the v5.0.0 run —
+//  this was a targeted redeploy (scripts/deploy-xylonet-adapter.js), not a
+//  full suite redeploy.
 //  ARCHITECTURE — PrivateSwapRouter / Liquidity Engine, best-execution routing:
 //    - DIRECT ADAPTERS (primary, tried first): XyloNetPrivacyAdapter
 //      (XyloRouter) and UniswapPrivacyAdapter (a real, independently-verified
@@ -65,7 +71,7 @@ const _c = {
   // Fully independent from UniswapPrivacyAdapter below (own contract, own
   // whitelist entry — see contracts repo's XyloNetPrivacyAdapter.sol doc
   // comment). Deployed via scripts/deploy-xylonet-adapter.js.
-  XyloNetPrivacyAdapter: import.meta.env.VITE_XYLONET_ADAPTER ?? "0xFf8142AdCaBb4997E248fE0Ca4bFE9FdB9A31693",
+  XyloNetPrivacyAdapter: import.meta.env.VITE_XYLONET_ADAPTER ?? "0x4b829CC39a62d07892cC8cdE8914aF0deDedB300",
   // UniswapPrivacyAdapter — DIRECT adapter, independent, reserved for a
   // real Uniswap deployment. null in latest.json: no UNISWAP_ROUTER_ADDRESS
   // was supplied at deploy time (see contracts repo's deploy-v5.0.0-full.js

@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v17.1.0-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v17.1.1-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -24,7 +24,7 @@ Deployed: 2026-08-20T22:23:28Z — full protocol redeployment. **Not a migration
 | PrivarVerifierZK (Mock¹) | `0x03B8e2cECf8a5CBf3057BAe83581AcbA7ED38c1C` | *(called internally by the vault — no frontend key)* |
 | PrivarDepositManager | `0x89Ef0d180e33a322e005980f6C41d52ae5e4D6e1` | `PrivarDepositManager` |
 | PrivarWithdrawManager | `0x31E52C3e3c6A4d94efdb787aA6B608cbac125161` | *(called internally by the vault — no frontend key)* |
-| **XyloNetPrivacyAdapter** ⁵ (direct adapter, primary — always deployed) | `0xFf8142AdCaBb4997E248fE0Ca4bFE9FdB9A31693` | `XyloNetPrivacyAdapter` |
+| **XyloNetPrivacyAdapter** ⁵ ⁶ (direct adapter, primary — always deployed) | `0x4b829CC39a62d07892cC8cdE8914aF0deDedB300` | `XyloNetPrivacyAdapter` |
 | UniswapPrivacyAdapter (direct adapter, independent — not deployed, `UNISWAP_ROUTER_ADDRESS` unset) | *(null)* | `UniswapPrivacyAdapter` |
 | LiFiPrivacyAdapter (reserve/aggregator, active, non-default) | `0x1A9278097F58f79aa02b8684207FAd29460F13A9` | `LiFiPrivacyAdapter` |
 | LiFiPrivacyBridge ³ | `0x13C01FbefDb92B19403E431Da5670D266550cDf6` | `LiFiPrivacyBridge` |
@@ -42,6 +42,7 @@ Deployed: 2026-08-20T22:23:28Z — full protocol redeployment. **Not a migration
 ² Standalone, additive deployment — no constructor args, no dependency on ShieldVault or any other contract. ShieldVault's own `NoteJournal` event is the *primary* persistence path for new activity — CloudVault stays deployed for backward compatibility with pre-v3.4 journal entries and as the manual "Sync Notes to Cloud" backfill in Settings.
 ³ Repointed at the new ShieldVault via `setShieldVault()` — logic unchanged since v3.4.0.
 ⁵ New in v5.0.0 — dedicated, independent adapter for XyloRouter (XyloNet's own Uniswap V2-compatible router). Fully separate contract/whitelist entry from `UniswapPrivacyAdapter` — see the contracts repo's `XyloNetPrivacyAdapter.sol` doc comment and its [v4.0.0 → v5.0.0 changes](../privar-contracts-v3.4/README.md#v400--v500-changes) section.
+⁶ Redeployed 2026-08-21 (v5.0.1 bug fix — native-tokenIn swaps, e.g. USDC → EURC, previously reverted with `ERC20: transfer amount exceeds balance`; fixed to use the payable `swapExactETHForTokens` variant instead of approve+`swapExactTokensForTokens` when the vault forwards `tokenIn` as raw `msg.value`). Targeted redeploy only — every other v5.0.0 address is unchanged. See the contracts repo's [v5.0.0 → v5.0.1 changes](../privar-contracts-v3.4/README.md#v500--v501-changes).
 
 `TowerSwapAdapter` (the simulated/self-funded rollback target referenced in earlier versions) was removed in v4.0.0 and is no longer part of the stack — a real direct adapter (`XyloNetPrivacyAdapter`) is guaranteed deployed instead, so there's no more single-point-of-failure risk on LI.FI.
 
@@ -201,7 +202,12 @@ Override any address via Vercel env vars (`VITE_SHIELD_VAULT`, `VITE_CLOUD_VAULT
 
 ## Changelog
 
-### v17.1.0 (current) — Liquidity Engine: direct adapters primary, LI.FI/Curve reserve
+### v17.1.1 (current) — sync XyloNetPrivacyAdapter redeploy (v5.0.1 bug fix)
+- `XyloNetPrivacyAdapter` address updated to `0x4b829CC39a62d07892cC8cdE8914aF0deDedB300` — targeted redeploy after a contracts-side fix for native-tokenIn swaps (`USDC → EURC` etc.) that previously reverted with `ERC20: transfer amount exceeds balance`; see contracts repo's v5.0.0 → v5.0.1 changelog
+- No other address changed — `PrivarShieldVault` and everything else stayed at their v5.0.0 values
+- No frontend logic touched — this is a config-only sync
+
+### v17.1.0 — Liquidity Engine: direct adapters primary, LI.FI/Curve reserve
 - Swap routing reordered to match the `PrivateSwapRouter` architecture: **direct adapters** (`XyloNetPrivacyAdapter`, then `UniswapPrivacyAdapter`) are now tried first — on-chain, deterministic pricing, no off-chain quote round-trip — before falling back to the **reserve/aggregator** pair (`LiFiPrivacyAdapter`, then `CurvePrivacyAdapter`), which stay fully active and whitelisted but are only reached dynamically when no direct adapter covers the pair
 - `XyloNetPrivacyAdapter` added to `src/contracts.js` — new, independent contract from `UniswapPrivacyAdapter` (see contracts repo)
 - Synced against contracts `v5.0.0` (`deployments/latest.json`) — real deployed addresses for `PrivarShieldVault`, `XyloNetPrivacyAdapter`, `LiFiPrivacyAdapter`/`Bridge`, `CurvePrivacyAdapter`, `PrivarStaking`, `PrivarCloudVault`, infra managers
