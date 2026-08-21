@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v17.1.1-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v17.1.2-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -24,7 +24,7 @@ Deployed: 2026-08-20T22:23:28Z — full protocol redeployment. **Not a migration
 | PrivarVerifierZK (Mock¹) | `0x03B8e2cECf8a5CBf3057BAe83581AcbA7ED38c1C` | *(called internally by the vault — no frontend key)* |
 | PrivarDepositManager | `0x89Ef0d180e33a322e005980f6C41d52ae5e4D6e1` | `PrivarDepositManager` |
 | PrivarWithdrawManager | `0x31E52C3e3c6A4d94efdb787aA6B608cbac125161` | *(called internally by the vault — no frontend key)* |
-| **XyloNetPrivacyAdapter** ⁵ ⁶ (direct adapter, primary — always deployed) | `0x4b829CC39a62d07892cC8cdE8914aF0deDedB300` | `XyloNetPrivacyAdapter` |
+| **XyloNetPrivacyAdapter** ⁵ ⁶ (direct adapter, primary — always deployed) | `0xFa2B659C16F6a1C71161c1aECA4141425B624DD0` | `XyloNetPrivacyAdapter` |
 | UniswapPrivacyAdapter (direct adapter, independent — not deployed, `UNISWAP_ROUTER_ADDRESS` unset) | *(null)* | `UniswapPrivacyAdapter` |
 | LiFiPrivacyAdapter (reserve/aggregator, active, non-default) | `0x1A9278097F58f79aa02b8684207FAd29460F13A9` | `LiFiPrivacyAdapter` |
 | LiFiPrivacyBridge ³ | `0x13C01FbefDb92B19403E431Da5670D266550cDf6` | `LiFiPrivacyBridge` |
@@ -202,10 +202,16 @@ Override any address via Vercel env vars (`VITE_SHIELD_VAULT`, `VITE_CLOUD_VAULT
 
 ## Changelog
 
-### v17.1.1 (current) — sync XyloNetPrivacyAdapter redeploy (v5.0.1 bug fix)
+### v17.1.2 (current) — sync XyloNetPrivacyAdapter redeploy (v5.0.2 fix)
+- `XyloNetPrivacyAdapter` address updated to `0xFa2B659C16F6a1C71161c1aECA4141425B624DD0` — the v5.0.1 redeploy (previous entry below) had routed native-tokenIn swaps through an unverified payable `swapExactETHForTokens`, which was never confirmed to exist on XyloRouter; v5.0.2 reverts to a single `approve()` + `swapExactTokensForTokens()` path for both native and ERC-20 tokenIn, scaling native USDC's 18-dec amount to XyloRouter's 6-dec ERC-20 view — see contracts repo's v5.0.1 → v5.0.2 changelog
+- No other address changed — `PrivarShieldVault` and everything else stayed at their v5.0.0 values
+- No frontend logic touched — this is a config-only sync
+
+### v17.1.1 — sync XyloNetPrivacyAdapter redeploy (v5.0.1 bug fix, since superseded)
 - `XyloNetPrivacyAdapter` address updated to `0x4b829CC39a62d07892cC8cdE8914aF0deDedB300` — targeted redeploy after a contracts-side fix for native-tokenIn swaps (`USDC → EURC` etc.) that previously reverted with `ERC20: transfer amount exceeds balance`; see contracts repo's v5.0.0 → v5.0.1 changelog
 - No other address changed — `PrivarShieldVault` and everything else stayed at their v5.0.0 values
 - No frontend logic touched — this is a config-only sync
+- ⚠️ Superseded by v17.1.2 above — the underlying v5.0.1 contract fix itself turned out to rely on an unverified router function
 
 ### v17.1.0 — Liquidity Engine: direct adapters primary, LI.FI/Curve reserve
 - Swap routing reordered to match the `PrivateSwapRouter` architecture: **direct adapters** (`XyloNetPrivacyAdapter`, then `UniswapPrivacyAdapter`) are now tried first — on-chain, deterministic pricing, no off-chain quote round-trip — before falling back to the **reserve/aggregator** pair (`LiFiPrivacyAdapter`, then `CurvePrivacyAdapter`), which stay fully active and whitelisted but are only reached dynamically when no direct adapter covers the pair
