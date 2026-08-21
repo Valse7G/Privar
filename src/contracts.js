@@ -1,15 +1,15 @@
 // ════════════════════════════════════════════════════════════════════════════
-//  Privar OS — Contract Config v5.0.0
+//  Privar OS — Contract Config v5.1.0
 //
-//  Addresses synced with latest.json v5.0.0 — Arc Testnet — deployed 2026-08-20T22:23:28Z
-//  XyloNetPrivacyAdapter redeployed 2026-08-21T10:24:52Z (v5.0.2 fix —
-//  the v5.0.1 redeploy had routed native-tokenIn swaps through an unverified
-//  payable swapExactETHForTokens; v5.0.2 reverts to a single
-//  approve()+swapExactTokensForTokens() path for both native and ERC-20
-//  tokenIn, scaling native USDC's 18-dec amount to XyloRouter's 6-dec ERC-20
-//  view — see contracts repo's v5.0.1 → v5.0.2 changelog). Every other
-//  address below is unchanged from the v5.0.0 run — this was a targeted
-//  redeploy (scripts/deploy-xylonet-adapter.js), not a full suite redeploy.
+//  Addresses synced with latest.json v5.1.0 — Arc Testnet — deployed 2026-08-21T17:37:31.441Z
+//  Full suite redeploy (scripts/deploy-v5.1.0-full.js) — every Privar-deployed
+//  address below was refreshed in this run. Two contracts now present in
+//  latest.json — PrivarWithdrawManager (0x93143024a6022978df553511323EBE471DE1a336)
+//  and PrivarVerifierZK (0x9A012Bf753eEc96100d95F438eB81F803D6141C2) — are NOT
+//  wired into _c/CONTRACTS below; this file never referenced them before this
+//  deploy either, so they're left out pending an explicit integration pass
+//  rather than guessed at. XyloRouter and LiFiDiamond are unchanged from
+//  v5.0.x (same addresses in the new latest.json).
 //  ARCHITECTURE — PrivateSwapRouter / Liquidity Engine, best-execution routing:
 //    - DIRECT ADAPTERS (primary, tried first): XyloNetPrivacyAdapter
 //      (XyloRouter) and UniswapPrivacyAdapter (a real, independently-verified
@@ -42,13 +42,13 @@ export const ARC_CHAIN_ID = 5042002;
 
 // ── Contract addresses ────────────────────────────────────────────────────────
 const _c = {
-  PrivarShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0x67a3c2aEE021ED109c0F84B5190F7e8DD84c415B",
+  PrivarShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0x52aC41c1a7E7E9d4B531F103b5dB8E7cfe6fDC96",
   Timelock:            import.meta.env.VITE_TIMELOCK              ?? "0x8DF7C02012EBec968bdEc100F4fEAF772AcAab99",
   Governance:          import.meta.env.VITE_GOVERNANCE            ?? "0x89F08E2BBc963e48986D8A0FfA23858bA643C78A",
-  PrivarStaking:             import.meta.env.VITE_STAKING               ?? "0x08133df916E68b4ac4e9138378D118717Aa85f28",
-  PrivarNullifierRegistry:   import.meta.env.VITE_NULLIFIER_REGISTRY    ?? "0xf0DaCEa8B651BE697DEb9aB83db6F28fAcA8A320",
-  PrivarMerkleTreeManager:   import.meta.env.VITE_MERKLE_TREE_MANAGER   ?? "0x88d80fe571668C569066186DEA23727a36dEc8e3",
-  PrivarDepositManager:      import.meta.env.VITE_DEPOSIT_MANAGER       ?? "0x89Ef0d180e33a322e005980f6C41d52ae5e4D6e1",
+  PrivarStaking:             import.meta.env.VITE_STAKING               ?? "0x8bFEA88d7F46cAd14436402827aEa0e286FA64d4",
+  PrivarNullifierRegistry:   import.meta.env.VITE_NULLIFIER_REGISTRY    ?? "0x4190c9A9e2fC2B98DFaBD371e2525609d4C38b64",
+  PrivarMerkleTreeManager:   import.meta.env.VITE_MERKLE_TREE_MANAGER   ?? "0xFB793D1f263B0B1deb635b3EaA0d33cC18a04D8C",
+  PrivarDepositManager:      import.meta.env.VITE_DEPOSIT_MANAGER       ?? "0x2aa6Aa9341783BFcF7Ad6CC4aF741F5c00D26fE2",
   // ViewKeyRegistry v1.0.0 — deployed 2026-06-20. Confidential-send auto-discovery
   // (real ECDH stealth notes) is feature-gated on this being non-null — see
   // DApp.jsx ensureViewKeyRegistered()/scanStealthNotes(). NOT part of the
@@ -61,10 +61,10 @@ const _c = {
   // in DApp.jsx) — this stays deployed for backward compatibility with
   // journal entries pushed before the v3.4 upgrade, and as the manual
   // "Sync Notes to Cloud" backfill path in Settings.
-  PrivarCloudVault:    import.meta.env.VITE_CLOUD_VAULT           ?? "0xb3cac16d0388D45ed4b614a162A5890c6658e35F",
-  // LI.FI privacy adapters — redeployed 2026-08-20 as part of the full v5.0.0 suite.
-  LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0x1A9278097F58f79aa02b8684207FAd29460F13A9",
-  LiFiPrivacyBridge:   import.meta.env.VITE_LIFI_BRIDGE           ?? "0x13C01FbefDb92B19403E431Da5670D266550cDf6",
+  PrivarCloudVault:    import.meta.env.VITE_CLOUD_VAULT           ?? "0xe009218eEdffE8d69a25235954b1cE7470e9c699",
+  // LI.FI privacy adapters — redeployed 2026-08-21 as part of the full v5.1.0 suite.
+  LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0xc59d76698bA3b731ab69aAdbD5BdfaA535AC5A22",
+  LiFiPrivacyBridge:   import.meta.env.VITE_LIFI_BRIDGE           ?? "0xae006654b14e9A2176c09E375DB678e86F08D39e",
   LiFiDiamond:         import.meta.env.VITE_LIFI_DIAMOND          ?? "0xFf70F4A1d11995621854F3692acF286d8aCd04b2",
   // v5.0.0 — "0x000...0" (zero address) means "not deployed / not verified
   // yet" and the frontend MUST treat that as "skip this router" — never
@@ -73,7 +73,7 @@ const _c = {
   // Fully independent from UniswapPrivacyAdapter below (own contract, own
   // whitelist entry — see contracts repo's XyloNetPrivacyAdapter.sol doc
   // comment). Deployed via scripts/deploy-xylonet-adapter.js.
-  XyloNetPrivacyAdapter: import.meta.env.VITE_XYLONET_ADAPTER ?? "0xFa2B659C16F6a1C71161c1aECA4141425B624DD0",
+  XyloNetPrivacyAdapter: import.meta.env.VITE_XYLONET_ADAPTER ?? "0xCBC60F9dBED1d2a03E434A9dAa379Ab2B6C7d598",
   // UniswapPrivacyAdapter — DIRECT adapter, independent, reserved for a
   // real Uniswap deployment. null in latest.json: no UNISWAP_ROUTER_ADDRESS
   // was supplied at deploy time (see contracts repo's deploy-v5.0.0-full.js
@@ -88,7 +88,7 @@ const _c = {
   // doesn't route through it yet (see DApp.jsx swap()'s comment on why
   // attemptCurve() isn't wired up: needs a per-pair (pool, i, j) config
   // this repo doesn't have yet).
-  CurvePrivacyAdapter:   import.meta.env.VITE_CURVE_ADAPTER   ?? "0x0cd0f3E552081D8d0696062A2bD88b6Bb0f0e001",
+  CurvePrivacyAdapter:   import.meta.env.VITE_CURVE_ADAPTER   ?? "0x041c2D111da80ddcd5a5d3Af15c582fc6e4736e0",
   // Raw DEX router addresses (NOT the Privar adapter addresses above) — used
   // only for read-only getAmountsOut() eth_call quoting before a XyloNet/
   // Uniswap swap is submitted, so minAmountOut reflects the pool's real
@@ -233,6 +233,13 @@ export const SEL = {
   // Sanity-checked keccak256 impl against known selectors (balanceOf, transfer, approve).
   deposit:            "0x17c224e8",  // v3.4: deposit(address,uint256,bytes32,bytes)
   withdraw:            "0x5b5bbcf8",  // v3.4: withdraw(bytes32,bytes32,address,address,uint256,address,uint256,address,bytes)
+  // v3.5.0 — spends MULTIPLE nullifiers (same token) in one tx, one payout.
+  // Selector verified locally (pure-Python keccak256, cross-checked against
+  // this file's own transfer/balanceOf/approve/allowance selectors before
+  // trusting it) against the EXACT signature below — re-verify with
+  // `cast sig` against the deployed ABI if withdrawBatch() ever reverts
+  // with "function not found".
+  withdrawBatch:       "0x775968f5",  // v3.5.0: withdrawBatch(bytes32[],uint256[],bytes32,address,address,address,uint256,address,bytes)
   shieldedSend:        "0x883be0f1",  // v3.4: shieldedSend(bytes32,bytes32,bytes32,bytes,bytes) — encryptedNote + encryptedSelfEntry, not payable
   privateSwap:         "0x1f12e042",  // v3.4: privateSwap(bytes32,bytes32,address,address,uint256,uint256,bytes32,uint256,bytes) — not payable
   // v3.2 — forwards an off-chain-quoted routeData (e.g. LI.FI) through to swapRouter.
@@ -359,6 +366,18 @@ export const encodedBytesSize = (hexOrBytes) => {
   return 32 + Math.ceil(byteLen / 32) * 32;
 };
 
+// Dynamic array of a STATIC element type (bytes32[] or uint256[] — both single
+// 32-byte words per element). Returns { size, words } where `words` is the
+// length word + N element words (ready to inline at a tail offset, same
+// convention as encodeBytes: NOT including its own offset word), and `size`
+// is its byte length (32 + 32*N) for computing the NEXT tail offset.
+const encodeStaticArray = (arr, encodeElem) => {
+  const words = encodeUint256(BigInt(arr.length)) + arr.map(encodeElem).join("");
+  return { size: 32 + 32 * arr.length, words };
+};
+export const encodeBytes32Array  = (arr) => encodeStaticArray(arr, (h) => encodeBytes32(h));
+export const encodeUint256Array  = (arr) => encodeStaticArray(arr, (n) => encodeUint256(n));
+
 export const decodeUint256 = (hex) =>
   hex && hex !== "0x" && hex.length > 2 ? BigInt(hex) : 0n;
 
@@ -462,6 +481,59 @@ export function buildWithdrawCalldata({ nullifier, root, token, recipient, amoun
 
   // Native USDC withdraw: no msg.value — % fee is skimmed from withdrawAmt on-chain.
   // EURC/cirBTC withdraw: msg.value carries the FLAT protocol fee in USDC, if set.
+  const value = isNativeUsdc ? "0x0" : "0x" + (BigInt(flatFeeUsdc) * NATIVE_TO_ERC20).toString(16);
+
+  return { data, value };
+}
+
+// ─── WITHDRAW BATCH (v3.5.0) ──────────────────────────────────────────────────
+// PrivarShieldVault.withdrawBatch(
+//   bytes32[] nullifiers, uint256[] amounts, bytes32 root,
+//   address token,        address recipient,
+//   address relayer,      uint256 relayerFee,
+//   address noteOwner,    bytes encryptedEntry
+// ) payable — spends MULTIPLE notes for the SAME token in one tx, one payout.
+// See PrivarShieldVault.sol's withdrawBatch() doc comment for the
+// fragmentation bug this fixes; only structural difference from
+// buildWithdrawCalldata is nullifiers/amounts being arrays.
+//
+// ABI: withdrawBatch(bytes32[],uint256[],bytes32,address,address,address,uint256,address,bytes)
+// 9 args, 3 dynamic (nullifiers, amounts, encryptedEntry). Head = 9 words (0x120):
+//   [0x00] offset→nullifiers  [0x20] offset→amounts   [0x40] root
+//   [0x60] token              [0x80] recipient        [0xa0] relayer
+//   [0xc0] relayerFee         [0xe0] noteOwner         [0x100] offset→encryptedEntry
+//   [0x120] tail: nullifiers block, then amounts block, then encryptedEntry block.
+//
+// `notes` = [{ nullifier, amount }], amount already in the SAME raw unit
+// buildWithdrawCalldata expects (native USDC: 18-dec wei; else token's own
+// decimals) — scaling below mirrors buildWithdrawCalldata exactly.
+export function buildWithdrawBatchCalldata({ notes, root, token, recipient, relayerFee = 0n, relayer = "0x0000000000000000000000000000000000000000", flatFeeUsdc = 0n, noteOwner = null, encryptedEntry = "0x" }) {
+  const isNativeUsdc = token.toLowerCase() === NATIVE_USDC.toLowerCase();
+  const nullifiers = notes.map(n => n.nullifier);
+  const amounts    = notes.map(n => isNativeUsdc ? BigInt(n.amount) * NATIVE_TO_ERC20 : BigInt(n.amount));
+  const relayerFeeForCalldata = isNativeUsdc ? BigInt(relayerFee) * NATIVE_TO_ERC20 : BigInt(relayerFee);
+
+  const nullArr = encodeBytes32Array(nullifiers);
+  const amtArr  = encodeUint256Array(amounts);
+
+  const offNullifiers = 0x120n;
+  const offAmounts     = offNullifiers + BigInt(nullArr.size);
+  const offEntry        = offAmounts + BigInt(amtArr.size);
+
+  const data = SEL.withdrawBatch
+    + encodeUint256(offNullifiers)
+    + encodeUint256(offAmounts)
+    + encodeBytes32(root)
+    + encodeAddress(token)
+    + encodeAddress(recipient)
+    + encodeAddress(relayer)
+    + encodeUint256(relayerFeeForCalldata)
+    + encodeAddress(noteOwner || recipient)
+    + encodeUint256(offEntry)
+    + nullArr.words
+    + amtArr.words
+    + encodeBytes(encryptedEntry);
+
   const value = isNativeUsdc ? "0x0" : "0x" + (BigInt(flatFeeUsdc) * NATIVE_TO_ERC20).toString(16);
 
   return { data, value };

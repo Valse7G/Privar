@@ -5,7 +5,7 @@ import {
   NATIVE_USDC, NATIVE_TO_ERC20, ARC_CHAIN_ID,
   encodeAddress, encodeUint256, encodeBytes32,
   decodeUint256, decodeUint8, formatToken,
-  buildDepositCalldata, buildWithdrawCalldata,
+  buildDepositCalldata, buildWithdrawCalldata, buildWithdrawBatchCalldata,
   buildShieldedSendCalldata, buildPrivateSwapCalldata, buildPrivateBridgeCalldata,
   buildSwapAdapterRouteData,
   buildSwapWithRouterCalldata, buildLiFiBridgeCalldata,
@@ -4868,30 +4868,40 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
 
     const notes     = getNotes(account?.address);
     let   amountBig = BigInt(Math.round(Number(amount) * (10 ** tk.dec)));
+    const noteAmt   = (n) => BigInt(Math.round(Number(n.amount)||0));
 
-    // Find best note for this token:
-    // 1. Prefer exact/sufficient note (amount >= requested)
-    // 2. If none (float rounding at MAX), fallback to largest note — avoids "not found"
-    //    when the user taps MAX and the displayed balance rounds differently than BigInt.
     const tokenNotes = notes.filter(n => n.token.toLowerCase() === tk.addr.toLowerCase());
-    let note = tokenNotes.find(n => BigInt(Math.round(Number(n.amount)||0)) >= amountBig);
-    if (!note && tokenNotes.length > 0) {
-      // Fallback: use the largest note and clamp amount to its value — this
-      // is the actual clamp (previously only promised in this comment: the
-      // fallback picked a note but kept the original, too-large amountBig,
-      // guaranteeing a real "ERC20: transfer amount exceeds balance" revert
-      // on-chain whenever the displayed/rounded MAX amount exceeded the
-      // note's true raw balance).
-      note = tokenNotes.reduce((best, n) =>
-        BigInt(Math.round(Number(n.amount)||0)) > BigInt(Math.round(Number(best.amount)||0)) ? n : best
-      );
-      const noteRaw = BigInt(Math.round(Number(note.amount)||0));
-      if (noteRaw < amountBig) amountBig = noteRaw;
-    }
-    if (!note) {
+    if (tokenNotes.length === 0) {
       notify("Withdraw", `No shielded ${tk.sym} note found. Shield ${tk.sym} first.`, "error");
       setLoading(false); return;
     }
+
+    // Note selection — fixes fragmented-balance withdrawals (e.g. after
+    // swap A then swap the result back: two USDC notes instead of one).
+    // Greedy, largest-first: pick the FEWEST notes needed to cover
+    // amountBig, instead of the old behavior of requiring ONE note to
+    // cover it and silently clamping down to the largest single note when
+    // none did (which is what caused "Tap Max" to only withdraw part of
+    // the shown total). If even ALL notes together fall short (shouldn't
+    // normally happen — displayed balance IS their sum — but float
+    // rounding at MAX could theoretically leave a dust gap), clamp down to
+    // the true total instead of reverting on-chain.
+    const sorted = [...tokenNotes].sort((a, b) => {
+      const d = noteAmt(b) - noteAmt(a);
+      return d > 0n ? 1 : d < 0n ? -1 : 0;
+    });
+    let acc = 0n;
+    const selectedNotes = [];
+    for (const n of sorted) {
+      if (acc >= amountBig) break;
+      selectedNotes.push(n);
+      acc += noteAmt(n);
+    }
+    if (acc < amountBig) amountBig = acc; // genuinely insufficient — clamp to true total, not one note
+
+    // Single note still covers it — unchanged path, same contract call
+    // (withdraw()) as before this fix, for the common case.
+    const note = selectedNotes.length === 1 ? selectedNotes[0] : null;
 
     let root;
     try {
@@ -4931,37 +4941,86 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
     // follow-up calls — see PrivarShieldVault.sol's NoteJournal doc comment
     // for why that used to be a reliability gap.
     await ensureSelfBackupKeyReady(account?.address);
-    const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
-    const changeCommitment = remaining > 0n ? randomBytes32() : null;
-    const ops = [{ t: 1, commitment: note.commitment }];
-    if (changeCommitment) ops.push({ t: 0, commitment: changeCommitment, amount: remaining.toString(), token: note.token });
-    const journalEntry = await encryptJournalBlob(account?.address, { ts: Date.now(), ops });
-
-    const { data, value: txValue } = buildWithdrawCalldata({
-      nullifier, root,
-      token:       tk.addr,
-      recipient:   target,
-      amount:      amountBig,
-      relayerFee:  0n,
-      relayer:     "0x0000000000000000000000000000000000000000",
-      flatFeeUsdc,
-      noteOwner:   account?.address,
-      encryptedEntry: journalEntry || "0x",
-    });
 
     const feeDesc = withdrawFee > 0n
       ? ` (protocol fee: ${formatToken(withdrawFee, 6)} USDC)`
       : "";
 
+    let data, txValue, updated, changeCommitment, remaining, journalEntry;
+
+    if (note) {
+      // ── Single note covers it — UNCHANGED path (same withdraw() call as
+      //    before this fix), for the common case.
+      remaining = noteAmt(note) - amountBig;
+      changeCommitment = remaining > 0n ? randomBytes32() : null;
+      const ops = [{ t: 1, commitment: note.commitment }];
+      if (changeCommitment) ops.push({ t: 0, commitment: changeCommitment, amount: remaining.toString(), token: note.token });
+      journalEntry = await encryptJournalBlob(account?.address, { ts: Date.now(), ops });
+
+      ({ data, value: txValue } = buildWithdrawCalldata({
+        nullifier, root,
+        token:       tk.addr,
+        recipient:   target,
+        amount:      amountBig,
+        relayerFee:  0n,
+        relayer:     "0x0000000000000000000000000000000000000000",
+        flatFeeUsdc,
+        noteOwner:   account?.address,
+        encryptedEntry: journalEntry || "0x",
+      }));
+
+      updated = notes.filter(n => n.commitment !== note.commitment);
+      if (changeCommitment) updated.push({ ...note, amount: remaining.toString(), commitment: changeCommitment, cloudSynced: !!journalEntry });
+
+    } else {
+      // ── Fragmented balance — SEVERAL notes needed. Spends every selected
+      //    note's nullifier via withdrawBatch() in ONE transaction, single
+      //    payout. Each note is spent for its FULL value except (if needed)
+      //    the LAST one, whose leftover becomes a single local change note —
+      //    exactly the same change-note mechanic as the single-note path
+      //    above, just applied to the last note in the set instead of the
+      //    only note. See PrivarShieldVault.sol's withdrawBatch() doc
+      //    comment for why this is safe / matches withdraw()'s semantics.
+      let acc2 = 0n;
+      const batchNotes = selectedNotes.map((n) => {
+        const full = noteAmt(n);
+        const need = amountBig - acc2;
+        const use  = full <= need ? full : need;
+        acc2 += use;
+        return { note: n, nullifier: randomBytes32(), amount: use, full };
+      });
+      const last = batchNotes[batchNotes.length - 1];
+      remaining = last.full - last.amount;
+      changeCommitment = remaining > 0n ? randomBytes32() : null;
+
+      const ops = batchNotes.map(bn => ({ t: 1, commitment: bn.note.commitment }));
+      if (changeCommitment) ops.push({ t: 0, commitment: changeCommitment, amount: remaining.toString(), token: tk.addr });
+      journalEntry = await encryptJournalBlob(account?.address, { ts: Date.now(), ops });
+
+      ({ data, value: txValue } = buildWithdrawBatchCalldata({
+        notes: batchNotes.map(bn => ({ nullifier: bn.nullifier, amount: bn.amount })),
+        root,
+        token:       tk.addr,
+        recipient:   target,
+        relayerFee:  0n,
+        relayer:     "0x0000000000000000000000000000000000000000",
+        flatFeeUsdc,
+        noteOwner:   account?.address,
+        encryptedEntry: journalEntry || "0x",
+      }));
+
+      const spentCommitments = new Set(selectedNotes.map(n => n.commitment));
+      updated = notes.filter(n => !spentCommitments.has(n.commitment));
+      if (changeCommitment) updated.push({ ...last.note, amount: remaining.toString(), commitment: changeCommitment, cloudSynced: !!journalEntry });
+    }
+
     const ok = await sendRealTx({
       label: "Withdraw",
-      description: `${amount} ${tk.sym} → ${sh(target)} from PrivarShieldVault${feeDesc}`,
+      description: `${amount} ${tk.sym} → ${sh(target)} from PrivarShieldVault${feeDesc}${note ? "" : ` (${selectedNotes.length} notes)`}`,
       buildTx: () => ({ to: CONTRACTS.PrivarShieldVault, value: txValue, data }),
     });
 
     if (ok) {
-      const updated = notes.filter(n => n.commitment !== note.commitment);
-      if (changeCommitment) updated.push({ ...note, amount: remaining.toString(), commitment: changeCommitment, cloudSynced: !!journalEntry });
       saveNotes(account?.address, updated);
       recomputeShielded?.();
     }
