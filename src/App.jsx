@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, Component } from "react";
 import { Landing }   from "./Landing.jsx";
 import { PrivarOS } from "./DApp.jsx";
-import { ThemeProvider } from "./theme.js";
+import { ThemeProvider } from "./theme.jsx";
 
 /* ═══════════════════════════════════════════════════════════════
    PRIVAR OS v10 — Unified Router

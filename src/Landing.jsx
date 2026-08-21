@@ -3,7 +3,7 @@ import {
   CONTRACTS, SEL, encodeAddress, decodeUint256,
   buildTotalVolumeByTokenCall, NATIVE_TO_ERC20,
 } from "./contracts.js";
-import { useTheme, cssVars } from "./theme.js";
+import { useTheme, cssVars } from "./theme.jsx";
 
 /* ═══════════════════════════════════════════════════════════════
    LIVE PROTOCOL STATS (read-only, no wallet required)

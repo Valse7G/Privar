@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, createContext, useContext, useMemo } from "react";
-import { useTheme, cssVars, THEMES } from "./theme.js";
+import { useTheme, cssVars, THEMES } from "./theme.jsx";
 import {
   CONTRACTS, TOKENS, TOKEN_LIST, SEL, CCTP_DOMAINS,
   NATIVE_USDC, NATIVE_TO_ERC20, ARC_CHAIN_ID,
