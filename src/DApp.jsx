@@ -19,6 +19,7 @@ import {
   buildCvLatestVersionCall, buildCvLastCheckpointBlockCall, buildCvLastCheckpointVersionCall,
   decodeUint64Return,
   previewDepositFee, previewWithdrawFee, previewSwapFee, previewBridgeFee, sendFeeValueHex,
+  buildGetAmountsOutCall, decodeAmountsOutReturn,
 } from "./contracts.js";
 
 /* ═══════════════════════════════════════════════════════════════
@@ -4316,6 +4317,28 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       setLoading(false); return;
     }
 
+    // Real on-chain quote via the router's own getAmountsOut(), used by
+    // attemptXyloNet/attemptUniswap below to set minAmountOut from the
+    // pool's ACTUAL current output instead of the naive off-chain
+    // price-matrix estimate in `q` (derived from an external EUR/USD
+    // feed). On a thin/imbalanced pool the two can diverge by more than
+    // the slippage tolerance, which used to guarantee a real
+    // "XyloRouter: INSUFFICIENT_OUTPUT" revert even though nothing was
+    // actually broken (see v17.1.3 changelog). Returns null on any
+    // failure (router unset, call reverts, bad decode) so callers can
+    // fall back to the naive estimate rather than block the swap outright.
+    async function quoteFromRouter(routerAddr, tokenIn, tokenOut, amountInBig) {
+      if (!isRouterSet(routerAddr)) return null;
+      try {
+        const data = buildGetAmountsOutCall(amountInBig, [tokenIn, tokenOut]);
+        const res  = await rpcCallWithRetry("eth_call", [{ to: routerAddr, data }, "latest"], 2, 500);
+        return decodeAmountsOutReturn(res);
+      } catch (e) {
+        console.warn("[Swap] on-chain quote failed, falling back to price-matrix estimate:", e.message);
+        return null;
+      }
+    }
+
     // ── Try each whitelisted router in priority order ────────────────────
     // DIRECT ADAPTERS first (XyloNet, then Uniswap) — on-chain, deterministic,
     // no off-chain quote round-trip needed. Only if NEITHER direct adapter is
@@ -4328,22 +4351,23 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     // unconfigured or fails, the swap fails with no fallback. See
     // CONTRACTS.XyloNetPrivacyAdapter / UniswapPrivacyAdapter's doc
     // comments in contracts.js for why the two are independent contracts.
-    function attemptXyloNet() {
+    async function attemptXyloNet() {
       if (!isRouterSet(CONTRACTS.XyloNetPrivacyAdapter)) return null;
-      // Same rationale as attemptUniswap below: XyloRouter pricing is
-      // on-chain and atomic (Uniswap V2-shaped interface), the adapter
-      // itself reverts (SlippageExceeded) if the real output undercuts
-      // minOut, so it's safe to submit with our local naive estimate + the
-      // existing 1% slippage tolerance — no off-chain quote round-trip.
-      return { router: CONTRACTS.XyloNetPrivacyAdapter, routeData: "0x", outAmountBig, minOut, label: "XyloNet" };
+      // v17.1.3: real getAmountsOut() quote from XyloRouter itself — falls
+      // back to the naive price-matrix estimate (+ existing 1% tolerance)
+      // only if the on-chain read fails, e.g. router address unset.
+      const realOut = await quoteFromRouter(CONTRACTS.XyloRouter, tkFr.addr, tkTo.addr, amountBig);
+      const out = realOut !== null ? realOut : outAmountBig;
+      const min = realOut !== null ? (realOut * 990n / 1000n) : minOut;
+      return { router: CONTRACTS.XyloNetPrivacyAdapter, routeData: "0x", outAmountBig: out, minOut: min, label: "XyloNet" };
     }
-    function attemptUniswap() {
+    async function attemptUniswap() {
       if (!isRouterSet(CONTRACTS.UniswapPrivacyAdapter)) return null;
-      // No off-chain quote call needed — Uniswap V2 pricing is on-chain and
-      // atomic; the adapter itself reverts (SlippageExceeded) if the real
-      // output undercuts minOut, so it's safe to submit with our local
-      // naive estimate + the existing 1% slippage tolerance.
-      return { router: CONTRACTS.UniswapPrivacyAdapter, routeData: "0x", outAmountBig, minOut, label: "Uniswap" };
+      // Same real-quote-with-fallback pattern as attemptXyloNet above.
+      const realOut = await quoteFromRouter(CONTRACTS.UniswapRouter, tkFr.addr, tkTo.addr, amountBig);
+      const out = realOut !== null ? realOut : outAmountBig;
+      const min = realOut !== null ? (realOut * 990n / 1000n) : minOut;
+      return { router: CONTRACTS.UniswapPrivacyAdapter, routeData: "0x", outAmountBig: out, minOut: min, label: "Uniswap" };
     }
     // fromAddress/toAddress for LI.FI are the ADAPTER contract, never the
     // user's EOA: that's what keeps the swap's counterparty private

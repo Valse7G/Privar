@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v17.1.2-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v17.1.3-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -202,7 +202,13 @@ Override any address via Vercel env vars (`VITE_SHIELD_VAULT`, `VITE_CLOUD_VAULT
 
 ## Changelog
 
-### v17.1.2 (current) — sync XyloNetPrivacyAdapter redeploy (v5.0.2 fix)
+### v17.1.3 (current) — real on-chain swap quoting for XyloNet/Uniswap
+- Root cause of the `XyloRouter: INSUFFICIENT_OUTPUT` revert seen after the v5.0.2 contract fix: the Swap panel's `minAmountOut` was derived entirely from an off-chain price-matrix estimate (external EUR/USD feed × 0.9995, then 1% slippage tolerance) — never from the pool's actual reserves. On a thin/imbalanced testnet pool that estimate can diverge from the real rate by more than the tolerance, so the router correctly rejects the trade even though nothing else is broken.
+- Added `buildGetAmountsOutCall()` / `decodeAmountsOutReturn()` (`src/contracts.js`) — standard Uniswap V2 `getAmountsOut(uint256,address[])`, works against both XyloRouter and any future Uniswap V2-shaped router.
+- Added `CONTRACTS.XyloRouter` / `CONTRACTS.UniswapRouter` — raw router addresses, read-only quoting only, never a swap tx target (that stays the `*PrivacyAdapter` address).
+- `attemptXyloNet()` / `attemptUniswap()` in `DApp.jsx` now call the router's real `getAmountsOut()` before submitting and compute `minAmountOut` from that (same 1% tolerance) — falls back to the previous price-matrix estimate only if the on-chain read fails (router unset/unreachable). The price-matrix estimate still powers the on-screen "you'll receive ~X" preview — only the actual `minAmountOut` sent on-chain changed.
+
+### v17.1.2 — sync XyloNetPrivacyAdapter redeploy (v5.0.2 fix)
 - `XyloNetPrivacyAdapter` address updated to `0xFa2B659C16F6a1C71161c1aECA4141425B624DD0` — the v5.0.1 redeploy (previous entry below) had routed native-tokenIn swaps through an unverified payable `swapExactETHForTokens`, which was never confirmed to exist on XyloRouter; v5.0.2 reverts to a single `approve()` + `swapExactTokensForTokens()` path for both native and ERC-20 tokenIn, scaling native USDC's 18-dec amount to XyloRouter's 6-dec ERC-20 view — see contracts repo's v5.0.1 → v5.0.2 changelog
 - No other address changed — `PrivarShieldVault` and everything else stayed at their v5.0.0 values
 - No frontend logic touched — this is a config-only sync

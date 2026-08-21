@@ -89,6 +89,14 @@ const _c = {
   // attemptCurve() isn't wired up: needs a per-pair (pool, i, j) config
   // this repo doesn't have yet).
   CurvePrivacyAdapter:   import.meta.env.VITE_CURVE_ADAPTER   ?? "0x0cd0f3E552081D8d0696062A2bD88b6Bb0f0e001",
+  // Raw DEX router addresses (NOT the Privar adapter addresses above) — used
+  // only for read-only getAmountsOut() eth_call quoting before a XyloNet/
+  // Uniswap swap is submitted, so minAmountOut reflects the pool's real
+  // on-chain state instead of an off-chain price-feed estimate. See v17.1.3
+  // changelog. null/zero = not deployed, quoting falls back to the naive
+  // price-matrix estimate for that router.
+  XyloRouter:    import.meta.env.VITE_XYLO_ROUTER    ?? "0x73742278c31a76dBb0D2587d03ef92E6E2141023",
+  UniswapRouter: import.meta.env.VITE_UNISWAP_ROUTER  ?? "0x0000000000000000000000000000000000000000",
 };
 
 export const CONTRACTS = {
@@ -124,6 +132,10 @@ export const CONTRACTS = {
   LiFiPrivacyBridge:   _c.LiFiPrivacyBridge,
   LiFiDiamond:         _c.LiFiDiamond,
   CurvePrivacyAdapter:   _c.CurvePrivacyAdapter,
+  // Raw router addresses — read-only getAmountsOut() quoting only, never
+  // the target of a swap tx (that's always the *PrivacyAdapter above).
+  XyloRouter:    _c.XyloRouter,
+  UniswapRouter: _c.UniswapRouter,
 };
 
 // ── Token config ──────────────────────────────────────────────────────────────
@@ -306,6 +318,11 @@ export const SEL = {
   cvLatestVersion:        "0x8e480b20",  // latestVersion(address)
   cvLastCheckpointBlock:  "0x17b1ea38",  // lastCheckpointBlock(address)
   cvLastCheckpointVersion:"0x47872aa5",  // lastCheckpointVersion(address)
+
+  // Uniswap V2 Router02 — canonical, standard selector (shared by
+  // XyloRouter and any real UniswapPrivacyAdapter target, both V2-shaped —
+  // see contracts/adapters/XyloNetPrivacyAdapter.sol's doc comment).
+  getAmountsOut: "0xd06ca61f",  // getAmountsOut(uint256,address[])
 };
 
 // ── ABI encoding primitives ───────────────────────────────────────────────────
@@ -1036,7 +1053,45 @@ export function buildTotalVolumeByTokenCall(token) {
   return SEL.totalVolumeByToken + encodeAddress(token);
 }
 
-// ─── VIEW KEY REGISTRY ────────────────────────────────────────────────────────
+// ─── ON-CHAIN SWAP QUOTING (XyloRouter / any Uniswap V2-shaped router) ────────
+// getAmountsOut(uint256 amountIn, address[] path) — used to fetch the REAL
+// pool-derived output before submitting a XyloNet/Uniswap swap, instead of
+// relying solely on the off-chain price-matrix estimate (see v17.1.3
+// changelog: that estimate can drift from a thin/imbalanced testnet pool's
+// actual rate by more than the slippage tolerance, causing a guaranteed
+// "XyloRouter: INSUFFICIENT_OUTPUT" revert even though nothing is broken).
+// Head layout: [amountIn (static)][offset to path (0x40)], then path's own
+// [length][addr0][addr1]... — standard dynamic-array ABI encoding.
+export function buildGetAmountsOutCall(amountIn, path) {
+  const offset   = encodeUint256(0x40n);
+  const lenWord  = encodeUint256(BigInt(path.length));
+  const pathWords = path.map(encodeAddress).join("");
+  return SEL.getAmountsOut
+    + encodeUint256(amountIn)
+    + offset
+    + lenWord
+    + pathWords;
+}
+
+// Decodes getAmountsOut's `uint256[] amounts` return value and returns the
+// LAST element — i.e. the actual output amount for path[path.length-1],
+// which is what matters for minAmountOut. Returns null on any decode
+// failure or empty/reverted result, so callers can fall back to the naive
+// estimate rather than crash.
+export function decodeAmountsOutReturn(hex) {
+  if (!hex || hex === "0x" || hex.length < 2 + 64) return null;
+  try {
+    const clean = hex.replace("0x", "");
+    const len = Number(BigInt("0x" + clean.slice(64, 128)));
+    if (!len) return null;
+    const lastWordStart = 128 + (len - 1) * 64;
+    return BigInt("0x" + clean.slice(lastWordStart, lastWordStart + 64));
+  } catch {
+    return null;
+  }
+}
+
+
 // ViewKeyRegistry.sol — real ECDH P-256 view keys for confidential-send auto-discovery.
 // See contracts/ViewKeyRegistry.sol for full design notes. All four functions below
 // are simple single-arg calls — no nested structs, so encoding is straightforward.
