@@ -1,45 +1,49 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v3.4.2-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v17.1.0-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
-![contracts](https://img.shields.io/badge/Contracts-v3.4.2-4ade80?style=flat-square&labelColor=0a1628)
+![contracts](https://img.shields.io/badge/Contracts-v5.0.0-4ade80?style=flat-square&labelColor=0a1628)
 ![status](https://img.shields.io/badge/status-testnet-4ade80?style=flat-square&labelColor=0a1628)
 
 Confidential on-chain capital management built on **Arc Testnet** (Circle L1, USDC native gas): shield, swap, send, withdraw, and bridge USDC/EURC/cirBTC privately, with protocol-wide note-journal persistence embedded directly in every shielding transaction (v3.4) — no separate broadcast that can silently fail.
 
 ---
 
-## Deployed contracts — Arc Testnet (v3.4.2)
+## Deployed contracts — Arc Testnet (v5.0.0)
 
 Deployer / treasury: `0x1Dc72450B3e2782AcD669D7C27073f2C8F2c9894`
-Deployed: 2026-08-12T04:55:47Z — full protocol redeployment (not a migration; see [Swap decimal-scale fix](#swap-decimal-scale-fix-v342) below).
+Deployed: 2026-08-20T22:23:28Z — full protocol redeployment. **Not a migration** — prior shielded balances stay in the previous `PrivarShieldVault` address and must be withdrawn from there separately.
 
 | Contract | Address | Frontend key (`src/contracts.js`) |
 |---|---|---|
-| **PrivarShieldVault** ⁴ | `0x583118A37deD8F617CDDE07E45dbb1BcdD724928` | `PrivarShieldVault` |
-| PrivarMerkleTreeManager | `0x91450D2D0cabFf4EB8E0ba712e322e1A0523BCEc` | `PrivarMerkleTreeManager` |
-| PrivarNullifierRegistry | `0x0D30e947768c8008CA2d4d0ded98BDc9476f0ecB` | `PrivarNullifierRegistry` |
-| PrivarDepositManager | `0xdf601820Cfb927A74EFAC18D7312D3488301b3AD` | `PrivarDepositManager` |
-| PrivarWithdrawManager | `0x264C32F4bEB3E3e7DFC25E6019A8bDDc75C96222` | `WithdrawalManager` |
-| PrivarStaking (public, no notes — see below) | `0x028D9bF3C0F2F542aC5Da5dD992100CC75A98f3B` | `PrivarStaking` |
-| VerifierZK (Mock¹) | `0x4434d7F436e8C3aA51f2153536814A067F44C1B3` | `MockVerifierZK` |
-| **PrivarCloudVault** ² | `0x5822354636710f2A3ee35798E113cf8223FDBf93` | `PrivarCloudVault` |
-| ViewKeyRegistry (unchanged since v1.0.0) | `0x590D1FDC3FbD4CAb151cb7E1557D9C4ecEa2C24b` | `ViewKeyRegistry` |
-| LiFiPrivacyAdapter (active swap router) | `0x71bb5DA1f496972108128681E7F9a8478679e665` | `LiFiPrivacyAdapter` |
-| LiFiPrivacyBridge ³ | `0xC2bD215b89E4CB4451CE8aA220bAad1DbE1Cc416` | `LiFiPrivacyBridge` |
+| **PrivarShieldVault** | `0x67a3c2aEE021ED109c0F84B5190F7e8DD84c415B` | `PrivarShieldVault` |
+| PrivarMerkleTreeManager | `0x88d80fe571668C569066186DEA23727a36dEc8e3` | `PrivarMerkleTreeManager` |
+| PrivarNullifierRegistry | `0xf0DaCEa8B651BE697DEb9aB83db6F28fAcA8A320` | `PrivarNullifierRegistry` |
+| PrivarVerifierZK (Mock¹) | `0x03B8e2cECf8a5CBf3057BAe83581AcbA7ED38c1C` | *(called internally by the vault — no frontend key)* |
+| PrivarDepositManager | `0x89Ef0d180e33a322e005980f6C41d52ae5e4D6e1` | `PrivarDepositManager` |
+| PrivarWithdrawManager | `0x31E52C3e3c6A4d94efdb787aA6B608cbac125161` | *(called internally by the vault — no frontend key)* |
+| **XyloNetPrivacyAdapter** ⁵ (direct adapter, primary — always deployed) | `0xFf8142AdCaBb4997E248fE0Ca4bFE9FdB9A31693` | `XyloNetPrivacyAdapter` |
+| UniswapPrivacyAdapter (direct adapter, independent — not deployed, `UNISWAP_ROUTER_ADDRESS` unset) | *(null)* | `UniswapPrivacyAdapter` |
+| LiFiPrivacyAdapter (reserve/aggregator, active, non-default) | `0x1A9278097F58f79aa02b8684207FAd29460F13A9` | `LiFiPrivacyAdapter` |
+| LiFiPrivacyBridge ³ | `0x13C01FbefDb92B19403E431Da5670D266550cDf6` | `LiFiPrivacyBridge` |
 | LiFiDiamond | `0xFf70F4A1d11995621854F3692acF286d8aCd04b2` | `LiFiDiamond` |
-| TowerSwapAdapter (documented rollback target, not routed) | `0x162e71EcE67E1F4e9e591571A48CDDf36cADDd5D` | `TowerSwapAdapter` |
+| CurvePrivacyAdapter (reserve, active, empty pool whitelist — see below) | `0x0cd0f3E552081D8d0696062A2bD88b6Bb0f0e001` | `CurvePrivacyAdapter` |
+| PrivarStaking (public, no notes — see below) | `0x08133df916E68b4ac4e9138378D118717Aa85f28` | `PrivarStaking` |
+| **PrivarCloudVault** ² | `0xb3cac16d0388D45ed4b614a162A5890c6658e35F` | `PrivarCloudVault` |
+| ViewKeyRegistry (unchanged since v1.0.0) | `0x590D1FDC3FbD4CAb151cb7E1557D9C4ecEa2C24b` | `ViewKeyRegistry` |
 | USDC (native gas token) | `0x3600000000000000000000000000000000000000` | `NATIVE_USDC` |
 | EURC | `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a` | `EURC` |
 | cirBTC | `0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF` | `cirBTC` |
 | CCTP TokenMessenger | `0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA` | `CCTP_TokenMessenger` |
 
-¹ Testnet only — `MockVerifierZK` accepts all well-formed proofs; not the production Groth16 verifier.
+¹ Testnet only — `PrivarVerifierZK` (Mock) accepts all well-formed proofs; not the production Groth16 verifier.
 ² Standalone, additive deployment — no constructor args, no dependency on ShieldVault or any other contract. ShieldVault's own `NoteJournal` event is the *primary* persistence path for new activity — CloudVault stays deployed for backward compatibility with pre-v3.4 journal entries and as the manual "Sync Notes to Cloud" backfill in Settings.
 ³ Repointed at the new ShieldVault via `setShieldVault()` — logic unchanged since v3.4.0.
-⁴ Redeployed for v3.4.2 — fixes a decimal-scale accounting bug on swaps landing in native USDC. See [Swap decimal-scale fix](#swap-decimal-scale-fix-v342) below.
+⁵ New in v5.0.0 — dedicated, independent adapter for XyloRouter (XyloNet's own Uniswap V2-compatible router). Fully separate contract/whitelist entry from `UniswapPrivacyAdapter` — see the contracts repo's `XyloNetPrivacyAdapter.sol` doc comment and its [v4.0.0 → v5.0.0 changes](../privar-contracts-v3.4/README.md#v400--v500-changes) section.
+
+`TowerSwapAdapter` (the simulated/self-funded rollback target referenced in earlier versions) was removed in v4.0.0 and is no longer part of the stack — a real direct adapter (`XyloNetPrivacyAdapter`) is guaranteed deployed instead, so there's no more single-point-of-failure risk on LI.FI.
 
 All fallback addresses are hardcoded in `src/contracts.js` and can be overridden per-deployment with `VITE_*` env vars (Vercel) without touching code.
 
@@ -197,7 +201,14 @@ Override any address via Vercel env vars (`VITE_SHIELD_VAULT`, `VITE_CLOUD_VAULT
 
 ## Changelog
 
-### v3.4.2 (current) — full protocol redeployment, swap decimal-scale fix
+### v17.1.0 (current) — Liquidity Engine: direct adapters primary, LI.FI/Curve reserve
+- Swap routing reordered to match the `PrivateSwapRouter` architecture: **direct adapters** (`XyloNetPrivacyAdapter`, then `UniswapPrivacyAdapter`) are now tried first — on-chain, deterministic pricing, no off-chain quote round-trip — before falling back to the **reserve/aggregator** pair (`LiFiPrivacyAdapter`, then `CurvePrivacyAdapter`), which stay fully active and whitelisted but are only reached dynamically when no direct adapter covers the pair
+- `XyloNetPrivacyAdapter` added to `src/contracts.js` — new, independent contract from `UniswapPrivacyAdapter` (see contracts repo)
+- Synced against contracts `v5.0.0` (`deployments/latest.json`) — real deployed addresses for `PrivarShieldVault`, `XyloNetPrivacyAdapter`, `LiFiPrivacyAdapter`/`Bridge`, `CurvePrivacyAdapter`, `PrivarStaking`, `PrivarCloudVault`, infra managers
+- Theme system (`src/theme.js`, `ThemeProvider`) and mobile-responsive layout (collapsible sidebar below 720px) — visual/UX only, no protocol logic touched
+- Not a migration — v4.0.0 shielded balances remain in the prior `PrivarShieldVault` address
+
+### v3.4.2 — full protocol redeployment, swap decimal-scale fix
 - **Fixed a real accounting bug**: `_privateSwap()` credited `totalShieldedByToken[tokenOut]` and the re-shielded note with the raw 6-decimal ERC20-pseudo-view `amountOut` whenever `tokenOut == NATIVE_USDC`, instead of the native 18-decimal scale used everywhere else for that token — confirmed on-chain via `feesCollectedByToken(NATIVE_USDC) = 150104000000000000` (native 18-dec) vs `totalShieldedByToken(NATIVE_USDC) = 3085477` (raw 6-dec) for the same token. Every swap landing in native USDC credited ~10⁻¹² of what was actually received. See [Swap decimal-scale fix](#swap-decimal-scale-fix-v342) above.
 - Frontend: swap flow now mirrors the same `*1e12` scaling when journaling the new note locally (`noteAmountOut`), keeping client-side notes consistent with the on-chain ledger for native-USDC swap outputs
 - Frontend: MAX-amount buttons (swap/send/withdraw/bridge) now use the exact raw note balance instead of a 2-decimal-rounded display value, and the note-selection fallback now actually clamps the requested amount to the note's real balance instead of only promising to in a comment — both were causing spurious `ERC20: transfer amount exceeds balance` reverts independent of the decimal-scale bug above

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, createContext, useContext, useMemo } from "react";
+import { useTheme, cssVars, THEMES } from "./theme.js";
 import {
   CONTRACTS, TOKENS, TOKEN_LIST, SEL, CCTP_DOMAINS,
   NATIVE_USDC, NATIVE_TO_ERC20, ARC_CHAIN_ID,
@@ -445,16 +446,20 @@ const WALLETS = [
 /* ═══════════════════════════════════════════════════════════════
    HEX GRID BACKGROUND
 ═══════════════════════════════════════════════════════════════ */
-function HexGrid() {
+function HexGrid({ theme }) {
   const ref = useRef(null);
   useEffect(() => {
     const c = ref.current, ctx = c.getContext("2d"); let raf, t = 0;
     const rz = () => { c.width = window.innerWidth; c.height = window.innerHeight; };
     rz(); window.addEventListener("resize", rz);
+    const accentRgb = theme?.accentRgb || "0,255,176";
+    const gradA = theme?.bgGradA || "rgba(0,18,10,1)";
+    const gradB = theme?.bgGradB || "rgba(0,6,4,1)";
+    const scanAlpha = theme?.id === "light" ? ".02" : ".05";
     const draw = () => {
       t += 0.007; ctx.clearRect(0, 0, c.width, c.height);
       const g = ctx.createRadialGradient(c.width*.5, c.height*.4, 0, c.width*.5, c.height*.4, c.width*.7);
-      g.addColorStop(0, "rgba(0,18,10,1)"); g.addColorStop(1, "rgba(0,6,4,1)");
+      g.addColorStop(0, gradA); g.addColorStop(1, gradB);
       ctx.fillStyle = g; ctx.fillRect(0, 0, c.width, c.height);
       const R = 36, cols = Math.ceil(c.width / (R * 1.73)) + 2, rows = Math.ceil(c.height / (R * 1.5)) + 2;
       for (let row = -1; row < rows; row++) {
@@ -471,15 +476,15 @@ function HexGrid() {
                     : ctx.lineTo(x + R*.95*Math.cos(ag), y + R*.95*Math.sin(ag));
           }
           ctx.closePath();
-          if (alpha > .16) { ctx.fillStyle = `rgba(0,255,160,${alpha*.05})`; ctx.fill(); }
-          ctx.strokeStyle = `rgba(0,255,180,${alpha})`; ctx.lineWidth = .5; ctx.stroke();
+          if (alpha > .16) { ctx.fillStyle = `rgba(${accentRgb},${alpha*.05})`; ctx.fill(); }
+          ctx.strokeStyle = `rgba(${accentRgb},${alpha})`; ctx.lineWidth = .5; ctx.stroke();
         }
       }
-      for (let y = 0; y < c.height; y += 3) { ctx.fillStyle = "rgba(0,0,0,.05)"; ctx.fillRect(0, y, c.width, 1); }
+      for (let y = 0; y < c.height; y += 3) { ctx.fillStyle = `rgba(0,0,0,${scanAlpha})`; ctx.fillRect(0, y, c.width, 1); }
       raf = requestAnimationFrame(draw);
     };
     draw(); return () => { cancelAnimationFrame(raf); window.removeEventListener("resize", rz); };
-  }, []);
+  }, [theme?.id]);
   return <canvas ref={ref} style={{ position:"fixed", inset:0, zIndex:0, pointerEvents:"none" }} />;
 }
 
@@ -729,23 +734,23 @@ const IG = ({ items }) => (
 function TxToast({ tx, onClose }) {
   useEffect(() => { if (tx?.status==="success"||tx?.status==="error") { const id=setTimeout(onClose,8000); return()=>clearTimeout(id); } }, [tx]);
   if (!tx) return null;
-  const C = { pending:"#F59E0B", success:"#00FFB0", error:"#f87171" };
+  const C = { pending:"var(--warn)", success:"var(--accent)", error:"var(--danger)" };
   const I = { pending:"⏳", success:"✓", error:"✕" };
   return (
-    <div style={{ position:"fixed", bottom:20, right:20, zIndex:500, background:"rgba(0,8,5,.97)", border:`1px solid ${C[tx.status]}33`, borderRadius:5, padding:"12px 16px", minWidth:300, maxWidth:360, fontFamily:"monospace", animation:"fu .3s ease", backdropFilter:"blur(12px)", boxShadow:`0 0 24px ${C[tx.status]}15` }}>
+    <div style={{ position:"fixed", bottom:20, right:20, zIndex:500, background:"rgba(var(--panel-rgb),.97)", border:`1px solid ${C[tx.status]}33`, borderRadius:5, padding:"12px 16px", minWidth:300, maxWidth:360, fontFamily:"monospace", animation:"fu .3s ease", backdropFilter:"blur(12px)", boxShadow:`0 0 24px ${C[tx.status]}15` }}>
       <div style={{ display:"flex", alignItems:"flex-start", gap:10 }}>
         <span style={{ fontSize:14, color:C[tx.status], flexShrink:0 }}>{I[tx.status]}</span>
         <div style={{ flex:1 }}>
           <div style={{ fontSize:11, color:C[tx.status], fontWeight:700, letterSpacing:".08em", marginBottom:3 }}>{tx.label}</div>
-          <div style={{ fontSize:9, color:"#94a3b8", lineHeight:1.5 }}>{tx.message}</div>
+          <div style={{ fontSize:9, color:"var(--text-dim)", lineHeight:1.5 }}>{tx.message}</div>
           {tx.hash && (
             <a href={`${ARC_TESTNET.explorer}/tx/${tx.hash}`} target="_blank" rel="noreferrer"
-              style={{ fontSize:8, color:"#00FFB0", textDecoration:"none", display:"block", marginTop:3 }}>
+              style={{ fontSize:8, color:"var(--accent)", textDecoration:"none", display:"block", marginTop:3 }}>
               {tx.hash.slice(0,20)}···  ↗ ARCScan
             </a>
           )}
         </div>
-        <button onClick={onClose} style={{ background:"none", border:"none", color:"#64748b", cursor:"pointer", fontSize:11, padding:0 }}>✕</button>
+        <button onClick={onClose} style={{ background:"none", border:"none", color:"var(--text-dim2)", cursor:"pointer", fontSize:11, padding:0 }}>✕</button>
       </div>
     </div>
   );
@@ -756,33 +761,33 @@ function TxToast({ tx, onClose }) {
 ═══════════════════════════════════════════════════════════════ */
 function NotifCenter({ onClose }) {
   const { notifs, markRead, clearAll } = useNotif();
-  const C = { info:"#0EA5E9", success:"#00FFB0", warn:"#F59E0B", error:"#f87171" };
+  const C = { info:"var(--blue)", success:"var(--accent)", warn:"var(--warn)", error:"var(--danger)" };
   return (
-    <div style={{ position:"absolute", top:44, right:12, width:310, background:"rgba(0,8,5,.98)", border:"1px solid rgba(0,255,176,.2)", borderRadius:5, zIndex:200, boxShadow:"0 20px 60px rgba(0,0,0,.9)", animation:"fu .2s ease" }}>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 14px 8px", borderBottom:"1px solid rgba(0,255,176,.08)" }}>
-        <span style={{ fontSize:9, color:"#ffffff", fontFamily:"monospace", letterSpacing:".15em", fontWeight:700 }}>NOTIFICATIONS</span>
-        <button onClick={clearAll} style={{ fontSize:8, color:"#64748b", background:"none", border:"none", cursor:"pointer", fontFamily:"monospace", transition:"color .2s" }} onMouseEnter={e=>e.target.style.color="#f87171"} onMouseLeave={e=>e.target.style.color="#64748b"}>CLEAR ALL</button>
+    <div style={{ position:"absolute", top:44, right:12, width:310, background:"rgba(var(--panel-rgb),.98)", border:"1px solid rgba(var(--accent-rgb),.2)", borderRadius:5, zIndex:200, boxShadow:"0 20px 60px rgba(0,0,0,.9)", animation:"fu .2s ease" }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"10px 14px 8px", borderBottom:"1px solid rgba(var(--accent-rgb),.08)" }}>
+        <span style={{ fontSize:9, color:"var(--text)", fontFamily:"monospace", letterSpacing:".15em", fontWeight:700 }}>NOTIFICATIONS</span>
+        <button onClick={clearAll} style={{ fontSize:8, color:"var(--text-dim2)", background:"none", border:"none", cursor:"pointer", fontFamily:"monospace", transition:"color .2s" }} onMouseEnter={e=>e.target.style.color="var(--danger)"} onMouseLeave={e=>e.target.style.color="var(--text-dim2)"}>CLEAR ALL</button>
       </div>
       <div style={{ maxHeight:280, overflow:"auto" }}>
         {notifs.length === 0
-          ? <div style={{ padding:"18px 14px", textAlign:"center", fontSize:9, color:"#334155", fontFamily:"monospace" }}>No notifications</div>
+          ? <div style={{ padding:"18px 14px", textAlign:"center", fontSize:9, color:"var(--text-faint2)", fontFamily:"monospace" }}>No notifications</div>
           : [...notifs].reverse().map(n => (
-            <div key={n.id} onClick={() => markRead(n.id)} style={{ padding:"9px 14px", borderBottom:"1px solid rgba(0,255,176,.04)", cursor:"pointer", background:n.read?"transparent":"rgba(0,255,176,.02)", transition:"background .2s" }}
-              onMouseEnter={e=>e.currentTarget.style.background="rgba(0,255,176,.05)"}
-              onMouseLeave={e=>e.currentTarget.style.background=n.read?"transparent":"rgba(0,255,176,.02)"}>
+            <div key={n.id} onClick={() => markRead(n.id)} style={{ padding:"9px 14px", borderBottom:"1px solid rgba(var(--accent-rgb),.04)", cursor:"pointer", background:n.read?"transparent":"rgba(var(--accent-rgb),.02)", transition:"background .2s" }}
+              onMouseEnter={e=>e.currentTarget.style.background="rgba(var(--accent-rgb),.05)"}
+              onMouseLeave={e=>e.currentTarget.style.background=n.read?"transparent":"rgba(var(--accent-rgb),.02)"}>
               <div style={{ display:"flex", alignItems:"flex-start", gap:8 }}>
-                <div style={{ width:5, height:5, borderRadius:"50%", background:C[n.type]||"#00FFB0", flexShrink:0, marginTop:3 }} />
+                <div style={{ width:5, height:5, borderRadius:"50%", background:C[n.type]||"var(--accent)", flexShrink:0, marginTop:3 }} />
                 <div style={{ flex:1 }}>
                   <div style={{ fontSize:10, color:"#e2e8f0", fontFamily:"monospace", lineHeight:1.4 }}>{n.msg}</div>
-                  {n.link && <a href={n.link} target="_blank" rel="noreferrer" style={{ fontSize:8, color:"#00FFB0", fontFamily:"monospace", textDecoration:"none" }}>ARCScan ↗</a>}
-                  <div style={{ fontSize:8, color:"#4a7c5f", fontFamily:"monospace", marginTop:2 }}>{n.ts}</div>
+                  {n.link && <a href={n.link} target="_blank" rel="noreferrer" style={{ fontSize:8, color:"var(--accent)", fontFamily:"monospace", textDecoration:"none" }}>ARCScan ↗</a>}
+                  <div style={{ fontSize:8, color:"var(--text-faint)", fontFamily:"monospace", marginTop:2 }}>{n.ts}</div>
                 </div>
               </div>
             </div>
           ))}
       </div>
-      <div style={{ padding:"8px 14px", borderTop:"1px solid rgba(0,255,176,.06)" }}>
-        <button onClick={onClose} style={{ width:"100%", padding:"6px 0", background:"transparent", border:"1px solid rgba(0,255,176,.12)", borderRadius:3, color:"#64748b", fontSize:8, cursor:"pointer", fontFamily:"monospace", transition:"all .2s" }} onMouseEnter={e=>{e.currentTarget.style.borderColor="rgba(0,255,176,.3)";e.currentTarget.style.color="#ffffff";}} onMouseLeave={e=>{e.currentTarget.style.borderColor="rgba(0,255,176,.12)";e.currentTarget.style.color="#64748b";}}>CLOSE</button>
+      <div style={{ padding:"8px 14px", borderTop:"1px solid rgba(var(--accent-rgb),.06)" }}>
+        <button onClick={onClose} style={{ width:"100%", padding:"6px 0", background:"transparent", border:"1px solid rgba(var(--accent-rgb),.12)", borderRadius:3, color:"var(--text-dim2)", fontSize:8, cursor:"pointer", fontFamily:"monospace", transition:"all .2s" }} onMouseEnter={e=>{e.currentTarget.style.borderColor="rgba(var(--accent-rgb),.3)";e.currentTarget.style.color="var(--text)";}} onMouseLeave={e=>{e.currentTarget.style.borderColor="rgba(var(--accent-rgb),.12)";e.currentTarget.style.color="var(--text-dim2)";}}>CLOSE</button>
       </div>
     </div>
   );
@@ -812,22 +817,22 @@ function GlobalSearch({ onSelect, onClose }) {
   const results = q.trim() ? SIDX.filter(i => i.label.toLowerCase().includes(q.toLowerCase())||i.desc.toLowerCase().includes(q.toLowerCase())) : SIDX;
   return (
     <div onClick={e=>e.target===e.currentTarget&&onClose()} style={{ position:"fixed", inset:0, zIndex:400, background:"rgba(0,0,0,.75)", backdropFilter:"blur(8px)", display:"flex", alignItems:"flex-start", justifyContent:"center", paddingTop:80 }}>
-      <div style={{ width:"100%", maxWidth:500, background:"rgba(0,8,5,.98)", border:"1px solid rgba(0,255,176,.25)", borderRadius:6, overflow:"hidden", boxShadow:"0 30px 80px rgba(0,0,0,.9)", animation:"fu .2s ease" }}>
-        <div style={{ display:"flex", alignItems:"center", gap:10, padding:"12px 16px", borderBottom:"1px solid rgba(0,255,176,.08)" }}>
-          <span style={{ color:"#64748b", fontSize:16 }}>⌕</span>
+      <div style={{ width:"100%", maxWidth:500, background:"rgba(var(--panel-rgb),.98)", border:"1px solid rgba(var(--accent-rgb),.25)", borderRadius:6, overflow:"hidden", boxShadow:"0 30px 80px rgba(0,0,0,.9)", animation:"fu .2s ease" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10, padding:"12px 16px", borderBottom:"1px solid rgba(var(--accent-rgb),.08)" }}>
+          <span style={{ color:"var(--text-dim2)", fontSize:16 }}>⌕</span>
           <input ref={ref} value={q} onChange={e=>setQ(e.target.value)} placeholder="Search panels, features..."
-            style={{ flex:1, background:"none", border:"none", outline:"none", color:"#ffffff", fontSize:13, fontFamily:"monospace" }}
+            style={{ flex:1, background:"none", border:"none", outline:"none", color:"var(--text)", fontSize:13, fontFamily:"monospace" }}
             onKeyDown={e=>{if(e.key==="Escape")onClose();if(e.key==="Enter"&&results[0])onSelect(results[0].panel);}} />
-          <button onClick={onClose} style={{ color:"#64748b", background:"none", border:"none", cursor:"pointer", fontSize:11, fontFamily:"monospace" }}>ESC</button>
+          <button onClick={onClose} style={{ color:"var(--text-dim2)", background:"none", border:"none", cursor:"pointer", fontSize:11, fontFamily:"monospace" }}>ESC</button>
         </div>
         <div style={{ maxHeight:380, overflow:"auto" }}>
           {results.map((r,i) => (
-            <div key={i} onClick={()=>onSelect(r.panel)} style={{ display:"flex", alignItems:"center", gap:12, padding:"10px 16px", cursor:"pointer", borderBottom:"1px solid rgba(0,255,176,.04)", transition:"background .15s" }}
-              onMouseEnter={e=>e.currentTarget.style.background="rgba(0,255,176,.06)"}
+            <div key={i} onClick={()=>onSelect(r.panel)} style={{ display:"flex", alignItems:"center", gap:12, padding:"10px 16px", cursor:"pointer", borderBottom:"1px solid rgba(var(--accent-rgb),.04)", transition:"background .15s" }}
+              onMouseEnter={e=>e.currentTarget.style.background="rgba(var(--accent-rgb),.06)"}
               onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
               <span style={{ fontSize:18, flexShrink:0 }}>{r.icon}</span>
-              <div><div style={{ fontSize:11, color:"#ffffff", fontFamily:"monospace", fontWeight:700 }}>{r.label}</div><div style={{ fontSize:9, color:"#64748b", fontFamily:"monospace", marginTop:1 }}>{r.desc}</div></div>
-              <span style={{ marginLeft:"auto", fontSize:10, color:"#334155", fontFamily:"monospace" }}>→</span>
+              <div><div style={{ fontSize:11, color:"var(--text)", fontFamily:"monospace", fontWeight:700 }}>{r.label}</div><div style={{ fontSize:9, color:"var(--text-dim2)", fontFamily:"monospace", marginTop:1 }}>{r.desc}</div></div>
+              <span style={{ marginLeft:"auto", fontSize:10, color:"var(--text-faint2)", fontFamily:"monospace" }}>→</span>
             </div>
           ))}
         </div>
@@ -843,34 +848,34 @@ function GlobalSearch({ onSelect, onClose }) {
 ═══════════════════════════════════════════════════════════════ */
 function MobileNavMenu({ nav, panel, setPanel, onClose, onArc, account }) {
   return (
-    <div style={{ position:"fixed", inset:0, zIndex:400, background:"#000A06", overflowY:"auto", animation:"fu .2s ease" }}>
-      <div style={{ height:52, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 16px", borderBottom:"1px solid rgba(0,255,176,.1)" }}>
+    <div style={{ position:"fixed", inset:0, zIndex:400, background:"var(--bg)", overflowY:"auto", animation:"fu .2s ease" }}>
+      <div style={{ height:52, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 16px", borderBottom:"1px solid rgba(var(--accent-rgb),.1)" }}>
         <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-          <div style={{ width:26, height:26, border:"1.5px solid #00FFB0", borderRadius:3, display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, color:"#00FFB0" }}>◈</div>
-          <Glitch text="privar" style={{ fontSize:14, fontWeight:800, color:"#00FFB0", fontFamily:"'Syne',sans-serif" }}/>
+          <div style={{ width:26, height:26, border:"1.5px solid var(--accent)", borderRadius:3, display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, color:"var(--accent)" }}>◈</div>
+          <Glitch text="privar" style={{ fontSize:14, fontWeight:800, color:"var(--accent)", fontFamily:"'Syne',sans-serif" }}/>
         </div>
-        <button onClick={onClose} aria-label="Close menu" style={{ width:32, height:32, background:"rgba(0,255,176,.06)", border:"1px solid rgba(0,255,176,.25)", borderRadius:4, color:"#00FFB0", fontSize:15, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>✕</button>
+        <button onClick={onClose} aria-label="Close menu" style={{ width:32, height:32, background:"rgba(var(--accent-rgb),.06)", border:"1px solid rgba(var(--accent-rgb),.25)", borderRadius:4, color:"var(--accent)", fontSize:15, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center" }}>✕</button>
       </div>
 
       <div style={{ padding:"14px 16px 40px" }}>
         <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:16 }}>
-          <span style={{ width:7, height:7, borderRadius:"50%", background:onArc?"#00FFB0":"#f87171", boxShadow:onArc?"0 0 6px #00FFB0":"0 0 6px #f87171" }}/>
-          <span style={{ fontSize:9, color:"#64748b", fontFamily:"monospace", letterSpacing:".1em" }}>{onArc?"ARC TESTNET":"WRONG NETWORK"}</span>
-          {account?.address && <span style={{ fontSize:9, color:"#4a7c5f", fontFamily:"monospace", marginLeft:"auto" }}>{sh(account.address)}</span>}
+          <span style={{ width:7, height:7, borderRadius:"50%", background:onArc?"var(--accent)":"var(--danger)", boxShadow:onArc?"0 0 6px var(--accent)":"0 0 6px var(--danger)" }}/>
+          <span style={{ fontSize:9, color:"var(--text-dim2)", fontFamily:"monospace", letterSpacing:".1em" }}>{onArc?"ARC TESTNET":"WRONG NETWORK"}</span>
+          {account?.address && <span style={{ fontSize:9, color:"var(--text-faint)", fontFamily:"monospace", marginLeft:"auto" }}>{sh(account.address)}</span>}
         </div>
 
         {nav.map((n, i) => n === null
-          ? <div key={i} style={{ height:1, background:"rgba(0,255,176,.08)", margin:"10px 0" }} />
+          ? <div key={i} style={{ height:1, background:"rgba(var(--accent-rgb),.08)", margin:"10px 0" }} />
           : (
             <button key={n.id} onClick={() => { setPanel(n.id); onClose(); }} style={{
               width:"100%", display:"flex", alignItems:"center", gap:14,
-              background: panel===n.id ? "rgba(0,255,176,.08)" : "none",
-              border: panel===n.id ? "1px solid rgba(0,255,176,.25)" : "1px solid transparent",
+              background: panel===n.id ? "rgba(var(--accent-rgb),.08)" : "none",
+              border: panel===n.id ? "1px solid rgba(var(--accent-rgb),.25)" : "1px solid transparent",
               borderRadius:6, padding:"13px 12px", marginBottom:4, cursor:"pointer", textAlign:"left",
             }}>
               <span style={{ fontSize:17, flexShrink:0 }}>{n.icon}</span>
-              <span style={{ fontSize:14, color: panel===n.id ? "#00FFB0" : "#e2e8f0", fontFamily:"'Syne',sans-serif", fontWeight:700 }}>{n.label}</span>
-              {panel===n.id && <span style={{ marginLeft:"auto", fontSize:9, color:"#00FFB0", fontFamily:"monospace" }}>● ACTIVE</span>}
+              <span style={{ fontSize:14, color: panel===n.id ? "var(--accent)" : "var(--text)", fontFamily:"'Syne',sans-serif", fontWeight:700 }}>{n.label}</span>
+              {panel===n.id && <span style={{ marginLeft:"auto", fontSize:9, color:"var(--accent)", fontFamily:"monospace" }}>● ACTIVE</span>}
             </button>
           )
         )}
@@ -885,19 +890,19 @@ function MobileNavMenu({ nav, panel, setPanel, onClose, onArc, account }) {
 function DisconnectModal({ onConfirm, onCancel, walletName, address }) {
   return (
     <div onClick={e=>e.target===e.currentTarget&&onCancel()} style={{ position:"fixed", inset:0, zIndex:300, background:"rgba(0,0,0,.8)", backdropFilter:"blur(8px)", display:"flex", alignItems:"center", justifyContent:"center", padding:16, animation:"fi .2s ease" }}>
-      <div style={{ width:"100%", maxWidth:360, background:"rgba(0,8,5,.97)", border:"1px solid rgba(239,68,68,.25)", borderRadius:6, padding:"24px 24px 20px", boxShadow:"0 0 40px rgba(239,68,68,.1)", animation:"fu .25s ease" }}>
+      <div style={{ width:"100%", maxWidth:360, background:"rgba(var(--panel-rgb),.97)", border:"1px solid rgba(239,68,68,.25)", borderRadius:6, padding:"24px 24px 20px", boxShadow:"0 0 40px rgba(239,68,68,.1)", animation:"fu .25s ease" }}>
         <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:14 }}>
           <div style={{ width:36, height:36, borderRadius:"50%", background:"rgba(239,68,68,.1)", border:"1px solid rgba(239,68,68,.3)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:16 }}>⚠</div>
           <div>
-            <div style={{ fontSize:14, color:"#ffffff", fontFamily:"monospace", fontWeight:700 }}>Disconnect Wallet</div>
-            <div style={{ fontSize:9, color:"#64748b", fontFamily:"monospace", marginTop:1 }}>{walletName} · {sh(address)}</div>
+            <div style={{ fontSize:14, color:"var(--text)", fontFamily:"monospace", fontWeight:700 }}>Disconnect Wallet</div>
+            <div style={{ fontSize:9, color:"var(--text-dim2)", fontFamily:"monospace", marginTop:1 }}>{walletName} · {sh(address)}</div>
           </div>
         </div>
-        <p style={{ fontSize:11, color:"#94a3b8", fontFamily:"monospace", lineHeight:1.6, marginBottom:20 }}>You will be logged out of Privar OS. Your on-chain assets on Arc Testnet remain safe.</p>
+        <p style={{ fontSize:11, color:"var(--text-dim)", fontFamily:"monospace", lineHeight:1.6, marginBottom:20 }}>You will be logged out of Privar OS. Your on-chain assets on Arc Testnet remain safe.</p>
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
-          <button onClick={onCancel} style={{ padding:"10px 0", background:"transparent", border:"1px solid rgba(0,255,176,.15)", borderRadius:3, color:"#94a3b8", fontSize:10, cursor:"pointer", fontFamily:"monospace", letterSpacing:".1em", transition:"all .2s" }}
-            onMouseEnter={e=>{e.currentTarget.style.borderColor="rgba(0,255,176,.4)";e.currentTarget.style.color="#ffffff";}}
-            onMouseLeave={e=>{e.currentTarget.style.borderColor="rgba(0,255,176,.15)";e.currentTarget.style.color="#94a3b8";}}>CANCEL</button>
+          <button onClick={onCancel} style={{ padding:"10px 0", background:"transparent", border:"1px solid rgba(var(--accent-rgb),.15)", borderRadius:3, color:"var(--text-dim)", fontSize:10, cursor:"pointer", fontFamily:"monospace", letterSpacing:".1em", transition:"all .2s" }}
+            onMouseEnter={e=>{e.currentTarget.style.borderColor="rgba(var(--accent-rgb),.4)";e.currentTarget.style.color="var(--text)";}}
+            onMouseLeave={e=>{e.currentTarget.style.borderColor="rgba(var(--accent-rgb),.15)";e.currentTarget.style.color="var(--text-dim)";}}>CANCEL</button>
           <button onClick={onConfirm} style={{ padding:"10px 0", background:"rgba(239,68,68,.1)", border:"1px solid rgba(239,68,68,.4)", borderRadius:3, color:"#f87171", fontSize:10, fontWeight:700, cursor:"pointer", fontFamily:"monospace", letterSpacing:".1em", transition:"all .2s" }}
             onMouseEnter={e=>e.currentTarget.style.background="rgba(239,68,68,.2)"}
             onMouseLeave={e=>e.currentTarget.style.background="rgba(239,68,68,.1)"}>⟶ DISCONNECT</button>
@@ -1431,22 +1436,22 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
 
       {/* Sidebar — desktop/tablet only; collapses to a hamburger + MobileNavMenu below MOBILE_BREAKPOINT */}
       {!isMobile && (
-        <div style={{ width:52, flexShrink:0, background:"rgba(0,5,3,.96)", borderRight:"1px solid rgba(0,255,176,.08)", display:"flex", flexDirection:"column", alignItems:"center", paddingTop:12, paddingBottom:12, gap:1 }}>
-          <div style={{ width:30, height:30, border:"1.5px solid #00FFB0", borderRadius:3, display:"flex", alignItems:"center", justifyContent:"center", fontSize:14, color:"#00FFB0", boxShadow:"0 0 10px rgba(0,255,176,.2)", marginBottom:9 }}>◈</div>
-          <div style={{ width:26, height:1, background:"rgba(0,255,176,.1)", marginBottom:5 }}/>
+        <div style={{ width:52, flexShrink:0, background:"rgba(var(--panel-rgb),.96)", borderRight:"1px solid rgba(var(--accent-rgb),.08)", display:"flex", flexDirection:"column", alignItems:"center", paddingTop:12, paddingBottom:12, gap:1 }}>
+          <div style={{ width:30, height:30, border:"1.5px solid var(--accent)", borderRadius:3, display:"flex", alignItems:"center", justifyContent:"center", fontSize:14, color:"var(--accent)", boxShadow:"0 0 10px rgba(var(--accent-rgb),.2)", marginBottom:9 }}>◈</div>
+          <div style={{ width:26, height:1, background:"rgba(var(--accent-rgb),.1)", marginBottom:5 }}/>
           {NAV.map((n, i) => n===null
-            ? <div key={i} style={{ width:24, height:1, background:"rgba(0,255,176,.06)", margin:"3px 0" }}/>
+            ? <div key={i} style={{ width:24, height:1, background:"rgba(var(--accent-rgb),.06)", margin:"3px 0" }}/>
             : <button key={n.id} onClick={()=>setPanel(n.id)} title={n.label}
-                style={{ width:36, height:33, background:panel===n.id?"rgba(0,255,176,.12)":"transparent", border:`1px solid ${panel===n.id?"rgba(0,255,176,.3)":"transparent"}`, borderRadius:4, cursor:"pointer", color:panel===n.id?"#00FFB0":"#4a7c5f", fontSize:14, display:"flex", alignItems:"center", justifyContent:"center", transition:"all .2s", flexShrink:0 }}
-                onMouseEnter={e=>{if(panel!==n.id){e.currentTarget.style.background="rgba(0,255,176,.06)";e.currentTarget.style.color="#94a3b8";}}}
-                onMouseLeave={e=>{if(panel!==n.id){e.currentTarget.style.background="transparent";e.currentTarget.style.color="#4a7c5f";}}}>
+                style={{ width:36, height:33, background:panel===n.id?"rgba(var(--accent-rgb),.12)":"transparent", border:`1px solid ${panel===n.id?"rgba(var(--accent-rgb),.3)":"transparent"}`, borderRadius:4, cursor:"pointer", color:panel===n.id?"var(--accent)":"var(--text-faint)", fontSize:14, display:"flex", alignItems:"center", justifyContent:"center", transition:"all .2s", flexShrink:0 }}
+                onMouseEnter={e=>{if(panel!==n.id){e.currentTarget.style.background="rgba(var(--accent-rgb),.06)";e.currentTarget.style.color="var(--text-dim)";}}}
+                onMouseLeave={e=>{if(panel!==n.id){e.currentTarget.style.background="transparent";e.currentTarget.style.color="var(--text-faint)";}}}>
                 {n.icon}
               </button>
           )}
           <div style={{ flex:1 }}/>
           {/* Network indicator */}
-          <div style={{ width:7, height:7, borderRadius:"50%", background:onArc?"#00FFB0":"#f87171", boxShadow:onArc?"0 0 6px #00FFB0":"0 0 6px #f87171", animation:"pulse 2s infinite", marginBottom:3 }}/>
-          <div style={{ fontSize:7, color:onArc?"#4a7c5f":"#64748b", fontFamily:"monospace", letterSpacing:".04em" }}>{onArc?"TEST":"WRONG"}</div>
+          <div style={{ width:7, height:7, borderRadius:"50%", background:onArc?"var(--accent)":"var(--danger)", boxShadow:onArc?"0 0 6px var(--accent)":"0 0 6px var(--danger)", animation:"pulse 2s infinite", marginBottom:3 }}/>
+          <div style={{ fontSize:7, color:onArc?"var(--text-faint)":"var(--text-dim2)", fontFamily:"monospace", letterSpacing:".04em" }}>{onArc?"TEST":"WRONG"}</div>
         </div>
       )}
 
@@ -1456,46 +1461,46 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
         <PriceTicker prices={prices} changes={changes} change24h={change24h} lastUpdate={lastUpdate} priceError={priceError}/>
 
         {/* Top bar */}
-        <div style={{ height:40, flexShrink:0, background:"rgba(0,5,3,.96)", borderBottom:"1px solid rgba(0,255,176,.08)", display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 14px", position:"relative" }}>
+        <div style={{ height:40, flexShrink:0, background:"rgba(var(--panel-rgb),.96)", borderBottom:"1px solid rgba(var(--accent-rgb),.08)", display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 14px", position:"relative" }}>
           <div style={{ display:"flex", alignItems:"center", gap:8 }}>
             {isMobile && (
-              <button onClick={()=>setMobileNavOpen(true)} aria-label="Open menu" style={{ width:26, height:26, background:"rgba(0,255,176,.08)", border:"1px solid rgba(0,255,176,.2)", borderRadius:3, color:"#00FFB0", fontSize:13, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", marginRight:2, flexShrink:0 }}>
+              <button onClick={()=>setMobileNavOpen(true)} aria-label="Open menu" style={{ width:26, height:26, background:"rgba(var(--accent-rgb),.08)", border:"1px solid rgba(var(--accent-rgb),.2)", borderRadius:3, color:"var(--accent)", fontSize:13, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", marginRight:2, flexShrink:0 }}>
                 ☰
               </button>
             )}
-            <Glitch text="privar" style={{ fontSize:14, fontWeight:800, color:"#00FFB0", fontFamily:"'Syne',sans-serif" }}/>
-            {!isMobile && <span style={{ fontSize:7, color:"#4a7c5f", fontFamily:"monospace", letterSpacing:".1em" }}>OS v12.0</span>}
-            <span style={{ fontSize:7, background:"rgba(0,255,176,.08)", border:"1px solid rgba(0,255,176,.18)", borderRadius:2, padding:"1px 5px", color:"#00FFB0", fontFamily:"monospace" }}>
+            <Glitch text="privar" style={{ fontSize:14, fontWeight:800, color:"var(--accent)", fontFamily:"'Syne',sans-serif" }}/>
+            {!isMobile && <span style={{ fontSize:7, color:"var(--text-faint)", fontFamily:"monospace", letterSpacing:".1em" }}>OS v12.0</span>}
+            <span style={{ fontSize:7, background:"rgba(var(--accent-rgb),.08)", border:"1px solid rgba(var(--accent-rgb),.18)", borderRadius:2, padding:"1px 5px", color:"var(--accent)", fontFamily:"monospace" }}>
               {isMobile ? (onArc?"ARC":"WRONG") : (onArc?"ARC TESTNET":"WRONG NETWORK")}
             </span>
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:isMobile?6:8 }}>
             {/* Search */}
             {!isMobile && (
-              <button onClick={()=>setShowSearch(true)} style={{ display:"flex", alignItems:"center", gap:5, background:"rgba(0,0,0,.4)", border:"1px solid rgba(0,255,176,.12)", borderRadius:3, padding:"3px 10px", cursor:"pointer", color:"#64748b", fontSize:9, fontFamily:"monospace", transition:"all .2s" }}
-                onMouseEnter={e=>{e.currentTarget.style.borderColor="rgba(0,255,176,.35)";e.currentTarget.style.color="#ffffff";}}
-                onMouseLeave={e=>{e.currentTarget.style.borderColor="rgba(0,255,176,.12)";e.currentTarget.style.color="#64748b";}}>
+              <button onClick={()=>setShowSearch(true)} style={{ display:"flex", alignItems:"center", gap:5, background:"rgba(0,0,0,.4)", border:"1px solid rgba(var(--accent-rgb),.12)", borderRadius:3, padding:"3px 10px", cursor:"pointer", color:"var(--text-dim2)", fontSize:9, fontFamily:"monospace", transition:"all .2s" }}
+                onMouseEnter={e=>{e.currentTarget.style.borderColor="rgba(var(--accent-rgb),.35)";e.currentTarget.style.color="var(--text)";}}
+                onMouseLeave={e=>{e.currentTarget.style.borderColor="rgba(var(--accent-rgb),.12)";e.currentTarget.style.color="var(--text-dim2)";}}>
                 <span>⌕</span><span style={{ fontSize:8 }}>Search</span>
-                <span style={{ fontSize:7, background:"rgba(0,255,176,.08)", border:"1px solid rgba(0,255,176,.18)", borderRadius:2, padding:"0 4px", marginLeft:3, color:"#4a7c5f" }}>⌘K</span>
+                <span style={{ fontSize:7, background:"rgba(var(--accent-rgb),.08)", border:"1px solid rgba(var(--accent-rgb),.18)", borderRadius:2, padding:"0 4px", marginLeft:3, color:"var(--text-faint)" }}>⌘K</span>
               </button>
             )}
-            {!isMobile && blockNum && <span style={{ fontSize:8, color:"#4a7c5f", fontFamily:"monospace" }}>#{blockNum.toLocaleString()}</span>}
-            {!isMobile && <div style={{ height:12, width:1, background:"rgba(0,255,176,.1)" }}/>}
+            {!isMobile && blockNum && <span style={{ fontSize:8, color:"var(--text-faint)", fontFamily:"monospace" }}>#{blockNum.toLocaleString()}</span>}
+            {!isMobile && <div style={{ height:12, width:1, background:"rgba(var(--accent-rgb),.1)" }}/>}
             {/* Notifications */}
             <div style={{ position:"relative" }}>
-              <button onClick={()=>setShowNotif(!showNotif)} style={{ background:"none", border:"none", cursor:"pointer", color:unread>0?"#00FFB0":"#4a7c5f", fontSize:14, position:"relative", transition:"color .2s" }}>
-                🔔{unread>0&&<span style={{ position:"absolute", top:-3, right:-3, width:14, height:14, background:"#f87171", borderRadius:"50%", fontSize:8, color:"white", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"monospace", fontWeight:700 }}>{Math.min(unread,9)}</span>}
+              <button onClick={()=>setShowNotif(!showNotif)} style={{ background:"none", border:"none", cursor:"pointer", color:unread>0?"var(--accent)":"var(--text-faint)", fontSize:14, position:"relative", transition:"color .2s" }}>
+                🔔{unread>0&&<span style={{ position:"absolute", top:-3, right:-3, width:14, height:14, background:"var(--danger)", borderRadius:"50%", fontSize:8, color:"white", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"monospace", fontWeight:700 }}>{Math.min(unread,9)}</span>}
               </button>
               {showNotif && <NotifCenter onClose={()=>setShowNotif(false)}/>}
             </div>
-            <div style={{ height:12, width:1, background:"rgba(0,255,176,.1)" }}/>
+            <div style={{ height:12, width:1, background:"rgba(var(--accent-rgb),.1)" }}/>
             {/* Wallet info */}
-            {!isMobile && <span style={{ fontSize:8, color:"#94a3b8", fontFamily:"monospace" }}>{account?.walletName}</span>}
-            <span style={{ fontSize:8, color:"#64748b", fontFamily:"monospace" }}>{sh(account?.address)}</span>
+            {!isMobile && <span style={{ fontSize:8, color:"var(--text-dim)", fontFamily:"monospace" }}>{account?.walletName}</span>}
+            <span style={{ fontSize:8, color:"var(--text-dim2)", fontFamily:"monospace" }}>{sh(account?.address)}</span>
             {/* Disconnect */}
-            <button onClick={()=>setShowDisc(true)} style={{ display:"flex", alignItems:"center", gap:5, background:"rgba(239,68,68,.06)", border:"1px solid rgba(239,68,68,.2)", borderRadius:3, padding:"3px 9px", cursor:"pointer", color:"#64748b", fontSize:8, fontFamily:"monospace", letterSpacing:".08em", transition:"all .2s" }}
+            <button onClick={()=>setShowDisc(true)} style={{ display:"flex", alignItems:"center", gap:5, background:"rgba(239,68,68,.06)", border:"1px solid rgba(239,68,68,.2)", borderRadius:3, padding:"3px 9px", cursor:"pointer", color:"var(--text-dim2)", fontSize:8, fontFamily:"monospace", letterSpacing:".08em", transition:"all .2s" }}
               onMouseEnter={e=>{e.currentTarget.style.background="rgba(239,68,68,.14)";e.currentTarget.style.borderColor="rgba(239,68,68,.45)";e.currentTarget.style.color="#f87171";}}
-              onMouseLeave={e=>{e.currentTarget.style.background="rgba(239,68,68,.06)";e.currentTarget.style.borderColor="rgba(239,68,68,.2)";e.currentTarget.style.color="#64748b";}}>
+              onMouseLeave={e=>{e.currentTarget.style.background="rgba(239,68,68,.06)";e.currentTarget.style.borderColor="rgba(239,68,68,.2)";e.currentTarget.style.color="var(--text-dim2)";}}>
               {isMobile ? "⏻" : "⏻ DISCONNECT"}
             </button>
           </div>
@@ -4212,16 +4217,18 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
   // Flow (1 tx via PrivarShieldVault) :
   //   PrivarShieldVault.privateSwapWithRouter(dexRouter, ...)
   //     → dexRouter.executeSwap()
-  //       → LiFiPrivacyAdapter (LI.FI Diamond, off-chain-quoted route)
-  //       → UniswapPrivacyAdapter (real on-chain AMM, if configured)
-  //       → CurvePrivacyAdapter (real on-chain StableSwap, if a pool is wired up)
+  //       → XyloNetPrivacyAdapter (direct, real on-chain AMM — XyloRouter, always deployed)
+  //       → UniswapPrivacyAdapter (direct, real on-chain AMM, if configured)
+  //       → LiFiPrivacyAdapter (reserve, LI.FI Diamond, off-chain-quoted route)
+  //       → CurvePrivacyAdapter (reserve, real on-chain StableSwap, if a pool is wired up)
   //
-  // v4.0.0 — TowerSwapAdapter (simulated pricing, always-succeeds fallback)
-  // removed entirely. There is currently no guaranteed-works fallback if
-  // LI.FI has an outage and no Uniswap/Curve router is configured — see
-  // CONTRACTS.LiFiPrivacyAdapter's doc comment in contracts.js.
+  // v4.0.0/v5.0.0 — TowerSwapAdapter (simulated pricing, always-succeeds
+  // fallback) removed entirely. Unlike v4.0.0, there IS now a guaranteed
+  // direct-adapter fallback even during a LI.FI outage — XyloNetPrivacyAdapter
+  // is always deployed — see CONTRACTS.XyloNetPrivacyAdapter's doc comment
+  // in contracts.js.
   //
-  // See scripts/deploy-v4.0.0-full.js for how the router whitelist gets set.
+  // See scripts/deploy-v5.0.0-full.js for how the router whitelist gets set.
 
   const TK  = ["USDC","EURC","cirBTC"];
   const [fr, setFr]           = useState("USDC");
@@ -4263,18 +4270,20 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     if (fr === to) { notify("Swap","Sélectionnez deux tokens différents.","error"); return; }
     if (tkFr.bal <= 0) { notify("Swap",`Insufficient shielded ${fr} balance.`,"error"); return; }
 
-    // MULTI-ROUTER: privateSwapWithRouter() lets the frontend pick ANY
+    // LIQUIDITY ENGINE: privateSwapWithRouter() lets the frontend pick ANY
     // whitelisted adapter per call, instead of being locked into the
-    // single admin-configured default swapRouter. This is what actually
-    // fixes "LI.FI is down for hours, every swap fails" — confirmed via
-    // real curl testing that this was a genuine external LI.FI outage, not
-    // a code bug, and it recurred. Rather than requiring an admin
-    // transaction (scripts/set-swap-router.js) every time, the swap tries
-    // each whitelisted router in priority order automatically.
-    // v4.0.0 — TowerSwapAdapter removed: no more guaranteed-works fallback.
-    if (!isRouterSet(CONTRACTS.LiFiPrivacyAdapter)
-        && !isRouterSet(CONTRACTS.UniswapPrivacyAdapter) && !isRouterSet(CONTRACTS.CurvePrivacyAdapter)) {
-      notify("Swap","No swap router configured at all (LI.FI/Uniswap/Curve all unset).","error");
+    // single admin-configured default swapRouter. v5.0.0 architecture —
+    // DIRECT ADAPTERS (XyloNet, Uniswap) are the primary path: on-chain,
+    // deterministic swaps against a whitelisted DEX router, tried first.
+    // The RESERVE / AGGREGATOR pair (LiFiPrivacyAdapter, CurvePrivacyAdapter)
+    // stays active and whitelisted — never removed from this chain — but is
+    // only reached dynamically, when no direct adapter covers the pair; in
+    // principle it's not chosen unless actually needed. See the
+    // attempt-chain below. v4.0.0/v5.0.0 — TowerSwapAdapter removed: no
+    // more guaranteed-works fallback if every router below is unavailable.
+    if (!isRouterSet(CONTRACTS.XyloNetPrivacyAdapter) && !isRouterSet(CONTRACTS.UniswapPrivacyAdapter)
+        && !isRouterSet(CONTRACTS.LiFiPrivacyAdapter) && !isRouterSet(CONTRACTS.CurvePrivacyAdapter)) {
+      notify("Swap","No swap router configured at all (XyloNet/Uniswap/LI.FI/Curve all unset).","error");
       return;
     }
 
@@ -4308,13 +4317,38 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     }
 
     // ── Try each whitelisted router in priority order ────────────────────
-    // LI.FI first (best real-market pricing when available), then Uniswap,
-    // then Curve. v4.0.0 — TowerSwapAdapter (simulated pricing,
-    // always-succeeds fallback) removed entirely: if all three below are
-    // either unconfigured or fail, the swap fails with no fallback. See
-    // CONTRACTS.LiFiPrivacyAdapter's doc comment in contracts.js.
+    // DIRECT ADAPTERS first (XyloNet, then Uniswap) — on-chain, deterministic,
+    // no off-chain quote round-trip needed. Only if NEITHER direct adapter is
+    // configured/whitelisted does the chain fall through to the RESERVE pair
+    // (LiFi, then Curve). This is the "direct adapters primary, aggregator
+    // reserve, chosen dynamically" architecture — LiFi/Curve stay fully wired
+    // and active in this same list, just not attempted unless actually needed.
+    // v4.0.0/v5.0.0 — TowerSwapAdapter (simulated pricing, always-succeeds
+    // fallback) removed entirely: if every entry below is either
+    // unconfigured or fails, the swap fails with no fallback. See
+    // CONTRACTS.XyloNetPrivacyAdapter / UniswapPrivacyAdapter's doc
+    // comments in contracts.js for why the two are independent contracts.
+    function attemptXyloNet() {
+      if (!isRouterSet(CONTRACTS.XyloNetPrivacyAdapter)) return null;
+      // Same rationale as attemptUniswap below: XyloRouter pricing is
+      // on-chain and atomic (Uniswap V2-shaped interface), the adapter
+      // itself reverts (SlippageExceeded) if the real output undercuts
+      // minOut, so it's safe to submit with our local naive estimate + the
+      // existing 1% slippage tolerance — no off-chain quote round-trip.
+      return { router: CONTRACTS.XyloNetPrivacyAdapter, routeData: "0x", outAmountBig, minOut, label: "XyloNet" };
+    }
+    function attemptUniswap() {
+      if (!isRouterSet(CONTRACTS.UniswapPrivacyAdapter)) return null;
+      // No off-chain quote call needed — Uniswap V2 pricing is on-chain and
+      // atomic; the adapter itself reverts (SlippageExceeded) if the real
+      // output undercuts minOut, so it's safe to submit with our local
+      // naive estimate + the existing 1% slippage tolerance.
+      return { router: CONTRACTS.UniswapPrivacyAdapter, routeData: "0x", outAmountBig, minOut, label: "Uniswap" };
+    }
     // fromAddress/toAddress for LI.FI are the ADAPTER contract, never the
-    // user's EOA: that's what keeps the swap's counterparty private on-chain.
+    // user's EOA: that's what keeps the swap's counterparty private
+    // on-chain. RESERVE — only reached if attemptXyloNet/attemptUniswap
+    // above both returned null (not configured for this deployment).
     async function attemptLiFi() {
       if (!isRouterSet(CONTRACTS.LiFiPrivacyAdapter)) return null;
       try {
@@ -4337,21 +4371,14 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
         return null;
       }
     }
-    function attemptUniswap() {
-      if (!isRouterSet(CONTRACTS.UniswapPrivacyAdapter)) return null;
-      // No off-chain quote call needed — Uniswap V2 pricing is on-chain and
-      // atomic; the adapter itself reverts (SlippageExceeded) if the real
-      // output undercuts minOut, so it's safe to submit with our local
-      // naive estimate + the existing 1% slippage tolerance.
-      return { router: CONTRACTS.UniswapPrivacyAdapter, routeData: "0x", outAmountBig, minOut, label: "Uniswap" };
-    }
     // CURVE_POOLS: per-pair (pool, i, j) config — see CurvePrivacyAdapter.sol's
     // doc comment for why this can't be derived automatically (Curve pools
     // identify tokens by index, not address, and no real pool address on
     // Arc Testnet has been independently verified yet). Empty until a real
     // pool is confirmed and its token-index mapping is known — attemptCurve
     // self-activates for whichever pair gets an entry here, no other code
-    // change needed. Key format: "tokenInSymbol->tokenOutSymbol".
+    // change needed. Key format: "tokenInSymbol->tokenOutSymbol". RESERVE —
+    // same "only if the direct adapters didn't cover this pair" rationale.
     const CURVE_POOLS = {
       // "USDC->EURC": { pool: "0x...", i: 0, j: 1 },
     };
@@ -4360,20 +4387,23 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       const cfg = CURVE_POOLS[`${fr}->${to}`];
       if (!cfg) return null; // this pair isn't wired to a verified pool yet
       const routeData = encodeCurveRouteData(cfg.pool, cfg.i, cfg.j);
-      // Curve StableSwap pricing is on-chain and atomic, like Uniswap —
-      // the adapter reverts (SlippageExceeded) if the real output
+      // Curve StableSwap pricing is on-chain and atomic, like Uniswap/XyloNet
+      // — the adapter reverts (SlippageExceeded) if the real output
       // undercuts minOut, so the local naive estimate + slippage tolerance
       // is safe here too.
       return { router: CONTRACTS.CurvePrivacyAdapter, routeData, outAmountBig, minOut, label: "Curve" };
     }
 
+    // DIRECT ADAPTERS (XyloNet, Uniswap) tried first, in that order; only
+    // if NEITHER is configured/whitelisted does the chain reach the
+    // RESERVE pair (LiFi, Curve) — see the block comment above.
     let chosen = null;
-    for (const attempt of [attemptLiFi, attemptUniswap, attemptCurve]) {
+    for (const attempt of [attemptXyloNet, attemptUniswap, attemptLiFi, attemptCurve]) {
       chosen = await attempt();
       if (chosen) break;
     }
     if (!chosen) {
-      notify("Swap", "No route available on any configured router (LI.FI/Uniswap/Curve).", "error");
+      notify("Swap", "No route available on any configured router (XyloNet/Uniswap/LI.FI/Curve).", "error");
       setLoading(false); return;
     }
     const { router: chosenRouter, routeData, label: routerLabel } = chosen;
@@ -4468,23 +4498,24 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     </select>
   );
 
-  // v4.0.0 — reflects the SAME priority chain as swap()'s attemptLiFi/
-  // attemptUniswap/attemptCurve, for the "Adapter" info badge below. Not a
-  // binary choice anymore — shows whichever router would be tried FIRST.
+  // v5.0.0 — reflects the SAME priority chain as swap()'s attemptXyloNet/
+  // attemptUniswap/attemptLiFi/attemptCurve, for the "Adapter" info badge
+  // below: direct adapters (XyloNet, Uniswap) first, LI.FI reserve last.
   // Curve deliberately excluded here even though CurvePrivacyAdapter may be
   // deployed: it only actually routes a pair present in swap()'s local
   // CURVE_POOLS config, which is empty until a real pool is verified — so
   // showing it as "available" here would be misleading before that.
   const availableRouters = [
-    isRouterSet(CONTRACTS.LiFiPrivacyAdapter)    && "LiFiPrivacyAdapter",
+    isRouterSet(CONTRACTS.XyloNetPrivacyAdapter) && "XyloNetPrivacyAdapter",
     isRouterSet(CONTRACTS.UniswapPrivacyAdapter) && "UniswapPrivacyAdapter",
+    isRouterSet(CONTRACTS.LiFiPrivacyAdapter)    && "LiFiPrivacyAdapter",
   ].filter(Boolean);
   const routerOk = availableRouters.length > 0;
   const primaryRouterLabel = availableRouters[0] || "none";
 
   return (
     <div style={{ animation:"fi .3s ease" }}>
-      <PH icon="⇄" title="SWAP" sub="Confidential swap — PrivarShieldVault + LI.FI (Arc Testnet)"/>
+      <PH icon="⇄" title="SWAP" sub="Confidential swap — PrivarShieldVault + best-execution routing (Arc Testnet)"/>
       <NotOnArcWarning/>
       {!routerOk && (
         <div style={{ background:"rgba(248,113,113,.08)", border:"1px solid rgba(248,113,113,.25)", borderRadius:4, padding:"8px 12px", marginBottom:10, fontSize:8, color:"#fca5a5", fontFamily:"monospace", lineHeight:1.7 }}>
@@ -5977,6 +6008,46 @@ function HistoryPanel({ txHistory }) {
   );
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   THEME SECTION — lives inside Settings, but reads/writes the
+   shared ThemeProvider context so the choice applies instantly
+   across the whole app (and is remembered via localStorage).
+═══════════════════════════════════════════════════════════════ */
+function ThemeSection() {
+  const { themeId, setThemeId, THEMES: T } = useTheme();
+  return (
+    <div style={{ marginBottom:12 }}>
+      <div style={{ fontSize:8, color:"var(--text-faint)", letterSpacing:".18em", fontFamily:"monospace", marginBottom:6, paddingBottom:5, borderBottom:"1px solid rgba(var(--accent-rgb),.06)" }}>APPEARANCE</div>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:7 }}>
+        {Object.values(T).map(t => {
+          const active = t.id === themeId;
+          return (
+            <button key={t.id} onClick={() => setThemeId(t.id)} style={{
+              display:"flex", alignItems:"center", gap:8, textAlign:"left",
+              background: active ? `rgba(${t.accentRgb},.1)` : "rgba(0,0,0,.3)",
+              border: active ? `1.5px solid ${t.accent}` : "1px solid rgba(255,255,255,.06)",
+              borderRadius:5, padding:"9px 11px", cursor:"pointer", transition:"all .15s",
+            }}>
+              <span style={{
+                width:16, height:16, borderRadius:"50%", flexShrink:0,
+                background: `linear-gradient(135deg, ${t.bg} 50%, ${t.accent} 50%)`,
+                border: `1px solid ${t.accent}55`,
+              }}/>
+              <span>
+                <div style={{ fontSize:9, fontWeight:700, color: active ? t.accent : "var(--text-dim)", fontFamily:"monospace" }}>{t.label}</div>
+                {active && <div style={{ fontSize:7, color:"var(--text-faint)", fontFamily:"monospace", marginTop:1 }}>ACTIVE</div>}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      <div style={{ fontSize:7, color:"var(--text-faint)", fontFamily:"monospace", marginTop:7, lineHeight:1.5 }}>
+        Applies instantly and is remembered on this device. Core transaction panels keep the Privar green accent for now.
+      </div>
+    </div>
+  );
+}
+
 function SettingsPanel({ account, onArc, notify, sendRealTx, recomputeShielded }) {
   const [slip, setSlip]=useState("0.5"); const [dl, setDl]=useState("20"); const [expert, setExpert]=useState(false);
   const [backupVisible, setBackupVisible] = useState(false);
@@ -6067,6 +6138,8 @@ function SettingsPanel({ account, onArc, notify, sendRealTx, recomputeShielded }
         <Row label="Chain" sub="Circle L1 — EVM compatible" c={<span style={{ fontSize:8, color:"#94a3b8", fontFamily:"monospace" }}>EVM</span>}/>
       </>}/>
 
+      <ThemeSection/>
+
       <Sec t="TRANSACTION" c={<>
         <Row label="Max Slippage" sub="Price movement tolerance" c={<div style={{ display:"flex", gap:4 }}>{["0.1","0.5","1.0"].map(v=><button key={v} onClick={()=>setSlip(v)} style={{ padding:"3px 7px", background:slip===v?"rgba(0,255,176,.14)":"rgba(0,0,0,.35)", border:`1px solid ${slip===v?"rgba(0,255,176,.4)":"rgba(0,255,176,.1)"}`, borderRadius:2, color:slip===v?"#00FFB0":"#64748b", fontSize:8, cursor:"pointer", fontFamily:"monospace" }}>{v}%</button>)}</div>}/>
         <Row label="TX Deadline" sub="Minutes until expiry" c={<div style={{ display:"flex", gap:4 }}>{["10","20","30"].map(v=><button key={v} onClick={()=>setDl(v)} style={{ padding:"3px 7px", background:dl===v?"rgba(0,255,176,.14)":"rgba(0,0,0,.35)", border:`1px solid ${dl===v?"rgba(0,255,176,.4)":"rgba(0,255,176,.1)"}`, borderRadius:2, color:dl===v?"#00FFB0":"#64748b", fontSize:8, cursor:"pointer", fontFamily:"monospace" }}>{v}m</button>)}</div>}/>
@@ -6139,6 +6212,7 @@ function AppCore() {
   const [showTour,  setShowTour]  = useState(false);
   const { prices, changes, change24h, lastUpdate, priceError } = usePriceFeed();
   const { account }               = useW3();
+  const { theme }                 = useTheme();
 
   // Auto-logout when wallet disconnects
   useEffect(() => { if (user && !account) setUser(null); }, [account, user]);
@@ -6146,14 +6220,14 @@ function AppCore() {
   const handleAuth = (u) => { setUser(u); setTimeout(() => setShowTour(true), 600); };
 
   return (
-    <>
+    <div style={cssVars(theme)}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Syne:wght@700;800&display=swap');
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-        body { background: #000A06; overflow: hidden; }
+        body { background: var(--bg); overflow: hidden; }
         input, select, button, textarea { font-family: 'JetBrains Mono', monospace; }
-        input::placeholder, textarea::placeholder { color: #1e3a2a !important; }
-        select option { background: #000A06; color: #ffffff; }
+        input::placeholder, textarea::placeholder { color: var(--divider) !important; }
+        select option { background: var(--bg); color: var(--text); }
         @keyframes fi  { from { opacity:0 } to { opacity:1 } }
         @keyframes fu  { from { opacity:0; transform:translateY(10px) } to { opacity:1; transform:none } }
         @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.6;transform:scale(.9)} }
@@ -6161,11 +6235,11 @@ function AppCore() {
         @keyframes g1 { 0%,89%,100%{opacity:0} 90%{opacity:.8;transform:translateX(-3px)} 95%{opacity:0;transform:translateX(3px)} }
         @keyframes g2 { 0%,93%,100%{opacity:0} 94%{opacity:.6;transform:translateX(3px)} 98%{opacity:0;transform:translateX(-2px)} }
         ::-webkit-scrollbar { width:3px; height:3px; }
-        ::-webkit-scrollbar-track { background:#000A06; }
-        ::-webkit-scrollbar-thumb { background:rgba(0,255,176,.2); border-radius:2px; }
+        ::-webkit-scrollbar-track { background:var(--bg); }
+        ::-webkit-scrollbar-thumb { background:rgba(var(--accent-rgb),.2); border-radius:2px; }
       `}</style>
 
-      <HexGrid />
+      <HexGrid theme={theme} />
       {!booted && <Boot onDone={() => setBooted(true)} />}
       <ChainBanner />
       {showTour && <OnboardingTour onFinish={() => setShowTour(false)} />}
@@ -6176,7 +6250,7 @@ function AppCore() {
           : <Dashboard user={user} prices={prices} changes={changes} change24h={change24h} lastUpdate={lastUpdate} priceError={priceError} />
         }
       </div>
-    </>
+    </div>
   );
 }
 

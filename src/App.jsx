@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, Component } from "react";
 import { Landing }   from "./Landing.jsx";
 import { PrivarOS } from "./DApp.jsx";
+import { ThemeProvider } from "./theme.js";
 
 /* ═══════════════════════════════════════════════════════════════
    PRIVAR OS v10 — Unified Router
@@ -111,32 +112,16 @@ export default function App() {
   if (path === "/app") {
     return (
       <ErrorBoundary>
-        <button
-          onClick={() => navigate("/")}
-          style={{
-            position: "fixed", top: 14, left: 14, zIndex: 9999,
-            background: "rgba(0,8,5,.88)", backdropFilter: "blur(12px)",
-            border: "1px solid rgba(0,255,176,.22)", borderRadius: 4,
-            color: "#00FFB0", fontSize: 10, fontFamily: "monospace",
-            letterSpacing: ".14em", padding: "7px 14px", cursor: "pointer",
-            display: "flex", alignItems: "center", gap: 7,
-            transition: "all .2s", textTransform: "uppercase",
-          }}
-          onMouseEnter={e => {
-            e.currentTarget.style.background = "rgba(0,255,176,.12)";
-            e.currentTarget.style.borderColor = "rgba(0,255,176,.45)";
-          }}
-          onMouseLeave={e => {
-            e.currentTarget.style.background = "rgba(0,8,5,.88)";
-            e.currentTarget.style.borderColor = "rgba(0,255,176,.22)";
-          }}
-        >
-          ← Back to Site
-        </button>
-        <PrivarOS />
+        <ThemeProvider>
+          <PrivarOS />
+        </ThemeProvider>
       </ErrorBoundary>
     );
   }
 
-  return <Landing navigate={navigate} />;
+  return (
+    <ThemeProvider>
+      <Landing navigate={navigate} />
+    </ThemeProvider>
+  );
 }

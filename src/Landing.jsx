@@ -3,6 +3,7 @@ import {
   CONTRACTS, SEL, encodeAddress, decodeUint256,
   buildTotalVolumeByTokenCall, NATIVE_TO_ERC20,
 } from "./contracts.js";
+import { useTheme, cssVars } from "./theme.js";
 
 /* ═══════════════════════════════════════════════════════════════
    LIVE PROTOCOL STATS (read-only, no wallet required)
@@ -72,17 +73,20 @@ function useLiveProtocolStats() {
 /* ═══════════════════════════════════════════════════════════════
    HEX CANVAS BACKGROUND
 ═══════════════════════════════════════════════════════════════ */
-function HexCanvas() {
+function HexCanvas({ theme }) {
   const ref = useRef(null);
   useEffect(() => {
     const c = ref.current; if (!c) return;
     const ctx = c.getContext("2d"); let raf, t = 0;
     const rz = () => { c.width = window.innerWidth; c.height = window.innerHeight; };
     rz(); window.addEventListener("resize", rz);
+    const accentRgb = theme?.accentRgb || "0,255,176";
+    const gradA = theme?.bgGradA || "rgba(0,22,13,1)";
+    const gradB = theme?.bgGradB || "rgba(var(--panel-rgb),1)";
     const draw = () => {
       t += .005; ctx.clearRect(0, 0, c.width, c.height);
       const g = ctx.createRadialGradient(c.width * .5, c.height * .35, 0, c.width * .5, c.height * .35, c.width * .8);
-      g.addColorStop(0, "rgba(0,22,13,1)"); g.addColorStop(1, "rgba(0,5,3,1)");
+      g.addColorStop(0, gradA); g.addColorStop(1, gradB);
       ctx.fillStyle = g; ctx.fillRect(0, 0, c.width, c.height);
       const R = 42, cols = Math.ceil(c.width / (R * 1.73)) + 2, rows = Math.ceil(c.height / (R * 1.5)) + 2;
       for (let row = -1; row < rows; row++) {
@@ -100,15 +104,15 @@ function HexCanvas() {
                     : ctx.lineTo(x + R * .93 * Math.cos(ag), y + R * .93 * Math.sin(ag));
           }
           ctx.closePath();
-          if (alpha > .14) { ctx.fillStyle = `rgba(0,255,160,${alpha * .06})`; ctx.fill(); }
-          ctx.strokeStyle = `rgba(0,255,180,${alpha})`; ctx.lineWidth = .6; ctx.stroke();
+          if (alpha > .14) { ctx.fillStyle = `rgba(${accentRgb},${alpha * .06})`; ctx.fill(); }
+          ctx.strokeStyle = `rgba(${accentRgb},${alpha})`; ctx.lineWidth = .6; ctx.stroke();
         }
       }
       raf = requestAnimationFrame(draw);
     };
     draw();
     return () => { cancelAnimationFrame(raf); window.removeEventListener("resize", rz); };
-  }, []);
+  }, [theme?.id]);
   return <canvas ref={ref} style={{ position: "fixed", inset: 0, zIndex: 0, pointerEvents: "none" }} />;
 }
 
@@ -119,8 +123,8 @@ function GlitchText({ text, style }) {
   return (
     <span style={{ position: "relative", display: "inline-block", ...style }}>
       <span style={{ position: "relative", zIndex: 1 }}>{text}</span>
-      <span style={{ position: "absolute", top: 0, left: 0, color: "#00FFB0", opacity: 0, animation: "g1 5s infinite", clipPath: "polygon(0 20%,100% 20%,100% 45%,0 45%)", transform: "translateX(-3px)" }}>{text}</span>
-      <span style={{ position: "absolute", top: 0, left: 0, color: "#0EA5E9", opacity: 0, animation: "g2 5s infinite", clipPath: "polygon(0 65%,100% 65%,100% 85%,0 85%)", transform: "translateX(3px)" }}>{text}</span>
+      <span style={{ position: "absolute", top: 0, left: 0, color: "var(--accent)", opacity: 0, animation: "g1 5s infinite", clipPath: "polygon(0 20%,100% 20%,100% 45%,0 45%)", transform: "translateX(-3px)" }}>{text}</span>
+      <span style={{ position: "absolute", top: 0, left: 0, color: "var(--blue)", opacity: 0, animation: "g2 5s infinite", clipPath: "polygon(0 65%,100% 65%,100% 85%,0 85%)", transform: "translateX(3px)" }}>{text}</span>
     </span>
   );
 }
@@ -176,6 +180,7 @@ export function Landing({ navigate }) {
   const [scrolled, setScrolled] = useState(false);
   const [tick, setTick] = useState(0);
   const liveStats = useLiveProtocolStats();
+  const { theme } = useTheme();
 
   // Lock body scroll while the mobile menu overlay is open
   useEffect(() => {
@@ -225,16 +230,16 @@ export function Landing({ navigate }) {
   const SECTION_LINKS = ["Features", "Architecture", "How It Works", "Roadmap"];
 
   return (
-    <div style={{ background: "#000A06", minHeight: "100vh", color: "#ffffff", fontFamily: "'JetBrains Mono', monospace", overflowX: "hidden" }}>
-      <HexCanvas />
+    <div style={{ ...cssVars(theme), background: "var(--bg)", minHeight: "100vh", color: "var(--text)", fontFamily: "'JetBrains Mono', monospace", overflowX: "hidden" }}>
+      <HexCanvas theme={theme} />
 
       {/* ── GLOBAL STYLES ── */}
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Syne:wght@700;800;900&display=swap');
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
         html { scroll-behavior: smooth; }
-        body { background: #000A06; overflow-x: hidden; }
-        ::-webkit-scrollbar { width: 4px; } ::-webkit-scrollbar-track { background: #000A06; } ::-webkit-scrollbar-thumb { background: rgba(0,255,176,.3); border-radius: 2px; }
+        body { background: var(--bg); overflow-x: hidden; }
+        ::-webkit-scrollbar { width: 4px; } ::-webkit-scrollbar-track { background: var(--bg); } ::-webkit-scrollbar-thumb { background: rgba(var(--accent-rgb),.3); border-radius: 2px; }
         @keyframes g1 { 0%,88%,100%{opacity:0} 90%{opacity:.7;transform:translateX(-3px)} 94%{opacity:0} }
         @keyframes g2 { 0%,92%,100%{opacity:0} 94%{opacity:.5;transform:translateX(3px)} 98%{opacity:0} }
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
@@ -242,7 +247,7 @@ export function Landing({ navigate }) {
         @keyframes fadeUp { from{opacity:0;transform:translateY(16px)} to{opacity:1;transform:none} }
         @keyframes scanline { 0%{top:-10%} 100%{top:110%} }
         @keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-10px)} }
-        @keyframes borderGlow { 0%,100%{box-shadow:0 0 20px rgba(0,255,176,.1)} 50%{box-shadow:0 0 40px rgba(0,255,176,.25)} }
+        @keyframes borderGlow { 0%,100%{box-shadow:0 0 20px rgba(var(--accent-rgb),.1)} 50%{box-shadow:0 0 40px rgba(var(--accent-rgb),.25)} }
         @keyframes slideIn { from{transform:translateX(100%)} to{transform:translateX(0)} }
         @media (max-width: 860px) {
           .desktop-nav { display: none !important; }
@@ -260,16 +265,16 @@ export function Landing({ navigate }) {
         position: "fixed", top: 0, left: 0, right: 0, zIndex: 200,
         height: 62, display: "flex", alignItems: "center",
         justifyContent: "space-between", padding: "0 5vw",
-        background: scrolled ? "rgba(0,5,3,.92)" : "transparent",
+        background: scrolled ? "rgba(var(--panel-rgb),.92)" : "transparent",
         backdropFilter: scrolled ? "blur(16px)" : "none",
-        borderBottom: scrolled ? "1px solid rgba(0,255,176,.1)" : "none",
+        borderBottom: scrolled ? "1px solid rgba(var(--accent-rgb),.1)" : "none",
         transition: "all .35s",
       }}>
         {/* Logo */}
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ width: 30, height: 30, border: "1.5px solid #00FFB0", borderRadius: 3, display: "flex", alignItems: "center", justifyContent: "center", color: "#00FFB0", fontSize: 14, boxShadow: "0 0 12px rgba(0,255,176,.25)" }}>◈</div>
-          <GlitchText text="privar" style={{ fontSize: 18, fontWeight: 800, color: "#00FFB0", fontFamily: "'Syne', sans-serif" }} />
-          <span style={{ fontSize: 8, color: "#1E5C3A", letterSpacing: ".18em", marginLeft: 2 }}>OS</span>
+          <div style={{ width: 30, height: 30, border: "1.5px solid var(--accent)", borderRadius: 3, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--accent)", fontSize: 14, boxShadow: "0 0 12px rgba(var(--accent-rgb),.25)" }}>◈</div>
+          <GlitchText text="privar" style={{ fontSize: 18, fontWeight: 800, color: "var(--accent)", fontFamily: "'Syne', sans-serif" }} />
+          <span style={{ fontSize: 8, color: "var(--divider)", letterSpacing: ".18em", marginLeft: 2 }}>OS</span>
         </div>
 
         {/* Desktop nav — product links */}
@@ -277,26 +282,26 @@ export function Landing({ navigate }) {
           {PRODUCT_LINKS.map(l => (
             <button key={l.label} onClick={() => navigate("/app")} style={{
               background: "none", border: "none", cursor: "pointer",
-              fontSize: 10, color: "#94a3b8", letterSpacing: ".1em",
+              fontSize: 10, color: "var(--text-dim)", letterSpacing: ".1em",
               textTransform: "uppercase", fontFamily: "monospace",
               padding: 0, transition: "color .2s",
             }}
-              onMouseEnter={e => e.currentTarget.style.color = "#00FFB0"}
-              onMouseLeave={e => e.currentTarget.style.color = "#94a3b8"}>{l.label}</button>
+              onMouseEnter={e => e.currentTarget.style.color = "var(--accent)"}
+              onMouseLeave={e => e.currentTarget.style.color = "var(--text-dim)"}>{l.label}</button>
           ))}
-          <div style={{ height: 16, width: 1, background: "rgba(0,255,176,.12)" }} />
+          <div style={{ height: 16, width: 1, background: "rgba(var(--accent-rgb),.12)" }} />
           {PILL_FEATURES.map(l => (
             <button key={l.label} onClick={() => navigate("/app")} style={{
               display: "flex", alignItems: "center", gap: 5,
-              background: "rgba(0,255,176,.06)", border: "1px solid rgba(0,255,176,.22)",
+              background: "rgba(var(--accent-rgb),.06)", border: "1px solid rgba(var(--accent-rgb),.22)",
               borderRadius: 20, padding: "5px 12px", cursor: "pointer",
-              fontSize: 9, color: "#00FFB0", letterSpacing: ".08em",
+              fontSize: 9, color: "var(--accent)", letterSpacing: ".08em",
               textTransform: "uppercase", fontFamily: "monospace", transition: "all .2s",
             }}
-              onMouseEnter={e => { e.currentTarget.style.background = "rgba(0,255,176,.14)"; e.currentTarget.style.borderColor = "rgba(0,255,176,.5)"; }}
-              onMouseLeave={e => { e.currentTarget.style.background = "rgba(0,255,176,.06)"; e.currentTarget.style.borderColor = "rgba(0,255,176,.22)"; }}>
+              onMouseEnter={e => { e.currentTarget.style.background = "rgba(var(--accent-rgb),.14)"; e.currentTarget.style.borderColor = "rgba(var(--accent-rgb),.5)"; }}
+              onMouseLeave={e => { e.currentTarget.style.background = "rgba(var(--accent-rgb),.06)"; e.currentTarget.style.borderColor = "rgba(var(--accent-rgb),.22)"; }}>
               {l.label}
-              <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#00FFB0", boxShadow: "0 0 5px #00FFB0", animation: "pulse 1.8s infinite" }} />
+              <span style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--accent)", boxShadow: "0 0 5px var(--accent)", animation: "pulse 1.8s infinite" }} />
             </button>
           ))}
         </div>
@@ -304,20 +309,20 @@ export function Landing({ navigate }) {
         {/* Desktop CTA */}
         <button onClick={() => navigate("/app")} className="desktop-nav" style={{
           padding: "9px 20px", background: "transparent",
-          border: "1px solid #00FFB0", borderRadius: 3,
-          color: "#00FFB0", fontSize: 10, fontWeight: 700,
+          border: "1px solid var(--accent)", borderRadius: 3,
+          color: "var(--accent)", fontSize: 10, fontWeight: 700,
           cursor: "pointer", fontFamily: "monospace", letterSpacing: ".16em",
-          textTransform: "uppercase", boxShadow: "0 0 18px rgba(0,255,176,.15)",
+          textTransform: "uppercase", boxShadow: "0 0 18px rgba(var(--accent-rgb),.15)",
           transition: "all .2s",
         }}
-          onMouseEnter={e => e.currentTarget.style.background = "rgba(0,255,176,.12)"}
+          onMouseEnter={e => e.currentTarget.style.background = "rgba(var(--accent-rgb),.12)"}
           onMouseLeave={e => e.currentTarget.style.background = "transparent"}
         >Connect Wallet</button>
 
         {/* Mobile hamburger */}
         <button onClick={() => setMenuOpen(true)} className="mobile-menu-btn" style={{
-          display: "none", background: "rgba(0,255,176,.06)", border: "1px solid rgba(0,255,176,.25)",
-          borderRadius: 4, width: 34, height: 34, color: "#00FFB0", fontSize: 16,
+          display: "none", background: "rgba(var(--accent-rgb),.06)", border: "1px solid rgba(var(--accent-rgb),.25)",
+          borderRadius: 4, width: 34, height: 34, color: "var(--accent)", fontSize: 16,
           cursor: "pointer", alignItems: "center", justifyContent: "center",
         }} aria-label="Open menu">☰</button>
       </nav>
@@ -338,64 +343,64 @@ export function Landing({ navigate }) {
       <section style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "100px 5vw 60px", position: "relative", zIndex: 1, textAlign: "center" }}>
 
         {/* Badge */}
-        <div style={{ display: "inline-flex", alignItems: "center", gap: 8, background: "rgba(0,255,176,.06)", border: "1px solid rgba(0,255,176,.2)", borderRadius: 20, padding: "6px 16px", marginBottom: 32, animation: "fadeUp .6s ease" }}>
-          <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#00FFB0", boxShadow: "0 0 6px #00FFB0", animation: "pulse 1.5s infinite", display: "inline-block" }} />
-          <span style={{ fontSize: 9, color: "#00FFB0", letterSpacing: ".2em", textTransform: "uppercase" }}>Live on Arc Testnet · chainId 5042002</span>
+        <div style={{ display: "inline-flex", alignItems: "center", gap: 8, background: "rgba(var(--accent-rgb),.06)", border: "1px solid rgba(var(--accent-rgb),.2)", borderRadius: 20, padding: "6px 16px", marginBottom: 32, animation: "fadeUp .6s ease" }}>
+          <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent)", boxShadow: "0 0 6px var(--accent)", animation: "pulse 1.5s infinite", display: "inline-block" }} />
+          <span style={{ fontSize: 9, color: "var(--accent)", letterSpacing: ".2em", textTransform: "uppercase" }}>Live on Arc Testnet · chainId 5042002</span>
         </div>
 
         {/* Headline */}
         <h1 style={{ fontSize: "clamp(38px,7vw,96px)", fontWeight: 900, fontFamily: "'Syne', sans-serif", lineHeight: 1.0, marginBottom: 10, animation: "fadeUp .7s .1s ease both" }}>
-          <GlitchText text="privar" style={{ color: "#00FFB0", display: "block" }} />
-          <span style={{ color: "#ffffff", display: "block", fontWeight: 700 }}>Confidential</span>
-          <span style={{ color: "#ffffff", display: "block", fontWeight: 700 }}>Capital OS</span>
+          <GlitchText text="privar" style={{ color: "var(--accent)", display: "block" }} />
+          <span style={{ color: "var(--text)", display: "block", fontWeight: 700 }}>Confidential</span>
+          <span style={{ color: "var(--text)", display: "block", fontWeight: 700 }}>Capital OS</span>
         </h1>
 
         {/* Subheadline */}
-        <p style={{ fontSize: "clamp(13px,1.8vw,18px)", color: "#94a3b8", maxWidth: 620, lineHeight: 1.7, marginBottom: 44, animation: "fadeUp .7s .2s ease both" }}>
+        <p style={{ fontSize: "clamp(13px,1.8vw,18px)", color: "var(--text-dim)", maxWidth: 620, lineHeight: 1.7, marginBottom: 44, animation: "fadeUp .7s .2s ease both" }}>
           The first confidential on-chain capital management system built on ARC Network. Shield, swap, send and bridge USDC with governed visibility — only you control who sees what.
         </p>
 
         {/* CTAs */}
         <div style={{ display: "flex", gap: 14, flexWrap: "wrap", justifyContent: "center", animation: "fadeUp .7s .3s ease both", marginBottom: 70 }}>
           <button onClick={() => navigate("/app")} style={{
-            padding: "14px 36px", background: "#00FFB0",
-            border: "none", borderRadius: 4, color: "#000A06",
+            padding: "14px 36px", background: "var(--accent)",
+            border: "none", borderRadius: 4, color: "var(--bg)",
             fontSize: 12, fontWeight: 700, cursor: "pointer",
             fontFamily: "monospace", letterSpacing: ".16em",
-            textTransform: "uppercase", boxShadow: "0 0 30px rgba(0,255,176,.35)",
+            textTransform: "uppercase", boxShadow: "0 0 30px rgba(var(--accent-rgb),.35)",
             transition: "all .2s",
           }}
-            onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 0 50px rgba(0,255,176,.5)"; }}
-            onMouseLeave={e => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "0 0 30px rgba(0,255,176,.35)"; }}
+            onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 0 50px rgba(var(--accent-rgb),.5)"; }}
+            onMouseLeave={e => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "0 0 30px rgba(var(--accent-rgb),.35)"; }}
           >⟶ Launch Privar OS</button>
           <a href="#how-it-works" style={{
             padding: "14px 30px", background: "transparent",
-            border: "1px solid rgba(0,255,176,.25)", borderRadius: 4,
-            color: "#94a3b8", fontSize: 12, cursor: "pointer",
+            border: "1px solid rgba(var(--accent-rgb),.25)", borderRadius: 4,
+            color: "var(--text-dim)", fontSize: 12, cursor: "pointer",
             fontFamily: "monospace", letterSpacing: ".14em",
             textTransform: "uppercase", textDecoration: "none",
             transition: "all .2s", display: "inline-block",
           }}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = "rgba(0,255,176,.6)"; e.currentTarget.style.color = "#ffffff"; }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor = "rgba(0,255,176,.25)"; e.currentTarget.style.color = "#94a3b8"; }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = "rgba(var(--accent-rgb),.6)"; e.currentTarget.style.color = "var(--text)"; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = "rgba(var(--accent-rgb),.25)"; e.currentTarget.style.color = "var(--text-dim)"; }}
           >How It Works</a>
         </div>
 
         {/* Terminal window */}
-        <div style={{ width: "100%", maxWidth: 680, background: "rgba(0,5,3,.85)", border: "1px solid rgba(0,255,176,.15)", borderRadius: 8, overflow: "hidden", backdropFilter: "blur(12px)", animation: "fadeUp .7s .4s ease both, borderGlow 3s 1s infinite", boxShadow: "0 30px 80px rgba(0,0,0,.6)" }}>
+        <div style={{ width: "100%", maxWidth: 680, background: "rgba(var(--panel-rgb),.85)", border: "1px solid rgba(var(--accent-rgb),.15)", borderRadius: 8, overflow: "hidden", backdropFilter: "blur(12px)", animation: "fadeUp .7s .4s ease both, borderGlow 3s 1s infinite", boxShadow: "0 30px 80px rgba(0,0,0,.6)" }}>
           {/* Terminal header */}
-          <div style={{ background: "rgba(0,0,0,.4)", padding: "10px 16px", display: "flex", alignItems: "center", gap: 7, borderBottom: "1px solid rgba(0,255,176,.08)" }}>
-            {["#EF4444","#F59E0B","#00FFB0"].map((c,i) => <div key={i} style={{ width: 10, height: 10, borderRadius: "50%", background: c, opacity: .7 }} />)}
-            <span style={{ marginLeft: 8, fontSize: 9, color: "#4a7c5f", letterSpacing: ".2em" }}>PRIVAR OS — PROTOCOL STATUS — ARC TESTNET</span>
+          <div style={{ background: "rgba(0,0,0,.4)", padding: "10px 16px", display: "flex", alignItems: "center", gap: 7, borderBottom: "1px solid rgba(var(--accent-rgb),.08)" }}>
+            {["#EF4444","#F59E0B","var(--accent)"].map((c,i) => <div key={i} style={{ width: 10, height: 10, borderRadius: "50%", background: c, opacity: .7 }} />)}
+            <span style={{ marginLeft: 8, fontSize: 9, color: "var(--text-faint)", letterSpacing: ".2em" }}>PRIVAR OS — PROTOCOL STATUS — ARC TESTNET</span>
           </div>
           {/* Terminal body */}
           <div style={{ padding: "16px 18px", minHeight: 130 }}>
             {TERMINAL_LINES.slice(0, (tick % TERMINAL_LINES.length) + 3 > TERMINAL_LINES.length ? TERMINAL_LINES.length : (tick % TERMINAL_LINES.length) + 3).map((line, i) => (
-              <div key={`${tick}-${i}`} style={{ fontSize: 11, color: i % 2 === 0 ? "#00FFB0" : "#4ade80", marginBottom: 5, letterSpacing: ".04em", animation: "fadeUp .3s ease" }}>
-                <span style={{ color: "#1e3a2a", marginRight: 8 }}>[{String(i).padStart(2, "0")}]</span>{line}
+              <div key={`${tick}-${i}`} style={{ fontSize: 11, color: i % 2 === 0 ? "var(--accent)" : "var(--accent)", marginBottom: 5, letterSpacing: ".04em", animation: "fadeUp .3s ease" }}>
+                <span style={{ color: "var(--divider)", marginRight: 8 }}>[{String(i).padStart(2, "0")}]</span>{line}
               </div>
             ))}
-            <span style={{ color: "#00FFB0", animation: "pulse .8s infinite", fontSize: 14 }}>▌</span>
+            <span style={{ color: "var(--accent)", animation: "pulse .8s infinite", fontSize: 14 }}>▌</span>
           </div>
         </div>
 
@@ -407,11 +412,11 @@ export function Landing({ navigate }) {
             { label: "Transactions",       value: liveStats.error ? "—" : liveStats.txCount != null ? liveStats.txCount.toLocaleString() : "···" },
             { label: "Protocol Fee",       value: liveStats.error ? "—" : liveStats.feeBps != null ? (liveStats.feeBps / 100).toFixed(2) + "%" : "···" },
           ].map(s => (
-            <div key={s.label} style={{ background: "rgba(0,5,3,.75)", border: "1px solid rgba(0,255,176,.15)", borderRadius: 6, padding: "12px 8px", textAlign: "center" }}>
-              <div style={{ fontSize: "clamp(13px,2vw,17px)", fontWeight: 700, color: "#ffffff", fontFamily: "monospace", lineHeight: 1 }}>
-                {s.value} <span style={{ width: 5, height: 5, display: "inline-block", borderRadius: "50%", background: "#00FFB0", boxShadow: "0 0 5px #00FFB0", marginLeft: 3 }} />
+            <div key={s.label} style={{ background: "rgba(var(--panel-rgb),.75)", border: "1px solid rgba(var(--accent-rgb),.15)", borderRadius: 6, padding: "12px 8px", textAlign: "center" }}>
+              <div style={{ fontSize: "clamp(13px,2vw,17px)", fontWeight: 700, color: "var(--text)", fontFamily: "monospace", lineHeight: 1 }}>
+                {s.value} <span style={{ width: 5, height: 5, display: "inline-block", borderRadius: "50%", background: "var(--accent)", boxShadow: "0 0 5px var(--accent)", marginLeft: 3 }} />
               </div>
-              <div style={{ fontSize: 8, color: "#4a7c5f", letterSpacing: ".1em", textTransform: "uppercase", marginTop: 6 }}>{s.label}</div>
+              <div style={{ fontSize: 8, color: "var(--text-faint)", letterSpacing: ".1em", textTransform: "uppercase", marginTop: 6 }}>{s.label}</div>
             </div>
           ))}
         </div>
@@ -420,7 +425,7 @@ export function Landing({ navigate }) {
       {/* ═══════════════════════════════════════════════════════
           STATS
       ═══════════════════════════════════════════════════════ */}
-      <section style={{ padding: "60px 5vw", position: "relative", zIndex: 1, borderTop: "1px solid rgba(0,255,176,.06)", borderBottom: "1px solid rgba(0,255,176,.06)" }}>
+      <section style={{ padding: "60px 5vw", position: "relative", zIndex: 1, borderTop: "1px solid rgba(var(--accent-rgb),.06)", borderBottom: "1px solid rgba(var(--accent-rgb),.06)" }}>
         <div style={{ maxWidth: 1000, margin: "0 auto", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 20 }}>
           {[
             { label: "Chain ID", value: 5042002, suffix: "" },
@@ -432,10 +437,10 @@ export function Landing({ navigate }) {
           ].map((s, i) => (
             <Reveal key={s.label} delay={i * 80}>
               <div style={{ textAlign: "center", padding: "18px 10px" }}>
-                <div style={{ fontSize: "clamp(24px,4vw,38px)", fontWeight: 700, color: "#00FFB0", fontFamily: "'Syne', sans-serif", lineHeight: 1 }}>
+                <div style={{ fontSize: "clamp(24px,4vw,38px)", fontWeight: 700, color: "var(--accent)", fontFamily: "'Syne', sans-serif", lineHeight: 1 }}>
                   {s.prefix || ""}<Counter to={typeof s.value === "number" ? Math.round(s.value * (s.decimals ? Math.pow(10, s.decimals) : 1)) : s.value} duration={1600} />{s.suffix}
                 </div>
-                <div style={{ fontSize: 9, color: "#4a7c5f", letterSpacing: ".18em", textTransform: "uppercase", marginTop: 6 }}>{s.label}</div>
+                <div style={{ fontSize: 9, color: "var(--text-faint)", letterSpacing: ".18em", textTransform: "uppercase", marginTop: 6 }}>{s.label}</div>
               </div>
             </Reveal>
           ))}
@@ -449,9 +454,9 @@ export function Landing({ navigate }) {
         <div style={{ maxWidth: 1100, margin: "0 auto" }}>
           <Reveal>
             <div style={{ textAlign: "center", marginBottom: 64 }}>
-              <div style={{ fontSize: 9, color: "#4a7c5f", letterSpacing: ".25em", marginBottom: 12, textTransform: "uppercase" }}>▸ Core Features</div>
-              <h2 style={{ fontSize: "clamp(28px,4vw,52px)", fontFamily: "'Syne', sans-serif", fontWeight: 800, color: "#ffffff", lineHeight: 1.1 }}>
-                Everything shielded.<br /><span style={{ color: "#00FFB0" }}>Governed visibility.</span>
+              <div style={{ fontSize: 9, color: "var(--text-faint)", letterSpacing: ".25em", marginBottom: 12, textTransform: "uppercase" }}>▸ Core Features</div>
+              <h2 style={{ fontSize: "clamp(28px,4vw,52px)", fontFamily: "'Syne', sans-serif", fontWeight: 800, color: "var(--text)", lineHeight: 1.1 }}>
+                Everything shielded.<br /><span style={{ color: "var(--accent)" }}>Governed visibility.</span>
               </h2>
             </div>
           </Reveal>
@@ -515,15 +520,15 @@ export function Landing({ navigate }) {
       {/* ═══════════════════════════════════════════════════════
           ARCHITECTURE
       ═══════════════════════════════════════════════════════ */}
-      <section id="architecture" style={{ padding: "100px 5vw", position: "relative", zIndex: 1, background: "rgba(0,255,176,.015)" }}>
+      <section id="architecture" style={{ padding: "100px 5vw", position: "relative", zIndex: 1, background: "rgba(var(--accent-rgb),.015)" }}>
         <div style={{ maxWidth: 1000, margin: "0 auto" }}>
           <Reveal>
             <div style={{ textAlign: "center", marginBottom: 60 }}>
-              <div style={{ fontSize: 9, color: "#4a7c5f", letterSpacing: ".25em", marginBottom: 12, textTransform: "uppercase" }}>▸ Architecture</div>
-              <h2 style={{ fontSize: "clamp(26px,4vw,48px)", fontFamily: "'Syne', sans-serif", fontWeight: 800, color: "#ffffff" }}>
-                Modular. Secure. <span style={{ color: "#00FFB0" }}>Non-custodial.</span>
+              <div style={{ fontSize: 9, color: "var(--text-faint)", letterSpacing: ".25em", marginBottom: 12, textTransform: "uppercase" }}>▸ Architecture</div>
+              <h2 style={{ fontSize: "clamp(26px,4vw,48px)", fontFamily: "'Syne', sans-serif", fontWeight: 800, color: "var(--text)" }}>
+                Modular. Secure. <span style={{ color: "var(--accent)" }}>Non-custodial.</span>
               </h2>
-              <p style={{ fontSize: 13, color: "#64748b", marginTop: 14, maxWidth: 560, margin: "14px auto 0", lineHeight: 1.7 }}>
+              <p style={{ fontSize: 13, color: "var(--text-dim2)", marginTop: 14, maxWidth: 560, margin: "14px auto 0", lineHeight: 1.7 }}>
                 ShieldVault is the sole custodian of funds. Every module operates with least privilege — no module can move USDC without ShieldVault's explicit approval.
               </p>
             </div>
@@ -531,8 +536,8 @@ export function Landing({ navigate }) {
 
           {/* Architecture diagram */}
           <Reveal delay={100}>
-            <div style={{ background: "rgba(0,5,3,.85)", border: "1px solid rgba(0,255,176,.15)", borderRadius: 8, padding: "32px", backdropFilter: "blur(12px)", fontFamily: "monospace", fontSize: 11, color: "#4ade80", lineHeight: 1.8 }}>
-              <div style={{ color: "#00FFB0", fontWeight: 700, marginBottom: 12, fontSize: 12 }}>ShieldVault.sol <span style={{ color: "#4a7c5f" }}>← Orchestrator · Sole custody of USDC</span></div>
+            <div style={{ background: "rgba(var(--panel-rgb),.85)", border: "1px solid rgba(var(--accent-rgb),.15)", borderRadius: 8, padding: "32px", backdropFilter: "blur(12px)", fontFamily: "monospace", fontSize: 11, color: "var(--accent)", lineHeight: 1.8 }}>
+              <div style={{ color: "var(--accent)", fontWeight: 700, marginBottom: 12, fontSize: 12 }}>ShieldVault.sol <span style={{ color: "var(--text-faint)" }}>← Orchestrator · Sole custody of USDC</span></div>
               {[
                 ["├── DepositManager",     "Validates ZK deposit proof → inserts Merkle leaf"],
                 ["├── WithdrawalManager",  "Validates proof → spends nullifier → returns amount"],
@@ -549,8 +554,8 @@ export function Landing({ navigate }) {
                 ["└── Governance",         "Anti-flash-loan voting · 4% quorum"],
               ].map(([code, comment], i) => (
                 <div key={i} style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <span style={{ color: code.includes("│") ? "#1e3a2a" : "#4ade80", minWidth: 220, flexShrink: 0 }}>{code}</span>
-                  {comment && <span style={{ color: "#334155", fontSize: 10 }}>← {comment}</span>}
+                  <span style={{ color: code.includes("│") ? "var(--divider)" : "var(--accent)", minWidth: 220, flexShrink: 0 }}>{code}</span>
+                  {comment && <span style={{ color: "var(--text-faint2)", fontSize: 10 }}>← {comment}</span>}
                 </div>
               ))}
             </div>
@@ -560,7 +565,7 @@ export function Landing({ navigate }) {
           <Reveal delay={200}>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 28, justifyContent: "center" }}>
               {["Arc Privacy Sector Aligned", "Governed Visibility", "CEI Pattern Enforced", "CCTP v2 Bridge", "Least Privilege", "NonReentrant Guards", "48h Timelock", "Auto Circuit Breaker"].map(badge => (
-                <span key={badge} style={{ fontSize: 9, letterSpacing: ".12em", textTransform: "uppercase", background: "rgba(0,255,176,.06)", border: "1px solid rgba(0,255,176,.15)", borderRadius: 3, padding: "5px 10px", color: "#00FFB0" }}>{badge}</span>
+                <span key={badge} style={{ fontSize: 9, letterSpacing: ".12em", textTransform: "uppercase", background: "rgba(var(--accent-rgb),.06)", border: "1px solid rgba(var(--accent-rgb),.15)", borderRadius: 3, padding: "5px 10px", color: "var(--accent)" }}>{badge}</span>
               ))}
             </div>
           </Reveal>
@@ -574,9 +579,9 @@ export function Landing({ navigate }) {
         <div style={{ maxWidth: 860, margin: "0 auto" }}>
           <Reveal>
             <div style={{ textAlign: "center", marginBottom: 60 }}>
-              <div style={{ fontSize: 9, color: "#4a7c5f", letterSpacing: ".25em", marginBottom: 12, textTransform: "uppercase" }}>▸ How It Works</div>
-              <h2 style={{ fontSize: "clamp(26px,4vw,48px)", fontFamily: "'Syne', sans-serif", fontWeight: 800, color: "#ffffff" }}>
-                Connect. Shield. <span style={{ color: "#00FFB0" }}>Governed visibility.</span>
+              <div style={{ fontSize: 9, color: "var(--text-faint)", letterSpacing: ".25em", marginBottom: 12, textTransform: "uppercase" }}>▸ How It Works</div>
+              <h2 style={{ fontSize: "clamp(26px,4vw,48px)", fontFamily: "'Syne', sans-serif", fontWeight: 800, color: "var(--text)" }}>
+                Connect. Shield. <span style={{ color: "var(--accent)" }}>Governed visibility.</span>
               </h2>
             </div>
           </Reveal>
@@ -589,14 +594,14 @@ export function Landing({ navigate }) {
           ].map((s, i) => (
             <Reveal key={s.step} delay={i * 80}>
               <div style={{ display: "flex", gap: 24, marginBottom: 36, alignItems: "flex-start" }}>
-                <div style={{ flexShrink: 0, width: 52, height: 52, background: "rgba(0,255,176,.06)", border: "1px solid rgba(0,255,176,.2)", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}>{s.icon}</div>
+                <div style={{ flexShrink: 0, width: 52, height: 52, background: "rgba(var(--accent-rgb),.06)", border: "1px solid rgba(var(--accent-rgb),.2)", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}>{s.icon}</div>
                 <div style={{ flex: 1, paddingTop: 4 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
-                    <span style={{ fontSize: 9, color: "#4a7c5f", letterSpacing: ".2em", fontFamily: "monospace" }}>STEP {s.step}</span>
-                    <div style={{ flex: 1, height: 1, background: "rgba(0,255,176,.08)" }} />
+                    <span style={{ fontSize: 9, color: "var(--text-faint)", letterSpacing: ".2em", fontFamily: "monospace" }}>STEP {s.step}</span>
+                    <div style={{ flex: 1, height: 1, background: "rgba(var(--accent-rgb),.08)" }} />
                   </div>
-                  <h3 style={{ fontSize: 18, fontWeight: 700, color: "#ffffff", fontFamily: "'Syne', sans-serif", marginBottom: 8 }}>{s.title}</h3>
-                  <p style={{ fontSize: 13, color: "#64748b", lineHeight: 1.7 }}>{s.desc}</p>
+                  <h3 style={{ fontSize: 18, fontWeight: 700, color: "var(--text)", fontFamily: "'Syne', sans-serif", marginBottom: 8 }}>{s.title}</h3>
+                  <p style={{ fontSize: 13, color: "var(--text-dim2)", lineHeight: 1.7 }}>{s.desc}</p>
                 </div>
               </div>
             </Reveal>
@@ -607,20 +612,20 @@ export function Landing({ navigate }) {
       {/* ═══════════════════════════════════════════════════════
           ROADMAP
       ═══════════════════════════════════════════════════════ */}
-      <section id="roadmap" style={{ padding: "100px 5vw", position: "relative", zIndex: 1, background: "rgba(0,255,176,.015)" }}>
+      <section id="roadmap" style={{ padding: "100px 5vw", position: "relative", zIndex: 1, background: "rgba(var(--accent-rgb),.015)" }}>
         <div style={{ maxWidth: 860, margin: "0 auto" }}>
           <Reveal>
             <div style={{ textAlign: "center", marginBottom: 60 }}>
-              <div style={{ fontSize: 9, color: "#4a7c5f", letterSpacing: ".25em", marginBottom: 12, textTransform: "uppercase" }}>▸ Roadmap</div>
-              <h2 style={{ fontSize: "clamp(26px,4vw,48px)", fontFamily: "'Syne', sans-serif", fontWeight: 800, color: "#ffffff" }}>
-                The path to <span style={{ color: "#00FFB0" }}>mainnet.</span>
+              <div style={{ fontSize: 9, color: "var(--text-faint)", letterSpacing: ".25em", marginBottom: 12, textTransform: "uppercase" }}>▸ Roadmap</div>
+              <h2 style={{ fontSize: "clamp(26px,4vw,48px)", fontFamily: "'Syne', sans-serif", fontWeight: 800, color: "var(--text)" }}>
+                The path to <span style={{ color: "var(--accent)" }}>mainnet.</span>
               </h2>
             </div>
           </Reveal>
 
           {[
-            { q: "Q3 2026", label: "CURRENT", color: "#00FFB0", items: ["Arc Testnet deployment", "ShieldVault v2.3.1 live", "Confidential Shield / Swap / Send / Bridge", "Emergency circuit breaker armed", "Governed visibility (user-scoped notes)", "Governance + Staking live"] },
-            { q: "Q4 2026", label: "NEXT",    color: "#0EA5E9", items: ["EIP-712 authorized view keys (Arc whitepaper §3)", "Independent security audit x2", "ZK circuit audit (Veridise)", "Admin multisig deployment", "Bug bounty program (Immunefi)", "Arc Mainnet soft launch"] },
+            { q: "Q3 2026", label: "CURRENT", color: "var(--accent)", items: ["Arc Testnet deployment", "ShieldVault v2.3.1 live", "Confidential Shield / Swap / Send / Bridge", "Emergency circuit breaker armed", "Governed visibility (user-scoped notes)", "Governance + Staking live"] },
+            { q: "Q4 2026", label: "NEXT",    color: "var(--blue)", items: ["EIP-712 authorized view keys (Arc whitepaper §3)", "Independent security audit x2", "ZK circuit audit (Veridise)", "Admin multisig deployment", "Bug bounty program (Immunefi)", "Arc Mainnet soft launch"] },
             { q: "Q1 2027", label: "PLANNED", color: "#a78bfa", items: ["Arc Private EVM integration (synchronous execution)", "Governed visibility API — compliance & audit mode", "veARC governance token launch", "CCTP v2 mainnet bridge activation", "Full DEX integration (Arc StableFX)", "Mobile app (iOS + Android)"] },
             { q: "Q2 2027", label: "FUTURE",  color: "#fbbf24", items: ["Hardware enclave execution (Arc Privacy Sector)", "Institutional shield pools with audit access", "Post-quantum encryption layer", "Privacy-preserving DeFi aggregator", "SDK for third-party confidential apps", "DAO transition"] },
           ].map((phase, i) => (
@@ -628,16 +633,16 @@ export function Landing({ navigate }) {
               <div style={{ display: "flex", gap: 20, marginBottom: 32 }}>
                 <div style={{ flexShrink: 0, textAlign: "center", paddingTop: 4 }}>
                   <div style={{ width: 12, height: 12, borderRadius: "50%", background: phase.color, boxShadow: `0 0 10px ${phase.color}`, margin: "0 auto 8px" }} />
-                  <div style={{ width: 1, height: "calc(100% - 20px)", background: "rgba(0,255,176,.1)", margin: "0 auto" }} />
+                  <div style={{ width: 1, height: "calc(100% - 20px)", background: "rgba(var(--accent-rgb),.1)", margin: "0 auto" }} />
                 </div>
-                <div style={{ flex: 1, background: "rgba(0,5,3,.7)", border: `1px solid ${phase.color}22`, borderRadius: 6, padding: "16px 20px", marginBottom: 4 }}>
+                <div style={{ flex: 1, background: "rgba(var(--panel-rgb),.7)", border: `1px solid ${phase.color}22`, borderRadius: 6, padding: "16px 20px", marginBottom: 4 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-                    <span style={{ fontSize: 14, fontWeight: 700, color: "#ffffff", fontFamily: "'Syne', sans-serif" }}>{phase.q}</span>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text)", fontFamily: "'Syne', sans-serif" }}>{phase.q}</span>
                     <span style={{ fontSize: 8, background: `${phase.color}18`, border: `1px solid ${phase.color}40`, borderRadius: 2, padding: "2px 8px", color: phase.color, letterSpacing: ".14em" }}>{phase.label}</span>
                   </div>
                   <ul style={{ listStyle: "none", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "5px 16px" }}>
                     {phase.items.map(item => (
-                      <li key={item} style={{ fontSize: 11, color: "#64748b", display: "flex", alignItems: "center", gap: 7 }}>
+                      <li key={item} style={{ fontSize: 11, color: "var(--text-dim2)", display: "flex", alignItems: "center", gap: 7 }}>
                         <span style={{ color: phase.color, flexShrink: 0 }}>▸</span>{item}
                       </li>
                     ))}
@@ -655,42 +660,42 @@ export function Landing({ navigate }) {
       <section style={{ padding: "100px 5vw", position: "relative", zIndex: 1, textAlign: "center" }}>
         <Reveal>
           <div style={{ maxWidth: 700, margin: "0 auto" }}>
-            <div style={{ width: 64, height: 64, border: "1.5px solid #00FFB0", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, color: "#00FFB0", margin: "0 auto 28px", boxShadow: "0 0 30px rgba(0,255,176,.2)", animation: "float 4s ease infinite" }}>◈</div>
-            <h2 style={{ fontSize: "clamp(28px,5vw,56px)", fontFamily: "'Syne', sans-serif", fontWeight: 900, color: "#ffffff", marginBottom: 18, lineHeight: 1.1 }}>
-              Start managing capital<br /><span style={{ color: "#00FFB0" }}>privately today.</span>
+            <div style={{ width: 64, height: 64, border: "1.5px solid var(--accent)", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, color: "var(--accent)", margin: "0 auto 28px", boxShadow: "0 0 30px rgba(var(--accent-rgb),.2)", animation: "float 4s ease infinite" }}>◈</div>
+            <h2 style={{ fontSize: "clamp(28px,5vw,56px)", fontFamily: "'Syne', sans-serif", fontWeight: 900, color: "var(--text)", marginBottom: 18, lineHeight: 1.1 }}>
+              Start managing capital<br /><span style={{ color: "var(--accent)" }}>privately today.</span>
             </h2>
-            <p style={{ fontSize: 14, color: "#64748b", lineHeight: 1.7, marginBottom: 40, maxWidth: 500, margin: "0 auto 40px" }}>
+            <p style={{ fontSize: 14, color: "var(--text-dim2)", lineHeight: 1.7, marginBottom: 40, maxWidth: 500, margin: "0 auto 40px" }}>
               Privar OS is live on Arc Testnet. Connect your wallet, get USDC from the faucet, and start shielding your assets in under 60 seconds.
             </p>
             <div style={{ display: "flex", gap: 14, justifyContent: "center", flexWrap: "wrap" }}>
               <button onClick={() => navigate("/app")} style={{
-                padding: "16px 40px", background: "#00FFB0", border: "none",
-                borderRadius: 4, color: "#000A06", fontSize: 13, fontWeight: 700,
+                padding: "16px 40px", background: "var(--accent)", border: "none",
+                borderRadius: 4, color: "var(--bg)", fontSize: 13, fontWeight: 700,
                 cursor: "pointer", fontFamily: "monospace", letterSpacing: ".16em",
-                textTransform: "uppercase", boxShadow: "0 0 40px rgba(0,255,176,.4)",
+                textTransform: "uppercase", boxShadow: "0 0 40px rgba(var(--accent-rgb),.4)",
                 transition: "all .2s",
               }}
-                onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 0 60px rgba(0,255,176,.6)"; }}
-                onMouseLeave={e => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "0 0 40px rgba(0,255,176,.4)"; }}
+                onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 0 60px rgba(var(--accent-rgb),.6)"; }}
+                onMouseLeave={e => { e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "0 0 40px rgba(var(--accent-rgb),.4)"; }}
               >⟶ Launch Privar OS</button>
               <a href="https://faucet.circle.com" target="_blank" rel="noreferrer" style={{
                 padding: "16px 30px", background: "transparent",
-                border: "1px solid rgba(0,255,176,.25)", borderRadius: 4,
-                color: "#94a3b8", fontSize: 13, cursor: "pointer",
+                border: "1px solid rgba(var(--accent-rgb),.25)", borderRadius: 4,
+                color: "var(--text-dim)", fontSize: 13, cursor: "pointer",
                 fontFamily: "monospace", letterSpacing: ".14em",
                 textTransform: "uppercase", textDecoration: "none",
                 transition: "all .2s", display: "inline-block",
               }}
-                onMouseEnter={e => { e.currentTarget.style.borderColor = "rgba(0,255,176,.5)"; e.currentTarget.style.color = "#ffffff"; }}
-                onMouseLeave={e => { e.currentTarget.style.borderColor = "rgba(0,255,176,.25)"; e.currentTarget.style.color = "#94a3b8"; }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = "rgba(var(--accent-rgb),.5)"; e.currentTarget.style.color = "var(--text)"; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = "rgba(var(--accent-rgb),.25)"; e.currentTarget.style.color = "var(--text-dim)"; }}
               >💧 Get Testnet USDC</a>
             </div>
 
             {/* Trust badges */}
             <div style={{ display: "flex", justifyContent: "center", gap: 20, marginTop: 36, flexWrap: "wrap" }}>
               {["Non-custodial", "EIP-191 Auth", "Open Source", "ZK Privacy", "Arc Testnet"].map(t => (
-                <span key={t} style={{ fontSize: 9, color: "#334155", letterSpacing: ".14em", textTransform: "uppercase", display: "flex", alignItems: "center", gap: 5 }}>
-                  <span style={{ color: "#00FFB0" }}>✓</span> {t}
+                <span key={t} style={{ fontSize: 9, color: "var(--text-faint2)", letterSpacing: ".14em", textTransform: "uppercase", display: "flex", alignItems: "center", gap: 5 }}>
+                  <span style={{ color: "var(--accent)" }}>✓</span> {t}
                 </span>
               ))}
             </div>
@@ -701,22 +706,22 @@ export function Landing({ navigate }) {
       {/* ═══════════════════════════════════════════════════════
           FOOTER
       ═══════════════════════════════════════════════════════ */}
-      <footer style={{ padding: "40px 5vw", borderTop: "1px solid rgba(0,255,176,.08)", position: "relative", zIndex: 1 }}>
+      <footer style={{ padding: "40px 5vw", borderTop: "1px solid rgba(var(--accent-rgb),.08)", position: "relative", zIndex: 1 }}>
         <div style={{ maxWidth: 1100, margin: "0 auto", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 16 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-            <div style={{ width: 22, height: 22, border: "1px solid rgba(0,255,176,.4)", borderRadius: 2, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#00FFB0" }}>◈</div>
-            <span style={{ fontSize: 12, fontWeight: 700, color: "#00FFB0", fontFamily: "'Syne', sans-serif" }}>privar</span>
-            <span style={{ fontSize: 9, color: "#334155", letterSpacing: ".1em" }}>OS v12.0.0</span>
+            <div style={{ width: 22, height: 22, border: "1px solid rgba(var(--accent-rgb),.4)", borderRadius: 2, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "var(--accent)" }}>◈</div>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "var(--accent)", fontFamily: "'Syne', sans-serif" }}>privar</span>
+            <span style={{ fontSize: 9, color: "var(--text-faint2)", letterSpacing: ".1em" }}>OS v12.0.0</span>
           </div>
           <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
             {[["Docs", "#"], ["Security", "#"], ["GitHub", "#"], ["ARCScan", "https://testnet.arcscan.app"], ["Faucet", "https://faucet.circle.com"]].map(([label, href]) => (
               <a key={label} href={href} target={href.startsWith("http") ? "_blank" : undefined} rel="noreferrer"
-                style={{ fontSize: 10, color: "#334155", textDecoration: "none", letterSpacing: ".12em", textTransform: "uppercase", transition: "color .2s" }}
-                onMouseEnter={e => e.target.style.color = "#00FFB0"}
-                onMouseLeave={e => e.target.style.color = "#334155"}>{label}</a>
+                style={{ fontSize: 10, color: "var(--text-faint2)", textDecoration: "none", letterSpacing: ".12em", textTransform: "uppercase", transition: "color .2s" }}
+                onMouseEnter={e => e.target.style.color = "var(--accent)"}
+                onMouseLeave={e => e.target.style.color = "var(--text-faint2)"}>{label}</a>
             ))}
           </div>
-          <div style={{ fontSize: 9, color: "#1e3a2a", letterSpacing: ".1em" }}>
+          <div style={{ fontSize: 9, color: "var(--divider)", letterSpacing: ".1em" }}>
             ARC TESTNET · CHAIN 5042002 · USDC GAS
           </div>
         </div>
@@ -733,32 +738,51 @@ export function Landing({ navigate }) {
 ═══════════════════════════════════════════════════════════════ */
 function MobileMenu({ navigate, onClose, productLinks, pillFeatures, sectionLinks }) {
   const go = () => { onClose(); navigate("/app"); };
+  const { themeId, setThemeId, THEMES: T } = useTheme();
   return (
     <div style={{
-      position: "fixed", inset: 0, zIndex: 300, background: "#000A06",
+      position: "fixed", inset: 0, zIndex: 300, background: "var(--bg)",
       overflowY: "auto", animation: "fadeUp .25s ease",
     }}>
       {/* Header row */}
-      <div style={{ height: 62, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 5vw", borderBottom: "1px solid rgba(0,255,176,.1)" }}>
+      <div style={{ height: 62, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 5vw", borderBottom: "1px solid rgba(var(--accent-rgb),.1)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-          <div style={{ width: 26, height: 26, border: "1.5px solid #00FFB0", borderRadius: 3, display: "flex", alignItems: "center", justifyContent: "center", color: "#00FFB0", fontSize: 12 }}>◈</div>
-          <span style={{ fontSize: 15, fontWeight: 800, color: "#00FFB0", fontFamily: "'Syne', sans-serif" }}>privar</span>
+          <div style={{ width: 26, height: 26, border: "1.5px solid var(--accent)", borderRadius: 3, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--accent)", fontSize: 12 }}>◈</div>
+          <span style={{ fontSize: 15, fontWeight: 800, color: "var(--accent)", fontFamily: "'Syne', sans-serif" }}>privar</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <button onClick={go} style={{ padding: "8px 16px", background: "#00FFB0", border: "none", borderRadius: 3, color: "#000A06", fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "monospace", letterSpacing: ".1em", textTransform: "uppercase" }}>
+          <button onClick={go} style={{ padding: "8px 16px", background: "var(--accent)", border: "none", borderRadius: 3, color: "var(--bg)", fontSize: 10, fontWeight: 700, cursor: "pointer", fontFamily: "monospace", letterSpacing: ".1em", textTransform: "uppercase" }}>
             Connect Wallet
           </button>
-          <button onClick={onClose} aria-label="Close menu" style={{ background: "rgba(0,255,176,.06)", border: "1px solid rgba(0,255,176,.25)", borderRadius: 4, width: 34, height: 34, color: "#00FFB0", fontSize: 16, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>✕</button>
+          <button onClick={onClose} aria-label="Close menu" style={{ background: "rgba(var(--accent-rgb),.06)", border: "1px solid rgba(var(--accent-rgb),.25)", borderRadius: 4, width: 34, height: 34, color: "var(--accent)", fontSize: 16, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>✕</button>
         </div>
       </div>
 
       {/* Body */}
       <div style={{ padding: "20px 5vw 50px" }}>
-        <div style={{ fontSize: 9, color: "#4a7c5f", letterSpacing: ".22em", textTransform: "uppercase", margin: "8px 0 4px" }}>Product</div>
+        <div style={{ fontSize: 9, color: "var(--text-faint)", letterSpacing: ".22em", textTransform: "uppercase", margin: "8px 0 10px" }}>Thème</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 7, marginBottom: 4 }}>
+          {Object.values(T).map(t => {
+            const active = t.id === themeId;
+            return (
+              <button key={t.id} onClick={() => setThemeId(t.id)} title={t.label} style={{
+                display: "flex", flexDirection: "column", alignItems: "center", gap: 5,
+                background: active ? `rgba(${t.accentRgb},.1)` : "rgba(0,0,0,.25)",
+                border: active ? `1.5px solid ${t.accent}` : "1px solid rgba(255,255,255,.08)",
+                borderRadius: 6, padding: "8px 4px", cursor: "pointer",
+              }}>
+                <span style={{ width: 16, height: 16, borderRadius: "50%", background: `linear-gradient(135deg, ${t.bg} 50%, ${t.accent} 50%)`, border: `1px solid ${t.accent}55` }} />
+                <span style={{ fontSize: 7, color: active ? t.accent : "var(--text-dim2)", fontFamily: "monospace", letterSpacing: ".04em" }}>{t.label}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div style={{ fontSize: 9, color: "var(--text-faint)", letterSpacing: ".22em", textTransform: "uppercase", margin: "22px 0 4px" }}>Product</div>
         {productLinks.map(l => (
           <button key={l.label} onClick={go} style={{
             width: "100%", display: "flex", alignItems: "center", gap: 12,
-            background: "none", border: "none", borderBottom: "1px solid rgba(0,255,176,.06)",
+            background: "none", border: "none", borderBottom: "1px solid rgba(var(--accent-rgb),.06)",
             padding: "16px 4px", cursor: "pointer", textAlign: "left",
           }}>
             <span style={{ fontSize: 16 }}>{l.icon}</span>
@@ -766,36 +790,36 @@ function MobileMenu({ navigate, onClose, productLinks, pillFeatures, sectionLink
           </button>
         ))}
 
-        <div style={{ fontSize: 9, color: "#4a7c5f", letterSpacing: ".22em", textTransform: "uppercase", margin: "22px 0 10px" }}>Modules</div>
+        <div style={{ fontSize: 9, color: "var(--text-faint)", letterSpacing: ".22em", textTransform: "uppercase", margin: "22px 0 10px" }}>Modules</div>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {pillFeatures.map(l => (
             <button key={l.label} onClick={go} style={{
               display: "flex", alignItems: "center", justifyContent: "space-between",
-              background: "rgba(0,255,176,.06)", border: "1px solid rgba(0,255,176,.25)",
+              background: "rgba(var(--accent-rgb),.06)", border: "1px solid rgba(var(--accent-rgb),.25)",
               borderRadius: 8, padding: "14px 16px", cursor: "pointer", textAlign: "left",
             }}>
-              <span style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 14, color: "#00FFB0", fontFamily: "'Syne', sans-serif", fontWeight: 700 }}>
+              <span style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 14, color: "var(--accent)", fontFamily: "'Syne', sans-serif", fontWeight: 700 }}>
                 <span style={{ fontSize: 16 }}>{l.icon}</span>{l.label}
               </span>
-              <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#00FFB0", boxShadow: "0 0 6px #00FFB0", animation: "pulse 1.8s infinite" }} />
+              <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--accent)", boxShadow: "0 0 6px var(--accent)", animation: "pulse 1.8s infinite" }} />
             </button>
           ))}
         </div>
 
-        <div style={{ height: 1, background: "rgba(0,255,176,.08)", margin: "26px 0" }} />
+        <div style={{ height: 1, background: "rgba(var(--accent-rgb),.08)", margin: "26px 0" }} />
 
-        <div style={{ fontSize: 9, color: "#4a7c5f", letterSpacing: ".22em", textTransform: "uppercase", margin: "0 0 10px" }}>Learn more</div>
+        <div style={{ fontSize: 9, color: "var(--text-faint)", letterSpacing: ".22em", textTransform: "uppercase", margin: "0 0 10px" }}>Learn more</div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
           {sectionLinks.map(l => (
             <a key={l} href={`#${l.toLowerCase().replace(/ /g, "-")}`} onClick={onClose} style={{
-              fontSize: 10, color: "#64748b", letterSpacing: ".1em", textTransform: "uppercase",
+              fontSize: 10, color: "var(--text-dim2)", letterSpacing: ".1em", textTransform: "uppercase",
               textDecoration: "none", border: "1px solid rgba(100,116,139,.2)", borderRadius: 20,
               padding: "7px 14px",
             }}>{l}</a>
           ))}
         </div>
 
-        <div style={{ marginTop: 30, fontSize: 9, color: "#334155", letterSpacing: ".1em" }}>
+        <div style={{ marginTop: 30, fontSize: 9, color: "var(--text-faint2)", letterSpacing: ".1em" }}>
           ARC TESTNET · CHAIN 5042002 · USDC GAS
         </div>
       </div>
@@ -813,19 +837,19 @@ function FeatureCard({ icon, title, desc, tag }) {
       onMouseEnter={() => setH(true)}
       onMouseLeave={() => setH(false)}
       style={{
-        background: h ? "rgba(0,255,176,.04)" : "rgba(0,5,3,.7)",
-        border: `1px solid ${h ? "rgba(0,255,176,.3)" : "rgba(0,255,176,.1)"}`,
+        background: h ? "rgba(var(--accent-rgb),.04)" : "rgba(var(--panel-rgb),.7)",
+        border: `1px solid ${h ? "rgba(var(--accent-rgb),.3)" : "rgba(var(--accent-rgb),.1)"}`,
         borderRadius: 7, padding: "24px 22px", transition: "all .25s",
-        boxShadow: h ? "0 0 30px rgba(0,255,176,.08)" : "none",
+        boxShadow: h ? "0 0 30px rgba(var(--accent-rgb),.08)" : "none",
         cursor: "default",
       }}
     >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
         <span style={{ fontSize: 26 }}>{icon}</span>
-        <span style={{ fontSize: 8, background: "rgba(0,255,176,.08)", border: "1px solid rgba(0,255,176,.2)", borderRadius: 2, padding: "3px 8px", color: "#00FFB0", letterSpacing: ".12em" }}>{tag}</span>
+        <span style={{ fontSize: 8, background: "rgba(var(--accent-rgb),.08)", border: "1px solid rgba(var(--accent-rgb),.2)", borderRadius: 2, padding: "3px 8px", color: "var(--accent)", letterSpacing: ".12em" }}>{tag}</span>
       </div>
-      <h3 style={{ fontSize: 15, fontWeight: 700, color: "#ffffff", fontFamily: "'Syne', sans-serif", marginBottom: 9 }}>{title}</h3>
-      <p style={{ fontSize: 12, color: "#64748b", lineHeight: 1.65 }}>{desc}</p>
+      <h3 style={{ fontSize: 15, fontWeight: 700, color: "var(--text)", fontFamily: "'Syne', sans-serif", marginBottom: 9 }}>{title}</h3>
+      <p style={{ fontSize: 12, color: "var(--text-dim2)", lineHeight: 1.65 }}>{desc}</p>
     </div>
   );
 }
