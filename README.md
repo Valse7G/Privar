@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v18.0.4-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v18.0.5-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -13,7 +13,8 @@ Confidential on-chain capital management built on **Arc Testnet** (Circle L1, US
 
 ## Table of contents
 
-- [Sync contract addresses (v18.0.4)](#v1804-current--sync-contract-addresses-v510-redeploy-2026-08-22-1)
+- [Fix phantom change-note leak from the v18.0.2 clamp (v18.0.5)](#v1805-current--fix-phantom-change-note-leak-from-the-v1802-clamp)
+- [Sync contract addresses (v18.0.4)](#v1804--sync-contract-addresses-v510-redeploy-2026-08-22-1)
 - [Note-lifecycle: stop quarantining swap/send/bridge/withdraw outputs (v18.0.3)](#v1803--note-lifecycle-stop-quarantining-swapsendbridgewithdraw-outputs)
 - [Swap-in real-balance clamp (v18.0.2)](#v1802--swap-in-real-balance-clamp)
 - [Sync contract addresses (v18.0.1)](#v1801--sync-contract-addresses-v510-redeploy-2026-08-22)
@@ -255,7 +256,13 @@ Override any address via Vercel env vars (`VITE_SHIELD_VAULT`, `VITE_CLOUD_VAULT
 
 ## Changelog
 
-### v18.0.4 (current) — sync contract addresses (v5.1.0 redeploy, 2026-08-22)
+### v18.0.5 (current) — fix phantom change-note leak from the v18.0.2 clamp
+- **Regression introduced by v18.0.2**: the real-on-chain-balance clamp (`amountBig = realBal` when a local note is ahead of the vault's real balance) reduced the amount actually sent on-chain, but the change/"remaining" note computed right after it (`remaining = note.amount - amountBig`) kept using the un-clamped, possibly-inflated `note.amount` as its base. Every time the clamp fired, this fabricated a "change" note worth exactly the clamped-away gap — value that never existed on-chain. Repeated over several USDC↔EURC round-trips this compounds into a steadily-growing shielded-wallet balance that outpaces the real protocol TVL (confirmed: local $9.96 vs. real TVL $9.92 after a handful of round trips, with the app's own "local balance higher than TVL" banner correctly flagging it).
+- **Fix**: `realBal` is now hoisted out of the clamp's `try` block so the change-note computation can see it. The change note's base is now `min(note.amount, realBal)` instead of `note.amount` alone — if the clamp fired, the true leftover is computed against the real on-chain balance, not the inflated local figure. No leak, no phantom value.
+- Frontend-only, `swap()` only (the only function with the v18.0.2 clamp — `send()`/`withdraw()`/`bridge()` don't have this specific regression, though their `remaining` computation follows the same pattern and is worth the same scrutiny if similar drift is ever observed there).
+- **Not retroactive**: any drift already sitting in a browser's localStorage from before this fix (e.g. the $0.04 in the example above) is not auto-corrected — no reconciliation-to-TVL tool exists yet, to avoid silently deleting value on a false positive (TVL can legitimately diverge from one user's local balance if there are other depositors, or purely from timing). Flagged for a possible future one-time reconciliation pass, similar in spirit to v18.0.3's quarantine recovery.
+
+### v18.0.4 — sync contract addresses (v5.1.0 redeploy, 2026-08-22)
 - Config-only sync against the new `deployments/latest.json` (deployed `2026-08-22T17:57:59.881Z`) — full-suite redeploy, every Privar-deployed address refreshed: `PrivarShieldVault`, `PrivarMerkleTreeManager`, `PrivarNullifierRegistry`, `PrivarDepositManager`, `XyloNetPrivacyAdapter`, `LiFiPrivacyAdapter`/`LiFiPrivacyBridge`, `CurvePrivacyAdapter`, `PrivarStaking`, `PrivarCloudVault`.
 - `XyloRouter`, `LiFiDiamond`, `UniswapPrivacyAdapter` (still unset), `Timelock`, `Governance`, `ViewKeyRegistry`, `NATIVE_USDC`/`EURC`/`cirBTC` unchanged.
 - No frontend logic touched — all v18.0.2/v18.0.3 fixes (swap-in real-balance clamp, note-lifecycle quarantine fix + retroactive recovery) carry over unaffected.

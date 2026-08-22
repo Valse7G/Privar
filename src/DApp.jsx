@@ -4681,10 +4681,21 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     // right before submitting and clamp down to it — this only ever makes
     // the request SMALLER, never larger, so it can't introduce a new
     // failure mode of its own.
+    // `realBal` is deliberately hoisted OUTSIDE the try block (not just a
+    // local inside it): the "remaining"/change-note computation further
+    // below MUST be able to see it too. Without this, a clamp firing here
+    // (note ahead of real balance) let the LATER `remaining = note.amount -
+    // amountBig` line keep using the inflated `note.amount` as its base —
+    // manufacturing a phantom "change" note for exactly the gap that was
+    // just clamped away, i.e. real value that never existed on-chain. That
+    // phantom note then compounds on every subsequent MAX round-trip swap,
+    // which is precisely the "shielded balance keeps growing past TVL"
+    // symptom this fix addresses.
+    let realBal = null;
     try {
       const balData = SEL.balanceOf + encodeAddress(CONTRACTS.PrivarShieldVault);
       const balRes  = await rpcCallWithRetry("eth_call", [{ to: tkFr.addr, data: balData }, "latest"], 2, 500);
-      const realBal = balRes && balRes !== "0x" ? BigInt(balRes) : null;
+      realBal = balRes && balRes !== "0x" ? BigInt(balRes) : null;
       if (realBal !== null && realBal < amountBig) {
         console.warn(`[Swap] local ${fr} note (${amountBig}) exceeds the vault's real on-chain balance (${realBal}) — clamping down to avoid a guaranteed revert.`);
         amountBig = realBal;
@@ -4692,7 +4703,9 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     } catch (e) {
       // Safety net, not a hard requirement — if the RPC call itself fails,
       // fall through with the locally-computed amount rather than blocking
-      // the swap outright.
+      // the swap outright. realBal stays null, so the remaining/change-note
+      // computation below falls back to trusting note.amount as before —
+      // exactly the pre-clamp behavior, no new failure mode introduced.
       console.warn("[Swap] real vault balance check failed, proceeding with local note amount:", e.message);
     }
     if (amountBig <= 0n) {
@@ -4860,7 +4873,17 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     // transaction instead of 2-3 separate follow-up calls. See
     // PrivarShieldVault.sol's NoteJournal doc comment.
     await ensureSelfBackupKeyReady(account?.address);
-    const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
+    // The change note's base MUST be the smaller of (a) what the local note
+    // claims and (b) the real on-chain balance just read above (`realBal`,
+    // when available) — never note.amount alone. If the clamp above fired
+    // (note.amount was ahead of reality), amountBig now equals the real
+    // balance and the true leftover is realBal - amountBig (i.e. 0, if the
+    // whole real balance was just spent) — NOT note.amount - amountBig,
+    // which would fabricate a change note for the exact gap that was just
+    // clamped away. See the clamp's doc comment above for the full story.
+    const noteAmt = BigInt(Math.round(Number(note.amount)||0));
+    const changeBase = (realBal !== null && realBal < noteAmt) ? realBal : noteAmt;
+    const remaining = changeBase - amountBig;
     const changeCommitment = remaining > 0n ? randomBytes32() : null;
     const swapOps = [
       { t: 1, commitment: note.commitment },
