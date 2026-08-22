@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v18.0.0-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v18.0.1-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -13,6 +13,7 @@ Confidential on-chain capital management built on **Arc Testnet** (Circle L1, US
 
 ## Table of contents
 
+- [Sync contract addresses (v18.0.1)](#v1801-current--sync-contract-addresses-v510-redeploy-2026-08-22)
 - [Robust note lifecycle — swap/send/withdraw/bridge (v18.0.0)](#robust-note-lifecycle--swapsendwithdrawbridge-v1800)
 - [Tx-history decimal-scale fix (v18.0.0)](#tx-history-decimal-scale-fix-v1800)
 - [Deployed contracts — Arc Testnet (v5.1.0)](#deployed-contracts--arc-testnet-v510)
@@ -35,25 +36,25 @@ Confidential on-chain capital management built on **Arc Testnet** (Circle L1, US
 ## Deployed contracts — Arc Testnet (v5.1.0)
 
 Deployer / treasury: `0x1Dc72450B3e2782AcD669D7C27073f2C8F2c9894`
-Deployed: 2026-08-21T17:37:31.441Z — full protocol redeployment (`scripts/deploy-v5.1.0-full.js`). **Not a migration** — prior shielded balances stay in the previous `PrivarShieldVault` address and must be withdrawn from there separately.
+Deployed: 2026-08-22T11:42:08.320Z — full protocol redeployment. **Not a migration** — prior shielded balances stay in the previous `PrivarShieldVault` address and must be withdrawn from there separately.
 
 | Contract | Address | Frontend key (`src/contracts.js`) |
 |---|---|---|
-| **PrivarShieldVault** ⁷ | `0x52aC41c1a7E7E9d4B531F103b5dB8E7cfe6fDC96` | `PrivarShieldVault` |
-| PrivarMerkleTreeManager | `0xFB793D1f263B0B1deb635b3EaA0d33cC18a04D8C` | `PrivarMerkleTreeManager` |
-| PrivarNullifierRegistry | `0x4190c9A9e2fC2B98DFaBD371e2525609d4C38b64` | `PrivarNullifierRegistry` |
-| PrivarVerifierZK (Mock¹) | `0x9A012Bf753eEc96100d95F438eB81F803D6141C2` | *(called internally by the vault — no frontend key)* |
-| PrivarDepositManager | `0x2aa6Aa9341783BFcF7Ad6CC4aF741F5c00D26fE2` | `PrivarDepositManager` |
-| PrivarWithdrawManager | `0x93143024a6022978df553511323EBE471DE1a336` | *(called internally by the vault — no frontend key)* |
-| **XyloNetPrivacyAdapter** ⁵ ⁸ (direct adapter, primary — always deployed) | `0xCBC60F9dBED1d2a03E434A9dAa379Ab2B6C7d598` | `XyloNetPrivacyAdapter` |
+| **PrivarShieldVault** ⁷ | `0x8ec176Dbd48fBD12f48cc17466Fe32f2b294833B` | `PrivarShieldVault` |
+| PrivarMerkleTreeManager | `0x3747a8D2AC1817348860778b1D5592b35253F921` | `PrivarMerkleTreeManager` |
+| PrivarNullifierRegistry | `0x20962e9CB40CE531AA8EC8F2237c9dB6039ee7c7` | `PrivarNullifierRegistry` |
+| PrivarVerifierZK (Mock¹) | `0xbBE7D0e95D537a6C3385112f61d72762d7485757` | *(called internally by the vault — no frontend key)* |
+| PrivarDepositManager | `0x507bc015009D97b39f955B385a1f990A9a348b8d` | `PrivarDepositManager` |
+| PrivarWithdrawManager | `0xBf2C298236cD668C0CBd797301Dcb5d755edD4Bf` | *(called internally by the vault — no frontend key)* |
+| **XyloNetPrivacyAdapter** ⁵ ⁸ (direct adapter, primary — always deployed) | `0x2917263E5B2C4301988Ce146454bddB3F6B75c35` | `XyloNetPrivacyAdapter` |
 | UniswapPrivacyAdapter (direct adapter, independent — not deployed, `UNISWAP_ROUTER_ADDRESS` unset) | *(null)* | `UniswapPrivacyAdapter` |
-| LiFiPrivacyAdapter (reserve/aggregator, active, non-default) | `0xc59d76698bA3b731ab69aAdbD5BdfaA535AC5A22` | `LiFiPrivacyAdapter` |
-| LiFiPrivacyBridge ³ | `0xae006654b14e9A2176c09E375DB678e86F08D39e` | `LiFiPrivacyBridge` |
+| LiFiPrivacyAdapter (reserve/aggregator, active, non-default) | `0xb401D0dF077aBCDd900FBf08ff9C021D6DA0002c` | `LiFiPrivacyAdapter` |
+| LiFiPrivacyBridge ³ | `0x1BF32a7C2a016931a24DDA5C068ea597E0Db9Db8` | `LiFiPrivacyBridge` |
 | LiFiDiamond (unchanged) | `0xFf70F4A1d11995621854F3692acF286d8aCd04b2` | `LiFiDiamond` |
 | XyloRouter (raw DEX router, quoting only — see below) | `0x73742278c31a76dBb0D2587d03ef92E6E2141023` | `XyloRouter` |
-| CurvePrivacyAdapter (reserve, active, empty pool whitelist — see below) | `0x041c2D111da80ddcd5a5d3Af15c582fc6e4736e0` | `CurvePrivacyAdapter` |
-| PrivarStaking (public, no notes — see below) | `0x8bFEA88d7F46cAd14436402827aEa0e286FA64d4` | `PrivarStaking` |
-| **PrivarCloudVault** ² | `0xe009218eEdffE8d69a25235954b1cE7470e9c699` | `PrivarCloudVault` |
+| CurvePrivacyAdapter (reserve, active, empty pool whitelist — see below) | `0xcf371C2F714D7B134D039e021E738CbeD8e3b080` | `CurvePrivacyAdapter` |
+| PrivarStaking (public, no notes — see below) | `0x25dd44a71ed8009171B4b6B633E5Dc712979e0C8` | `PrivarStaking` |
+| **PrivarCloudVault** ² | `0x631A0c60eD6793f32f073093aB979bD54D964b17` | `PrivarCloudVault` |
 | ViewKeyRegistry (unchanged since v1.0.0) | `0x590D1FDC3FbD4CAb151cb7E1557D9C4ecEa2C24b` | `ViewKeyRegistry` |
 | USDC (native gas token) | `0x3600000000000000000000000000000000000000` | `NATIVE_USDC` |
 | EURC | `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a` | `EURC` |
@@ -251,7 +252,13 @@ Override any address via Vercel env vars (`VITE_SHIELD_VAULT`, `VITE_CLOUD_VAULT
 
 ## Changelog
 
-### v18.0.0 (current) — robust note lifecycle + tx-history decimal fix
+### v18.0.1 (current) — sync contract addresses (v5.1.0 redeploy, 2026-08-22)
+- Config-only sync against the new `deployments/latest.json` (deployed `2026-08-22T11:42:08.320Z`) — full-suite redeploy, every Privar-deployed address refreshed: `PrivarShieldVault`, `PrivarMerkleTreeManager`, `PrivarNullifierRegistry`, `PrivarDepositManager`, `XyloNetPrivacyAdapter`, `LiFiPrivacyAdapter`/`LiFiPrivacyBridge`, `CurvePrivacyAdapter`, `PrivarStaking`, `PrivarCloudVault`.
+- `XyloRouter`, `LiFiDiamond`, `UniswapPrivacyAdapter` (still unset), `Timelock`, `Governance`, `ViewKeyRegistry`, `NATIVE_USDC`/`EURC`/`cirBTC` unchanged.
+- No frontend logic touched — same known finding flagged in v18.0.0 (event topics vs. deployed ABI) still applies and is unaffected by this sync.
+- Not a migration — prior shielded balances remain in the previous `PrivarShieldVault` address.
+
+### v18.0.0 — robust note lifecycle + tx-history decimal fix
 - **Robust note lifecycle** (`swap()`/`sendShielded()`/`withdraw()`/`bridge()`): new persistent pending-ops ledger (`lockNotesForOp()`/`markOpSubmitted()`/`finalizeOp()`/`watchPendingOps()` in `src/DApp.jsx`) replaces the old pattern of reading local notes once at the start of each function and writing a derived snapshot back at the end. Fixes notes becoming unusable (but still visibly shown) after a swap regardless of outcome, USDC disappearing without the corresponding EURC appearing, and the "local balance is Higher than TVL balance" desync. See `CHANGELOG-note-lifecycle-fix.md` for full root-cause analysis.
 - **Tx-history decimal-scale fix**: `decimalsForToken()`/`symbolForToken()` (`src/DApp.jsx`) replace a hardcoded `/1e6` that inflated every native-USDC Shield/Withdraw history entry by exactly 1e12, and fix Withdraw/Bridge entries always labeling the amount "USDC"/"EURC" regardless of the real token. See `CHANGELOG-tx-history-decimals-fix.md`.
 - New regression test: `scripts/test-tx-history-decimals.mjs` (`npm test`) — no dependencies, no network required.
