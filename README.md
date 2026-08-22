@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v18.0.3-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v18.0.4-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -13,7 +13,8 @@ Confidential on-chain capital management built on **Arc Testnet** (Circle L1, US
 
 ## Table of contents
 
-- [Note-lifecycle: stop quarantining swap/send/bridge/withdraw outputs (v18.0.3)](#v1803-current--note-lifecycle-stop-quarantining-swapsendbridgewithdraw-outputs)
+- [Sync contract addresses (v18.0.4)](#v1804-current--sync-contract-addresses-v510-redeploy-2026-08-22-1)
+- [Note-lifecycle: stop quarantining swap/send/bridge/withdraw outputs (v18.0.3)](#v1803--note-lifecycle-stop-quarantining-swapsendbridgewithdraw-outputs)
 - [Swap-in real-balance clamp (v18.0.2)](#v1802--swap-in-real-balance-clamp)
 - [Sync contract addresses (v18.0.1)](#v1801--sync-contract-addresses-v510-redeploy-2026-08-22)
 - [Robust note lifecycle — swap/send/withdraw/bridge (v18.0.0)](#robust-note-lifecycle--swapsendwithdrawbridge-v1800)
@@ -38,25 +39,25 @@ Confidential on-chain capital management built on **Arc Testnet** (Circle L1, US
 ## Deployed contracts — Arc Testnet (v5.1.0)
 
 Deployer / treasury: `0x1Dc72450B3e2782AcD669D7C27073f2C8F2c9894`
-Deployed: 2026-08-22T11:42:08.320Z — full protocol redeployment. **Not a migration** — prior shielded balances stay in the previous `PrivarShieldVault` address and must be withdrawn from there separately.
+Deployed: 2026-08-22T17:57:59.881Z — full protocol redeployment. **Not a migration** — prior shielded balances stay in the previous `PrivarShieldVault` address and must be withdrawn from there separately.
 
 | Contract | Address | Frontend key (`src/contracts.js`) |
 |---|---|---|
-| **PrivarShieldVault** ⁷ | `0x8ec176Dbd48fBD12f48cc17466Fe32f2b294833B` | `PrivarShieldVault` |
-| PrivarMerkleTreeManager | `0x3747a8D2AC1817348860778b1D5592b35253F921` | `PrivarMerkleTreeManager` |
-| PrivarNullifierRegistry | `0x20962e9CB40CE531AA8EC8F2237c9dB6039ee7c7` | `PrivarNullifierRegistry` |
-| PrivarVerifierZK (Mock¹) | `0xbBE7D0e95D537a6C3385112f61d72762d7485757` | *(called internally by the vault — no frontend key)* |
-| PrivarDepositManager | `0x507bc015009D97b39f955B385a1f990A9a348b8d` | `PrivarDepositManager` |
-| PrivarWithdrawManager | `0xBf2C298236cD668C0CBd797301Dcb5d755edD4Bf` | *(called internally by the vault — no frontend key)* |
-| **XyloNetPrivacyAdapter** ⁵ ⁸ (direct adapter, primary — always deployed) | `0x2917263E5B2C4301988Ce146454bddB3F6B75c35` | `XyloNetPrivacyAdapter` |
+| **PrivarShieldVault** ⁷ | `0x8662Fbf6a9a07A5DE720f2C318a4A8C4543D1885` | `PrivarShieldVault` |
+| PrivarMerkleTreeManager | `0x0960614fE81D3Ba68C39158Ce59DbAA1960b3Ec4` | `PrivarMerkleTreeManager` |
+| PrivarNullifierRegistry | `0x571db103a24F94C563B290a192a7f0e53c6353Cc` | `PrivarNullifierRegistry` |
+| PrivarVerifierZK (Mock¹) | `0xb4eA111Ca4Cf9E06f82994E23ec6D5c801FE3C11` | *(called internally by the vault — no frontend key)* |
+| PrivarDepositManager | `0xA1d93ed69BC10286D2f4A4769aCDBefdeeA57CcA` | `PrivarDepositManager` |
+| PrivarWithdrawManager | `0xC406463a40C36fd6c1C2D6bb58CaEec13d7C89Cc` | *(called internally by the vault — no frontend key)* |
+| **XyloNetPrivacyAdapter** ⁵ ⁸ (direct adapter, primary — always deployed) | `0xCCA93DBB70d1DB841F76729d2259bb7B68080903` | `XyloNetPrivacyAdapter` |
 | UniswapPrivacyAdapter (direct adapter, independent — not deployed, `UNISWAP_ROUTER_ADDRESS` unset) | *(null)* | `UniswapPrivacyAdapter` |
-| LiFiPrivacyAdapter (reserve/aggregator, active, non-default) | `0xb401D0dF077aBCDd900FBf08ff9C021D6DA0002c` | `LiFiPrivacyAdapter` |
-| LiFiPrivacyBridge ³ | `0x1BF32a7C2a016931a24DDA5C068ea597E0Db9Db8` | `LiFiPrivacyBridge` |
+| LiFiPrivacyAdapter (reserve/aggregator, active, non-default) | `0xAC231a3E473681A98B2acB64bde3D1D0A48F2920` | `LiFiPrivacyAdapter` |
+| LiFiPrivacyBridge ³ | `0x18De62686b7786E9527Ab513DDdDf7033fFADA5b` | `LiFiPrivacyBridge` |
 | LiFiDiamond (unchanged) | `0xFf70F4A1d11995621854F3692acF286d8aCd04b2` | `LiFiDiamond` |
 | XyloRouter (raw DEX router, quoting only — see below) | `0x73742278c31a76dBb0D2587d03ef92E6E2141023` | `XyloRouter` |
-| CurvePrivacyAdapter (reserve, active, empty pool whitelist — see below) | `0xcf371C2F714D7B134D039e021E738CbeD8e3b080` | `CurvePrivacyAdapter` |
-| PrivarStaking (public, no notes — see below) | `0x25dd44a71ed8009171B4b6B633E5Dc712979e0C8` | `PrivarStaking` |
-| **PrivarCloudVault** ² | `0x631A0c60eD6793f32f073093aB979bD54D964b17` | `PrivarCloudVault` |
+| CurvePrivacyAdapter (reserve, active, empty pool whitelist — see below) | `0x8a14E9511B0831c3E31D8bEbEbd1D7CC7C4aa663` | `CurvePrivacyAdapter` |
+| PrivarStaking (public, no notes — see below) | `0x9CAb22D350D30aFde62c21E78C8825E23AE52168` | `PrivarStaking` |
+| **PrivarCloudVault** ² | `0x607f312610CF040a92628B2Bf63e2eb3b5CC9e1d` | `PrivarCloudVault` |
 | ViewKeyRegistry (unchanged since v1.0.0) | `0x590D1FDC3FbD4CAb151cb7E1557D9C4ecEa2C24b` | `ViewKeyRegistry` |
 | USDC (native gas token) | `0x3600000000000000000000000000000000000000` | `NATIVE_USDC` |
 | EURC | `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a` | `EURC` |
@@ -254,7 +255,13 @@ Override any address via Vercel env vars (`VITE_SHIELD_VAULT`, `VITE_CLOUD_VAULT
 
 ## Changelog
 
-### v18.0.3 (current) — note-lifecycle: stop quarantining swap/send/bridge/withdraw outputs
+### v18.0.4 (current) — sync contract addresses (v5.1.0 redeploy, 2026-08-22)
+- Config-only sync against the new `deployments/latest.json` (deployed `2026-08-22T17:57:59.881Z`) — full-suite redeploy, every Privar-deployed address refreshed: `PrivarShieldVault`, `PrivarMerkleTreeManager`, `PrivarNullifierRegistry`, `PrivarDepositManager`, `XyloNetPrivacyAdapter`, `LiFiPrivacyAdapter`/`LiFiPrivacyBridge`, `CurvePrivacyAdapter`, `PrivarStaking`, `PrivarCloudVault`.
+- `XyloRouter`, `LiFiDiamond`, `UniswapPrivacyAdapter` (still unset), `Timelock`, `Governance`, `ViewKeyRegistry`, `NATIVE_USDC`/`EURC`/`cirBTC` unchanged.
+- No frontend logic touched — all v18.0.2/v18.0.3 fixes (swap-in real-balance clamp, note-lifecycle quarantine fix + retroactive recovery) carry over unaffected.
+- Not a migration — prior shielded balances remain in the previous `PrivarShieldVault` address (`0x8662Fbf6a9a07A5DE720f2C318a4A8C4543D1885` supersedes `0x8ec176Dbd48fBD12f48cc17466Fe32f2b294833B`).
+
+### v18.0.3 — note-lifecycle: stop quarantining swap/send/bridge/withdraw outputs
 - **Root cause**: `reconcileAndVerifyNotes()` required every local note to have a matching `Deposited` event once past the 10-minute grace window. Notes created as the *output* of a swap, send, bridge, or partial withdraw (e.g. the leftover "change" note of a partial swap) are added purely from that operation's own embedded NoteJournal entry — they structurally never have, and never will have, a `Deposited` event of their own. Once past the grace window, every one of these perfectly legitimate notes got silently moved to the quarantine bucket ("no matching Deposited event on-chain") and dropped from the displayed shielded balance — even though the vault's real on-chain balance (and protocol TVL) still held the funds. With enough swap/send/bridge activity this can end up quarantining *every* local note, leaving the shielded wallet at $0.00 while TVL is still nonzero — confirmed via ArcScan + the app's own TVL dashboard vs. shielded-wallet panel.
 - **Fix (forward-looking)**: `finalizeOp()` now tags every output note with `origin: op.kind` ("swap"/"send"/"bridge"/"withdraw"); legacy notes without an `origin` field are treated as `"deposit"` for backward compatibility. `reconcileAndVerifyNotes()` now only requires a matching `Deposited` event for `origin === "deposit"` notes — swap/send/bridge/withdraw-created notes are exempt, since checking them against an event type they can never emit was the bug.
 - **Fix (retroactive recovery)**: new `recoverWronglyQuarantinedNotes()`, wired into `useShieldedBalances()`'s `compute()`, replays the local `pendingOps` ledger (untouched by this bug — it records each op's confirmed outcome directly) to identify quarantined notes that were legitimately created by a successful swap/send/bridge/withdraw and never later spent, and restores them to the active, spendable note set. Idempotent, runs on every balance computation, no manual action needed.
