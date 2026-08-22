@@ -1,13 +1,13 @@
 // ════════════════════════════════════════════════════════════════════════════
 //  Privar OS — Contract Config v5.1.0
 //
-//  Addresses synced with latest.json v5.1.0 — Arc Testnet — deployed 2026-08-22T18:42:28.003Z
+//  Addresses synced with latest.json v5.1.0 — Arc Testnet — deployed 2026-08-22T20:02:27.418Z
 //  Full suite redeploy — every Privar-deployed address below was refreshed
-//  in this run (superseding the prior 2026-08-22T17:57:59.881Z deploy — not
+//  in this run (superseding the prior 2026-08-22T18:42:28.003Z deploy — not
 //  a migration, prior shielded balances stay in the old ShieldVault address).
 //  Two contracts present in latest.json — PrivarWithdrawManager
-//  (0x54b16331E9CE3F566BF45B2fF94ee8AA39bd1E54) and PrivarVerifierZK
-//  (0x1dd5a7f07ff3AC872C15e327f0525169180dc0EF) — are NOT wired into
+//  (0x994aA5543940744f0Ee957dFC0331615A1CAb75D) and PrivarVerifierZK
+//  (0xE47573aE3ccEfAD263008ec95B2cC2Ac6Cb0Ba44) — are NOT wired into
 //  _c/CONTRACTS below; this file never referenced them before this deploy
 //  either, so they're left out pending an explicit integration pass rather
 //  than guessed at. XyloRouter and LiFiDiamond are unchanged from v5.0.x
@@ -44,13 +44,13 @@ export const ARC_CHAIN_ID = 5042002;
 
 // ── Contract addresses ────────────────────────────────────────────────────────
 const _c = {
-  PrivarShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0x380302C9E3c145e971bF32Cd7Ae9d910cd08a892",
+  PrivarShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0xc4c985Aaf3497173435c68E4FACfDfa66c7352A0",
   Timelock:            import.meta.env.VITE_TIMELOCK              ?? "0x8DF7C02012EBec968bdEc100F4fEAF772AcAab99",
   Governance:          import.meta.env.VITE_GOVERNANCE            ?? "0x89F08E2BBc963e48986D8A0FfA23858bA643C78A",
-  PrivarStaking:             import.meta.env.VITE_STAKING               ?? "0xa5cd6eCe7623233d0AbAB56fBd113De27ba5e56C",
-  PrivarNullifierRegistry:   import.meta.env.VITE_NULLIFIER_REGISTRY    ?? "0xa953Be837F167A3FF2436af587c9412a38cFdF51",
-  PrivarMerkleTreeManager:   import.meta.env.VITE_MERKLE_TREE_MANAGER   ?? "0x849868060d971BeeDF171F49A1Ef0c42591B3F32",
-  PrivarDepositManager:      import.meta.env.VITE_DEPOSIT_MANAGER       ?? "0x3C584Ed0F4038a767Ab08AD18ad3eD90a76c588E",
+  PrivarStaking:             import.meta.env.VITE_STAKING               ?? "0x92c0C7653999F8e2E1C629930665514d27C7Fe1a",
+  PrivarNullifierRegistry:   import.meta.env.VITE_NULLIFIER_REGISTRY    ?? "0x8A0ef13993B3531486286484B05DAc8698d52D2e",
+  PrivarMerkleTreeManager:   import.meta.env.VITE_MERKLE_TREE_MANAGER   ?? "0xbdD31fC58D576bEa72E79F0e489639C8EBA8B4d0",
+  PrivarDepositManager:      import.meta.env.VITE_DEPOSIT_MANAGER       ?? "0xB1415cfb9FD19B162c8F9da6a19ca233E31C26ED",
   // ViewKeyRegistry v1.0.0 — deployed 2026-06-20. Confidential-send auto-discovery
   // (real ECDH stealth notes) is feature-gated on this being non-null — see
   // DApp.jsx ensureViewKeyRegistered()/scanStealthNotes(). NOT part of the
@@ -63,10 +63,10 @@ const _c = {
   // in DApp.jsx) — this stays deployed for backward compatibility with
   // journal entries pushed before the v3.4 upgrade, and as the manual
   // "Sync Notes to Cloud" backfill path in Settings.
-  PrivarCloudVault:    import.meta.env.VITE_CLOUD_VAULT           ?? "0xF0524fd6Df78D8243E64AbaD4328Be28dEEb8223",
+  PrivarCloudVault:    import.meta.env.VITE_CLOUD_VAULT           ?? "0x86615CBcf1925597Ce68E7072A9bE713d35581CF",
   // LI.FI privacy adapters — redeployed 2026-08-22 as part of the full v5.1.0 suite.
-  LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0x9CFC364E574fFcf73296F668C044C1c282cec202",
-  LiFiPrivacyBridge:   import.meta.env.VITE_LIFI_BRIDGE           ?? "0x7C171eA41fB058F75083Ae3b5Acd15835eeEaF19",
+  LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0x56C168bD66Ad54dCa3a080A89F7Fb65D8300fBE3",
+  LiFiPrivacyBridge:   import.meta.env.VITE_LIFI_BRIDGE           ?? "0x0881ecCaA94d6831E7E9640B6F4751425dD4918D",
   LiFiDiamond:         import.meta.env.VITE_LIFI_DIAMOND          ?? "0xFf70F4A1d11995621854F3692acF286d8aCd04b2",
   // v5.0.0 — "0x000...0" (zero address) means "not deployed / not verified
   // yet" and the frontend MUST treat that as "skip this router" — never
@@ -75,7 +75,7 @@ const _c = {
   // Fully independent from UniswapPrivacyAdapter below (own contract, own
   // whitelist entry — see contracts repo's XyloNetPrivacyAdapter.sol doc
   // comment). Deployed via scripts/deploy-xylonet-adapter.js.
-  XyloNetPrivacyAdapter: import.meta.env.VITE_XYLONET_ADAPTER ?? "0x4aB6b120064234bA34Fb80815820A88A06045DB5",
+  XyloNetPrivacyAdapter: import.meta.env.VITE_XYLONET_ADAPTER ?? "0xa2e7ac19A9014DACaEb82A7eedbed915eAAB766e",
   // UniswapPrivacyAdapter — DIRECT adapter, independent, reserved for a
   // real Uniswap deployment. null in latest.json: no UNISWAP_ROUTER_ADDRESS
   // was supplied at deploy time (see contracts repo's deploy-v5.0.0-full.js
@@ -90,7 +90,7 @@ const _c = {
   // doesn't route through it yet (see DApp.jsx swap()'s comment on why
   // attemptCurve() isn't wired up: needs a per-pair (pool, i, j) config
   // this repo doesn't have yet).
-  CurvePrivacyAdapter:   import.meta.env.VITE_CURVE_ADAPTER   ?? "0x81DC1Bf5631B730F71E055E948784625CD8AFf1d",
+  CurvePrivacyAdapter:   import.meta.env.VITE_CURVE_ADAPTER   ?? "0x8E7Fcd58f0c1990677a592F9526f3E36161d1Cf0",
   // Raw DEX router addresses (NOT the Privar adapter addresses above) — used
   // only for read-only getAmountsOut() eth_call quoting before a XyloNet/
   // Uniswap swap is submitted, so minAmountOut reflects the pool's real
