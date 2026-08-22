@@ -4574,6 +4574,39 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       setLoading(false); return;
     }
 
+    // ── Safety clamp: real on-chain vault balance for tokenIn ────────────
+    // A locally-recorded note's amount is only ever as accurate as the
+    // value it was created with — e.g. a swap's output note is journaled
+    // from the pre-trade router quote (attemptXyloNet()'s `out`), not the
+    // post-trade balance actually measured on-chain. Even a 1-raw-unit gap
+    // between that local figure and the vault's REAL token balance is
+    // enough to guarantee a hard revert here: the vault does a literal
+    // `IERC20(tokenIn).transfer(dexRouter, amountIn)` with no partial-fill
+    // fallback ("ERC20: transfer amount exceeds balance" — confirmed via
+    // ArcScan raw trace + on-chain balanceOf vs. the shielded-wallet MAX
+    // amount both being off by exactly 0.000001). Read the real balance
+    // right before submitting and clamp down to it — this only ever makes
+    // the request SMALLER, never larger, so it can't introduce a new
+    // failure mode of its own.
+    try {
+      const balData = SEL.balanceOf + encodeAddress(CONTRACTS.PrivarShieldVault);
+      const balRes  = await rpcCallWithRetry("eth_call", [{ to: tkFr.addr, data: balData }, "latest"], 2, 500);
+      const realBal = balRes && balRes !== "0x" ? BigInt(balRes) : null;
+      if (realBal !== null && realBal < amountBig) {
+        console.warn(`[Swap] local ${fr} note (${amountBig}) exceeds the vault's real on-chain balance (${realBal}) — clamping down to avoid a guaranteed revert.`);
+        amountBig = realBal;
+      }
+    } catch (e) {
+      // Safety net, not a hard requirement — if the RPC call itself fails,
+      // fall through with the locally-computed amount rather than blocking
+      // the swap outright.
+      console.warn("[Swap] real vault balance check failed, proceeding with local note amount:", e.message);
+    }
+    if (amountBig <= 0n) {
+      notify("Swap", `The vault's real ${fr} balance is currently 0 — nothing to swap right now.`, "error");
+      setLoading(false); return;
+    }
+
     // Real on-chain quote via the router's own getAmountsOut(), used by
     // attemptXyloNet/attemptUniswap below to set minAmountOut from the
     // pool's ACTUAL current output instead of the naive off-chain

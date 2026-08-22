@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v18.0.1-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v18.0.2-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -13,7 +13,8 @@ Confidential on-chain capital management built on **Arc Testnet** (Circle L1, US
 
 ## Table of contents
 
-- [Sync contract addresses (v18.0.1)](#v1801-current--sync-contract-addresses-v510-redeploy-2026-08-22)
+- [Swap-in real-balance clamp (v18.0.2)](#v1802-current--swap-in-real-balance-clamp)
+- [Sync contract addresses (v18.0.1)](#v1801--sync-contract-addresses-v510-redeploy-2026-08-22)
 - [Robust note lifecycle — swap/send/withdraw/bridge (v18.0.0)](#robust-note-lifecycle--swapsendwithdrawbridge-v1800)
 - [Tx-history decimal-scale fix (v18.0.0)](#tx-history-decimal-scale-fix-v1800)
 - [Deployed contracts — Arc Testnet (v5.1.0)](#deployed-contracts--arc-testnet-v510)
@@ -252,7 +253,13 @@ Override any address via Vercel env vars (`VITE_SHIELD_VAULT`, `VITE_CLOUD_VAULT
 
 ## Changelog
 
-### v18.0.1 (current) — sync contract addresses (v5.1.0 redeploy, 2026-08-22)
+### v18.0.2 (current) — swap-in real-balance clamp
+- **Root cause**: a swap's output note is journaled locally (and in the encrypted cross-device entry) using the pre-trade router quote (`attemptXyloNet()`'s on-chain `getAmountsOut()` read, or its price-matrix fallback) — never the post-trade amount the vault actually measured and credited. On Arc Testnet this local figure ended up exactly 1 raw unit (0.000001 EURC) ahead of the vault's real on-chain EURC balance — confirmed via ArcScan's raw call trace (`ERC20: transfer amount exceeds balance` inside a plain `EURC.transfer(dexRouter, amountIn)`, no adapter ever reached) cross-checked against the vault's real `ERC-20 tokens` balance vs. the shielded-wallet panel's MAX-prefilled amount.
+- **Fix**: `swap()` (`src/DApp.jsx`) now reads the vault's real `tokenIn.balanceOf(PrivarShieldVault)` right before building the transaction and clamps `amountIn` down to it if the locally-recorded note is even slightly ahead — mirroring the same defensive pattern the v3.4.2 MAX-button/note-selection fix already applies to the *local* note-vs-request mismatch, extended to the *local note-vs-real-chain-balance* mismatch. The clamp only ever makes the request smaller, never larger, so it introduces no new failure mode; if the RPC read itself fails, the swap proceeds with the local amount as before rather than blocking outright.
+- Frontend-only — no contract changes, no new deployed addresses.
+- **Not yet fixed** (tracked separately): the underlying drift between a note's journaled amount and the real post-trade delta is only masked here for swap-in, not corrected at the source. `noteAmountOut` (line ~4720) still uses the pre-trade quote for the *output* note of a swap — the same class of bug could resurface as a similarly tiny gap on the receiving side. A proper fix would derive `noteAmountOut` from the real balance delta (or a decoded `SwapExecuted`/`Transfer` event) measured after the swap tx confirms, not before it's sent.
+
+### v18.0.1 — sync contract addresses (v5.1.0 redeploy, 2026-08-22)
 - Config-only sync against the new `deployments/latest.json` (deployed `2026-08-22T11:42:08.320Z`) — full-suite redeploy, every Privar-deployed address refreshed: `PrivarShieldVault`, `PrivarMerkleTreeManager`, `PrivarNullifierRegistry`, `PrivarDepositManager`, `XyloNetPrivacyAdapter`, `LiFiPrivacyAdapter`/`LiFiPrivacyBridge`, `CurvePrivacyAdapter`, `PrivarStaking`, `PrivarCloudVault`.
 - `XyloRouter`, `LiFiDiamond`, `UniswapPrivacyAdapter` (still unset), `Timelock`, `Governance`, `ViewKeyRegistry`, `NATIVE_USDC`/`EURC`/`cirBTC` unchanged.
 - No frontend logic touched — same known finding flagged in v18.0.0 (event topics vs. deployed ABI) still applies and is unaffected by this sync.
