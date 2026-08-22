@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v17.2.0-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v18.0.0-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -13,6 +13,8 @@ Confidential on-chain capital management built on **Arc Testnet** (Circle L1, US
 
 ## Table of contents
 
+- [Robust note lifecycle — swap/send/withdraw/bridge (v18.0.0)](#robust-note-lifecycle--swapsendwithdrawbridge-v1800)
+- [Tx-history decimal-scale fix (v18.0.0)](#tx-history-decimal-scale-fix-v1800)
 - [Deployed contracts — Arc Testnet (v5.1.0)](#deployed-contracts--arc-testnet-v510)
 - [Native-USDC swap fix (v5.1.0 / v17.2.0)](#native-usdc-swap-fix-v510--v1720)
 - [Multi-note withdrawal (v5.1.0 / v17.2.0)](#multi-note-withdrawal-v510--v1720)
@@ -249,7 +251,14 @@ Override any address via Vercel env vars (`VITE_SHIELD_VAULT`, `VITE_CLOUD_VAULT
 
 ## Changelog
 
-### v17.2.0 (current) — native-USDC swaps fixed for real, multi-note withdrawal
+### v18.0.0 (current) — robust note lifecycle + tx-history decimal fix
+- **Robust note lifecycle** (`swap()`/`sendShielded()`/`withdraw()`/`bridge()`): new persistent pending-ops ledger (`lockNotesForOp()`/`markOpSubmitted()`/`finalizeOp()`/`watchPendingOps()` in `src/DApp.jsx`) replaces the old pattern of reading local notes once at the start of each function and writing a derived snapshot back at the end. Fixes notes becoming unusable (but still visibly shown) after a swap regardless of outcome, USDC disappearing without the corresponding EURC appearing, and the "local balance is Higher than TVL balance" desync. See `CHANGELOG-note-lifecycle-fix.md` for full root-cause analysis.
+- **Tx-history decimal-scale fix**: `decimalsForToken()`/`symbolForToken()` (`src/DApp.jsx`) replace a hardcoded `/1e6` that inflated every native-USDC Shield/Withdraw history entry by exactly 1e12, and fix Withdraw/Bridge entries always labeling the amount "USDC"/"EURC" regardless of the real token. See `CHANGELOG-tx-history-decimals-fix.md`.
+- New regression test: `scripts/test-tx-history-decimals.mjs` (`npm test`) — no dependencies, no network required.
+- Frontend-only release — no contract changes, no new deployed addresses. `Contracts v5.1.0` (badge above) is unchanged pending the planned full redeploy.
+- **Known, not-yet-fixed finding** (flagged, not corrected here — see `CHANGELOG-tx-history-decimals-fix.md`): `EV.SwapExecuted`, `EV.BridgeInitiated`, `EV.ShieldedTransferProcessed`, and the `PrivarStaking` event topics in `src/DApp.jsx` do not match any event signature in the contracts source provided alongside this release — Swap/Send/Bridge (and possibly Stake/Unstake/Claim) entries likely never populate in tx history regardless of this patch. Recommended to regenerate these topics from the actual deployed ABI during the upcoming full redeploy rather than hand-computing them against source that may not match deployed bytecode.
+
+### v17.2.0 — native-USDC swaps fixed for real, multi-note withdrawal
 - **Native-USDC swap fix**: removed the interim `tokenInIsNative` skip in `attemptXyloNet()`/`attemptUniswap()` — both direct adapters handle native-`tokenIn` swaps correctly again now that the contracts-side decimal-scale bug (not a missing router feature) is actually fixed. See [Native-USDC swap fix](#native-usdc-swap-fix-v510--v1720) above. Confirmed on-chain: EURC → USDC and USDC → EURC both succeed.
 - **Multi-note withdrawal**: note selection now picks the fewest notes (largest-first) needed to cover a requested amount instead of requiring a single note to cover it alone; uses the new `PrivarShieldVault.withdrawBatch()` (`SEL.withdrawBatch = "0x775968f5"`) when 2+ notes are needed, falls back to the unmodified `withdraw()` for a single sufficient note. See [Multi-note withdrawal](#multi-note-withdrawal-v510--v1720) above.
 - Synced against contracts `v5.1.0` (`deployments/latest.json`) — full-suite redeploy, every address refreshed (`PrivarShieldVault`, `XyloNetPrivacyAdapter`, `LiFiPrivacyAdapter`/`Bridge`, `CurvePrivacyAdapter`, `PrivarStaking`, `PrivarCloudVault`, infra managers)

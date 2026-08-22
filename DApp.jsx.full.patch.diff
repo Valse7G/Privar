@@ -1,0 +1,621 @@
+--- frontend/src/DApp.jsx	2026-08-21 12:00:55.000000000 +0000
++++ /home/claude/patched/DApp.jsx	2026-08-22 11:05:06.940944027 +0000
+@@ -3183,6 +3183,187 @@
+ const getNotes  = (addr) => { try { return JSON.parse(localStorage.getItem(notesKey(addr)) || "[]"); } catch { return []; } };
+ const saveNotes = (addr, notes) => { try { localStorage.setItem(notesKey(addr), JSON.stringify(notes)); } catch {} };
+ 
++// ═══════════════════════════════════════════════════════════════════════
++// PENDING OPS LEDGER — robust note lifecycle for swap / send / withdraw / bridge
++// ═══════════════════════════════════════════════════════════════════════
++// AUDIT FINDING (2026-08): reconcileAndVerifyNotes() below prunes "spent"
++// notes by matching n.nullifier against on-chain Withdrawn events. But NO
++// code path anywhere ever writes a `nullifier` field onto a saved note —
++// the nullifier used to spend a note is generated fresh (randomBytes32())
++// at the moment of the spend and never persisted back onto the note object,
++// before or after. So that matching branch can never fire, for ANY
++// operation (swap/send/withdraw/bridge alike): there is no on-chain data
++// that lets you map "this nullifier was spent" back to "this local
++// commitment" after the fact — the mock ZK verifier here doesn't enforce
++// (or expose) a deterministic commitment↔nullifier relationship either.
++//
++// The only place that link can ever be captured is HERE, the instant a
++// spend is initiated — BEFORE the transaction is sent. That's what this
++// ledger does, and it's what actually implements "point 1" (detect
++// swap/send/bridge spends, not just explicit withdraw()) — scanning more
++// on-chain events alone cannot do it, given the above.
++//
++// Every note-consuming operation MUST, in order:
++//   1. lockNotesForOp()  — synchronously, before building/sending the tx.
++//                          Freezes the exact input commitments as "locked"
++//                          (excluded from note selection) and records the
++//                          op (status CREATED) together with the outputs
++//                          it will create on success. This read-modify-
++//                          write always uses a FRESH getNotes() taken right
++//                          before the write — never a snapshot captured
++//                          before earlier async work — which is the fix
++//                          for "point 2" (the stale read-modify-write race
++//                          in swap()/sendShielded()/withdraw()/bridge()).
++//                          Returns null if the race was lost (a targeted
++//                          commitment is already gone/locked) so the
++//                          caller can abort cleanly instead of sending a
++//                          transaction doomed to revert.
++//   2. onHash callback   — sendRealTx() calls this the instant a txHash
++//                          exists, via markOpSubmitted(). From that point
++//                          the op survives a closed tab / dropped
++//                          connection / RPC timeout.
++//   3. finalizeOp()      — once the outcome is known: SUCCESS creates the
++//                          real output notes and drops the inputs; REVERTED
++//                          / ABANDONED restores the inputs to AVAILABLE;
++//                          "unknown" is a deliberate no-op — notes are
++//                          NEVER guessed at ("point 3" — pending ≠ success,
++//                          pending ≠ failure). Idempotent (guarded by
++//                          op.finalized), so it's always safe to call from
++//                          both the panel itself and the background watcher.
++const pendingOpsKey = (addr) => addr ? `privar_pending_ops_${addr.toLowerCase()}_${CONTRACTS.PrivarShieldVault.toLowerCase()}` : "privar_pending_ops_anon";
++const getPendingOps  = (addr) => { try { return JSON.parse(localStorage.getItem(pendingOpsKey(addr)) || "[]"); } catch { return []; } };
++const savePendingOps = (addr, ops) => { try { localStorage.setItem(pendingOpsKey(addr), JSON.stringify(ops)); } catch {} };
++
++// How long an op may sit with no txHash at all (sendTransaction() itself
++// never returned — rejected in the wallet, or an error before broadcast)
++// before the watcher gives up and restores its inputs. Generous on
++// purpose — this only ever fires for a tx that provably never reached
++// the mempool, never for one that's merely slow to confirm.
++const OP_ABANDON_MS = 3 * 60 * 1000; // 3 min
++
++function newOpId() {
++  return "op_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 10);
++}
++
++// Step 1 — lock inputs + record the op. See module doc comment above.
++function lockNotesForOp(address, { kind, label, inputCommitments, outputs }) {
++  const notes = getNotes(address); // fresh read, right before the write
++  const byCommitment = new Map(notes.map(n => [n.commitment, n]));
++  for (const c of inputCommitments) {
++    const n = byCommitment.get(c);
++    if (!n || n.status === "locked") return null; // lost the race — abort, don't send a doomed tx
++  }
++  const opId = newOpId();
++  const inputSet = new Set(inputCommitments);
++  const nextNotes = notes.map(n => inputSet.has(n.commitment) ? { ...n, status: "locked", lockedByOp: opId } : n);
++  saveNotes(address, nextNotes);
++
++  const ops = getPendingOps(address);
++  ops.push({
++    opId, kind, label,
++    inputCommitments,
++    outputs,             // [{commitment, amount, token, ...}] to create on SUCCESS (incl. any change note)
++    txHash: null,
++    status: "created",   // created -> submitted -> (success|reverted|abandoned), then finalized:true
++    finalized: false,
++    createdAt: Date.now(),
++  });
++  savePendingOps(address, ops);
++  return opId;
++}
++
++// Step 2 — called from sendRealTx's onHash the instant the tx is broadcast.
++function markOpSubmitted(address, opId, txHash) {
++  const ops = getPendingOps(address);
++  const idx = ops.findIndex(o => o.opId === opId);
++  if (idx === -1) return;
++  ops[idx] = { ...ops[idx], txHash, status: "submitted" };
++  savePendingOps(address, ops);
++}
++
++// Step 3 — resolve an op. outcome: "success" | "reverted" | "abandoned" | "unknown".
++// "unknown" is intentionally a no-op — see module doc comment (invariant:
++// PENDING ≠ SUCCESS, PENDING ≠ FAILURE — never modify notes on an
++// unresolved outcome). Idempotent via the `finalized` guard.
++function finalizeOp(address, opId, outcome) {
++  if (outcome === "unknown") return;
++  const ops = getPendingOps(address);
++  const idx = ops.findIndex(o => o.opId === opId);
++  if (idx === -1 || ops[idx].finalized) return;
++  const op = ops[idx];
++
++  const notes = getNotes(address); // fresh read at finalize time too
++  let nextNotes;
++  if (outcome === "success") {
++    const inputSet = new Set(op.inputCommitments);
++    const existing = new Set(notes.map(n => n.commitment));
++    nextNotes = notes.filter(n => !inputSet.has(n.commitment));
++    for (const out of op.outputs || []) {
++      // Outputs default to spendable ("available"); a caller can override
++      // (e.g. sendShielded()'s sender-side history copy of the note it just
++      // gave away — real ownership transferred to the recipient, so THAT
++      // copy must stay non-spendable, not "available").
++      if (!existing.has(out.commitment)) nextNotes.push({ ...out, ts: out.ts || Date.now(), status: out.status || "available" });
++    }
++  } else {
++    // reverted / abandoned — on-chain state never changed for this op's
++    // inputs (a revert rolls back the nullifier spend in the SAME atomic
++    // tx — see PrivarShieldVault.sol's _privateSwap/_privateSend/withdraw),
++    // so restoring to AVAILABLE is always correct here, never a guess.
++    nextNotes = notes.map(n => n.lockedByOp === opId ? { ...n, status: "available", lockedByOp: undefined } : n);
++  }
++  saveNotes(address, nextNotes);
++
++  ops[idx] = { ...op, status: outcome, finalized: true };
++  savePendingOps(address, ops);
++}
++
++// Best-effort single receipt check — status=1 -> success, present but
++// status!=1 -> reverted, no receipt / RPC error -> unknown (never guess).
++// Used both inline (right after sendRealTx() returns false, to tell a
++// confirmed revert apart from a genuinely unresolved tx) and by the
++// background watcher below.
++async function checkReceiptOutcome(txHash) {
++  try {
++    const receipt = await rpcCall("eth_getTransactionReceipt", [txHash]);
++    if (!receipt) return "unknown";
++    return Number(receipt.status) === 1 ? "success" : "reverted";
++  } catch { return "unknown"; }
++}
++
++// Background watcher — resolves any op left dangling by a closed tab, a
++// dropped connection, or the 60s waitForReceipt() ceiling in sendRealTx()
++// being hit while the tx was actually still mining. Safe to call
++// repeatedly/concurrently — finalizeOp() is idempotent. Wired into the
++// same periodic pass as reconcileAndVerifyNotes (see useShieldedBalances).
++async function watchPendingOps(address) {
++  if (!address) return { resolved: 0 };
++  const open = getPendingOps(address).filter(o => !o.finalized);
++  if (open.length === 0) return { resolved: 0 };
++
++  let resolved = 0;
++  for (const op of open) {
++    if (!op.txHash) {
++      // Never reached the mempool — nothing can confirm later. Only give
++      // up after a grace period, in case markOpSubmitted() is just about
++      // to land from a still-in-flight sendTransaction() call.
++      if (Date.now() - op.createdAt > OP_ABANDON_MS) {
++        finalizeOp(address, op.opId, "abandoned");
++        resolved++;
++      }
++      continue;
++    }
++    const outcome = await checkReceiptOutcome(op.txHash);
++    if (outcome !== "unknown") {
++      finalizeOp(address, op.opId, outcome);
++      resolved++;
++    }
++    // outcome === "unknown" -> still genuinely pending, or RPC hiccup —
++    // leave it locked, try again on the next pass. Never force a guess.
++  }
++  return { resolved };
++}
++
+ // Same vault-scoping fix as notesKey above, applied to tx history. Without
+ // this, a vault redeploy left the OLD vault's transactions (including any
+ // leftover corrupted/implausible amounts from a prior bug generation)
+@@ -3255,6 +3436,43 @@
+   RewardsClaimed:   "0x106f923f993c2149d49b4255ff723acafa1f2d94393f561d3eda32ae348f7241",
+ };
+ 
++// ── Token decimals/symbol — single source of truth for tx-history formatting ──
++// AUDIT FINDING (2026-08): buildTxHistoryFromChain() below used to do
++// `Number(amount)/1e6` unconditionally for every event type. That's wrong for
++// native USDC read from PrivarShieldVault events specifically: deposit()
++// enforces `msg.value == amount` (see PrivarShieldVault.sol), so `amount` —
++// and therefore whatever Deposited/Withdrawn/PrivateSwap/etc. emit — is in
++// 18-dec wei, matching NATIVE_TO_ERC20 (1e12) used everywhere else amounts
++// are sent TO the vault (buildDepositCalldata et al.). Dividing that by 1e6
++// instead of 1e18 inflated every native-USDC shield/withdraw amount in the
++// history panel by exactly 1e12 — purely a display bug, the real shielded
++// balance (useShieldedBalances) and the actual on-chain transfer were never
++// affected.
++//
++// IMPORTANT NUANCE: this 18-dec scaling is specific to PrivarShieldVault's
++// OWN internal accounting for native USDC. PrivarStaking is a separate
++// contract that holds/transfers native USDC through a plain ERC20
++// approve()/safeTransferFrom() interface at its real 6 decimals (see
++// stake()'s `amtWei = stakeAmt * 1e6`, unchanged by this fix) — its
++// Staked/Unstaked/RewardsClaimed amounts were ALREADY correct at /1e6 and
++// must stay that way. That's what the `nativeScaled` flag below is for:
++// true (default) for ShieldVault-native-USDC amounts, false for
++// PrivarStaking amounts — getting this backwards would "fix" one bug by
++// introducing a 1e12 UNDER-count in staking history instead.
++function decimalsForToken(tokenAddr, { nativeScaled = true } = {}) {
++  const t = tokenAddr?.toLowerCase?.();
++  if (t === CONTRACTS.EURC?.toLowerCase())   return 6;
++  if (t === CONTRACTS.cirBTC?.toLowerCase()) return 8;
++  if (t === NATIVE_USDC.toLowerCase())       return nativeScaled ? 18 : 6;
++  return 6; // sane fallback for an unrecognized/zero token address
++}
++function symbolForToken(tokenAddr) {
++  const t = tokenAddr?.toLowerCase?.();
++  if (t === CONTRACTS.EURC?.toLowerCase())   return "EURC";
++  if (t === CONTRACTS.cirBTC?.toLowerCase()) return "cirBTC";
++  return "USDC";
++}
++
+ // ── Cross-device tx history: rebuild from on-chain events ─────────────────────
+ // Called on wallet connect. Fetches PrivarShieldVault + PrivarStaking events for this address,
+ // merges with localStorage cache, deduplicates by tx hash, returns sorted array.
+@@ -3321,13 +3539,19 @@
+       const data = (log.data||"0x").replace("0x","");
+       const amount = data.length >= 64 ? u256(data,0) : 0n;
+       const tok = log.topics?.[2] ? "0x"+log.topics[2].slice(26) : "";
+-      const sym = tok.toLowerCase()===CONTRACTS.EURC?.toLowerCase() ? "EURC" : tok.toLowerCase()===CONTRACTS.cirBTC?.toLowerCase() ? "cirBTC" : "USDC";
+-      entries.push({ hash:log.transactionHash, label:"Shield", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount: (Number(amount)/1e6).toFixed(2)+" "+sym, blockHex:log.blockNumber });
++      const sym = symbolForToken(tok);
++      entries.push({ hash:log.transactionHash, label:"Shield", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount: formatToken(amount, decimalsForToken(tok), 2)+" "+sym, blockHex:log.blockNumber });
+     }
+     for (const log of wdLogs) {
+       const data = (log.data||"0x").replace("0x","");
+       const amount = data.length >= 64 ? u256(data,0) : 0n;
+-      entries.push({ hash:log.transactionHash, label:"Withdraw", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:(Number(amount)/1e6).toFixed(2)+" USDC", blockHex:log.blockNumber });
++      // FIX: this used to hardcode "USDC" regardless of the actual token —
++      // Withdrawn's token IS an indexed topic (topics[2]), same field
++      // depLogs above already reads correctly; a withdraw of EURC/cirBTC
++      // was mislabeled as USDC.
++      const tok = log.topics?.[2] ? "0x"+log.topics[2].slice(26) : "";
++      const sym = symbolForToken(tok);
++      entries.push({ hash:log.transactionHash, label:"Withdraw", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:formatToken(amount, decimalsForToken(tok), 2)+" "+sym, blockHex:log.blockNumber });
+     }
+     for (const log of swLogs) {
+       entries.push({ hash:log.transactionHash, label:"Swap", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:"—", blockHex:log.blockNumber });
+@@ -3335,7 +3559,11 @@
+     for (const log of bridgeLogs) {
+       const data = (log.data||"0x").replace("0x","");
+       const amount = data.length >= 64 ? u256(data,0) : 0n;
+-      entries.push({ hash:log.transactionHash, label:"Bridge", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:(Number(amount)/1e6).toFixed(2)+" EURC", blockHex:log.blockNumber });
++      // FIX: this used to hardcode " EURC" regardless of the actual bridged
++      // token (and, like depLogs, divide by 1e6 even for native USDC).
++      const tok = log.topics?.[2] ? "0x"+log.topics[2].slice(26) : "";
++      const sym = symbolForToken(tok);
++      entries.push({ hash:log.transactionHash, label:"Bridge", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:formatToken(amount, decimalsForToken(tok), 2)+" "+sym, blockHex:log.blockNumber });
+     }
+     for (const log of sendLogs) {
+       entries.push({ hash:log.transactionHash, label:"Send", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:"—", blockHex:log.blockNumber });
+@@ -3343,17 +3571,20 @@
+     for (const log of stakeLogs) {
+       const data = (log.data||"0x").replace("0x","");
+       const amount = data.length >= 64 ? u256(data,0) : 0n;
+-      entries.push({ hash:log.transactionHash, label:"Stake", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:(Number(amount)/1e6).toFixed(2)+" USDC", blockHex:log.blockNumber });
++      // PrivarStaking holds native USDC via plain ERC20 transferFrom at its
++      // real 6 decimals — NOT the ShieldVault's 18-dec internal scaling.
++      // nativeScaled:false keeps this at the already-correct /1e6 behavior.
++      entries.push({ hash:log.transactionHash, label:"Stake", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:formatToken(amount, decimalsForToken(NATIVE_USDC, { nativeScaled:false }), 2)+" USDC", blockHex:log.blockNumber });
+     }
+     for (const log of unstakeLogs) {
+       const data = (log.data||"0x").replace("0x","");
+       const amount = data.length >= 64 ? u256(data,0) : 0n;
+-      entries.push({ hash:log.transactionHash, label:"Unstake", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:(Number(amount)/1e6).toFixed(2)+" USDC", blockHex:log.blockNumber });
++      entries.push({ hash:log.transactionHash, label:"Unstake", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:formatToken(amount, decimalsForToken(NATIVE_USDC, { nativeScaled:false }), 2)+" USDC", blockHex:log.blockNumber });
+     }
+     for (const log of claimLogs) {
+       const data = (log.data||"0x").replace("0x","");
+       const amount = data.length >= 64 ? u256(data,0) : 0n;
+-      entries.push({ hash:log.transactionHash, label:"Claim Rewards", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:(Number(amount)/1e6).toFixed(4)+" USDC", blockHex:log.blockNumber });
++      entries.push({ hash:log.transactionHash, label:"Claim Rewards", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:formatToken(amount, decimalsForToken(NATIVE_USDC, { nativeScaled:false }), 4)+" USDC", blockHex:log.blockNumber });
+     }
+ 
+     // Deduplicate by txHash (keep first seen)
+@@ -3469,6 +3700,17 @@
+ //                                                                   original doc comment for why this is safe
+ //                                                                   and precise regardless of amount)
+ //   VALID    — neither of the above                            -> kept
++//
++// AUDIT NOTE (2026-08): the SPENT check below (n.nullifier vs Withdrawn
++// events) can only ever match a note that has a `nullifier` field — but no
++// code path writes one onto a saved note (the nullifier used to spend a
++// note is generated fresh at spend time and never persisted back onto it).
++// In practice this branch never fires, for any operation. It's left as-is
++// here (harmless — just never true) rather than removed, to keep this
++// patch minimal; the actual mechanism that now detects a swap/send/
++// withdraw/bridge spend is the pending-ops ledger (lockNotesForOp /
++// finalizeOp / watchPendingOps, defined above getNotes/saveNotes) — see
++// its doc comment for the full reasoning.
+ async function reconcileAndVerifyNotes(address) {
+   if (!address) return { spent: 0, unbacked: 0 };
+   const notes = getNotes(address);
+@@ -3692,6 +3934,12 @@
+     // so it's fully automatic — no manual action ever required.
+     unbackedRemovedRef.current = 0;
+     const runChecks = () => {
++      // Resolve any swap/send/withdraw/bridge left dangling by a closed
++      // tab, a timeout, or a dropped connection — see watchPendingOps()'s
++      // doc comment. Independent of reconcileAndVerifyNotes below (which
++      // only ever catches explicit withdraw() — see its own doc comment)
++      // — this is what actually covers swap/send/bridge.
++      watchPendingOps(address).catch(() => {});
+       reconcileAndVerifyNotes(address).then(({ unbacked }) => {
+         // OVERWRITE, not accumulate: this ref should reflect "how many were
+         // found unbacked in the MOST RECENT check", not a running session
+@@ -3887,13 +4135,18 @@
+ }
+ 
+ function useTxSend({ account, onArc, notify, refreshBalance, onSuccess }) {
+-  const sendRealTx = useCallback(async ({ label, description, buildTx }) => {
++  const sendRealTx = useCallback(async ({ label, description, buildTx, onHash }) => {
+     if (!onArc) { notify(label, "Switch to Arc Testnet first", "error"); return false; }
+     if (!account?.address) { notify(label, "Wallet not connected", "error"); return false; }
+     notify(label, description + " — confirm in wallet...", "pending");
+     try {
+       const tx = await buildTx(account.address);
+       const hash = await sendTransaction(account.address, tx.to, tx.value || "0x0", tx.data || "0x");
++      // Optional hook — callers using the pending-ops ledger (swap/send/
++      // withdraw/bridge) persist the hash here so the op survives a
++      // closed tab even if waitForReceipt() below times out. No-op for
++      // every other existing caller (onHash is undefined for them).
++      try { onHash?.(hash); } catch {}
+       notify(label, "Waiting for confirmation on Arc Testnet...", "pending", hash);
+       const receipt = await waitForReceipt(hash);
+       if (Number(receipt.status) === 1) {  // FIX F-11: handles both "0x1" (string) and 1 (int) from different RPC implementations
+@@ -4303,7 +4556,11 @@
+     // so every downstream step (quote, routeData, calldata) is built for the
+     // amount we can actually spend.
+     const notes      = getNotes(account?.address);
+-    const tokenNotes = notes.filter(n => n.token?.toLowerCase() === tkFr.addr.toLowerCase());
++    // status !== "locked" excludes notes already committed to another
++    // in-flight swap/send/withdraw/bridge — see lockNotesForOp() doc
++    // comment. Old notes with no `status` field are treated as available
++    // (undefined !== "locked"), so this is backward compatible.
++    const tokenNotes = notes.filter(n => n.token?.toLowerCase() === tkFr.addr.toLowerCase() && n.status !== "locked");
+     let note = tokenNotes.find(n => BigInt(Math.round(Number(n.amount)||0)) >= amountBig);
+     if (!note && tokenNotes.length > 0) {
+       note = tokenNotes.reduce((best, n) =>
+@@ -4496,20 +4753,54 @@
+       encryptedEntry: journalEntry || "0x",
+     });
+ 
++    // ── Robust note lifecycle (see lockNotesForOp doc comment) ───────────
++    // Lock the input note and pre-register the exact outputs this swap
++    // will create on success — BEFORE the transaction is even sent. From
++    // this point the outcome is tracked in a durable ledger instead of
++    // only in this function's local `notes` variable, so it survives a
++    // closed tab, a dropped connection, or the waitForReceipt() timeout.
++    const swapOutputs = [{ commitment: commitmentOut, amount: noteAmountOut.toString(), token: tkTo.addr, cloudSynced: !!journalEntry }];
++    if (changeCommitment) swapOutputs.push({ ...note, amount: remaining.toString(), commitment: changeCommitment, cloudSynced: !!journalEntry });
++    const opId = lockNotesForOp(account?.address, {
++      kind: "swap", label: `Swap ${fr}→${to}`,
++      inputCommitments: [note.commitment], outputs: swapOutputs,
++    });
++    if (!opId) {
++      notify("Swap", "This note was just used by another operation — please retry.", "error");
++      setLoading(false); return;
++    }
++    recomputeShielded?.();
++
+     const ok = await sendRealTx({
+       label: `Swap ${fr}→${to}`,
+       description: `Private swap ${amount} ${fr} → ~${q.out} ${to} via PrivarShieldVault + ${routerLabel}`,
+       buildTx: () => ({ to: CONTRACTS.PrivarShieldVault, value, data }),
++      onHash: (hash) => markOpSubmitted(account?.address, opId, hash),
+     });
+ 
+     if (ok) {
+-      // Update local notes
+-      const updated = notes.filter(n => n.commitment !== note.commitment);
+-      if (changeCommitment) updated.push({ ...note, amount:remaining.toString(), commitment:changeCommitment, cloudSynced: !!journalEntry });
+-      updated.push({ commitment:commitmentOut, amount:noteAmountOut.toString(), token:tkTo.addr, ts:Date.now(), cloudSynced: !!journalEntry });
+-      saveNotes(account?.address, updated);
++      finalizeOp(account?.address, opId, "success");
+       recomputeShielded?.();
+       notify("Swap ✓",`${amount} ${fr} → ~${q.out} ${to} — swap confidentiel terminé.`,"success");
++    } else {
++      // ok===false covers 3 distinct cases — never blindly restore the
++      // note, since a real revert and a submitted-but-unconfirmed tx are
++      // NOT the same thing (the nullifier really can be spent on-chain
++      // even though sendRealTx() reports failure, e.g. after its 60s
++      // waitForReceipt() ceiling). Check the receipt ourselves before
++      // deciding.
++      const pending = getPendingOps(account?.address).find(o => o.opId === opId);
++      if (!pending?.txHash) {
++        // Never left the wallet (rejected, or an error before broadcast) —
++        // safe to restore immediately, nothing could have reached the chain.
++        finalizeOp(account?.address, opId, "abandoned");
++      } else {
++        const outcome = await checkReceiptOutcome(pending.txHash);
++        if (outcome === "reverted") finalizeOp(account?.address, opId, "reverted");
++        // outcome === "unknown" -> leave LOCKED; watchPendingOps() resolves
++        // it on the next background pass once the receipt actually lands.
++      }
++      recomputeShielded?.();
+     }
+ 
+     setAmount(""); setQ(null); setLoading(false);
+@@ -4629,8 +4920,9 @@
+     const notes     = getNotes(account?.address);
+     let   amountBig = BigInt(Math.round(Number(amount) * (10 ** tkSend.dec)));
+ 
+-    // Float-safe note lookup filtered by token
+-    const tokenNotes = notes.filter(n => n.token?.toLowerCase() === tkSend.addr.toLowerCase());
++    // Float-safe note lookup filtered by token — locked notes (already
++    // committed to another in-flight op) are excluded, see lockNotesForOp.
++    const tokenNotes = notes.filter(n => n.token?.toLowerCase() === tkSend.addr.toLowerCase() && n.status !== "locked");
+     let note = tokenNotes.find(n => BigInt(Math.round(Number(n.amount)||0)) >= amountBig);
+     if (!note && tokenNotes.length > 0) {
+       // Fallback to largest note — clamp amountBig so we never request more
+@@ -4729,20 +5021,32 @@
+       encryptedNote: encryptedNote || "0x",
+       encryptedSelfEntry: selfEntry || "0x",
+     });
++    // ── Robust note lifecycle (see lockNotesForOp doc comment) ───────────
++    // The sender-side copy of the output note is history only (`status:
++    // "sent"`, not "available") — ownership transferred to the recipient,
++    // so it must never re-enter the sender's spendable set even on
++    // finalizeOp's SUCCESS path.
++    const sendOutputs = [{ commitment: commitmentOut, amount: amountBig.toString(), token: tkSend.addr, sentTo: dest, status: "sent" }];
++    if (changeCommitment) sendOutputs.push({ ...note, amount: remaining.toString(), commitment: changeCommitment, cloudSynced: !!selfEntry });
++    const opId = lockNotesForOp(account?.address, {
++      kind: "send", label: "Confidential Send",
++      inputCommitments: [note.commitment], outputs: sendOutputs,
++    });
++    if (!opId) {
++      notify("Send", "This note was just used by another operation — please retry.", "error");
++      setLoading(false); return;
++    }
++    recomputeShielded?.();
++
+     const ok = await sendRealTx({
+       label: "Confidential Send",
+       description: `${amount} ${sendToken} → ${dest.slice(0,8)}… (shielded)`,
+       buildTx: () => ({ to: CONTRACTS.PrivarShieldVault, value, data }),
++      onHash: (hash) => markOpSubmitted(account?.address, opId, hash),
+     });
+ 
+     if (ok) {
+-      const updated = notes.filter(n => n.commitment !== note.commitment);
+-      if (changeCommitment) updated.push({ ...note, amount: remaining.toString(), commitment: changeCommitment, cloudSynced: !!selfEntry });
+-      // Keep sender's copy of output note (local history only — not a spendable
+-      // note for the sender anymore, ownership transferred to the recipient, so
+-      // this is NOT self-relayed via ViewKeyRegistry).
+-      updated.push({ commitment: commitmentOut, amount: amountBig.toString(), token: tkSend.addr, ts: Date.now(), sentTo: dest });
+-      saveNotes(account?.address, updated);
++      finalizeOp(account?.address, opId, "success");
+       recomputeShielded?.(); // FIX: localStorage "storage" event never fires for same-tab writes — must call explicitly; this is why the sender's displayed balance wasn't dropping after a confidential send
+ 
+       if (isSelfSend) {
+@@ -4766,6 +5070,17 @@
+       } else {
+         notify("Confidential Send ✓", `${amount} USDC sent privately.${selfEntry ? " Change note backed up on-chain." : ""}`, "success");
+       }
++    } else {
++      // See swap()'s identical comment: ok===false is not the same thing
++      // as "safe to restore" — check the receipt before touching notes.
++      const pending = getPendingOps(account?.address).find(o => o.opId === opId);
++      if (!pending?.txHash) {
++        finalizeOp(account?.address, opId, "abandoned");
++      } else {
++        const outcome = await checkReceiptOutcome(pending.txHash);
++        if (outcome === "reverted") finalizeOp(account?.address, opId, "reverted");
++      }
++      recomputeShielded?.();
+     }
+ 
+     setTo(""); setAmount(""); setLoading(false);
+@@ -4870,7 +5185,7 @@
+     let   amountBig = BigInt(Math.round(Number(amount) * (10 ** tk.dec)));
+     const noteAmt   = (n) => BigInt(Math.round(Number(n.amount)||0));
+ 
+-    const tokenNotes = notes.filter(n => n.token.toLowerCase() === tk.addr.toLowerCase());
++    const tokenNotes = notes.filter(n => n.token.toLowerCase() === tk.addr.toLowerCase() && n.status !== "locked");
+     if (tokenNotes.length === 0) {
+       notify("Withdraw", `No shielded ${tk.sym} note found. Shield ${tk.sym} first.`, "error");
+       setLoading(false); return;
+@@ -4946,7 +5261,7 @@
+       ? ` (protocol fee: ${formatToken(withdrawFee, 6)} USDC)`
+       : "";
+ 
+-    let data, txValue, updated, changeCommitment, remaining, journalEntry;
++    let data, txValue, updated, changeCommitment, remaining, journalEntry, withdrawInputCommitments;
+ 
+     if (note) {
+       // ── Single note covers it — UNCHANGED path (same withdraw() call as
+@@ -4971,6 +5286,7 @@
+ 
+       updated = notes.filter(n => n.commitment !== note.commitment);
+       if (changeCommitment) updated.push({ ...note, amount: remaining.toString(), commitment: changeCommitment, cloudSynced: !!journalEntry });
++      withdrawInputCommitments = [note.commitment];
+ 
+     } else {
+       // ── Fragmented balance — SEVERAL notes needed. Spends every selected
+@@ -5012,18 +5328,47 @@
+       const spentCommitments = new Set(selectedNotes.map(n => n.commitment));
+       updated = notes.filter(n => !spentCommitments.has(n.commitment));
+       if (changeCommitment) updated.push({ ...last.note, amount: remaining.toString(), commitment: changeCommitment, cloudSynced: !!journalEntry });
++      withdrawInputCommitments = selectedNotes.map(n => n.commitment);
+     }
+ 
++    // ── Robust note lifecycle (see lockNotesForOp doc comment) ───────────
++    // The only "output" a withdraw can create locally is the change note —
++    // the withdrawn funds themselves leave the shielded pool entirely, to
++    // `target`, and are not a local note at all.
++    const withdrawOutputs = changeCommitment
++      ? [updated.find(n => n.commitment === changeCommitment)]
++      : [];
++    const opId = lockNotesForOp(account?.address, {
++      kind: "withdraw", label: "Withdraw",
++      inputCommitments: withdrawInputCommitments, outputs: withdrawOutputs,
++    });
++    if (!opId) {
++      notify("Withdraw", "One of these notes was just used by another operation — please retry.", "error");
++      setLoading(false); return;
++    }
++    recomputeShielded?.();
++
+     const ok = await sendRealTx({
+       label: "Withdraw",
+       description: `${amount} ${tk.sym} → ${sh(target)} from PrivarShieldVault${feeDesc}${note ? "" : ` (${selectedNotes.length} notes)`}`,
+       buildTx: () => ({ to: CONTRACTS.PrivarShieldVault, value: txValue, data }),
++      onHash: (hash) => markOpSubmitted(account?.address, opId, hash),
+     });
+ 
+     if (ok) {
+-      saveNotes(account?.address, updated);
+-      recomputeShielded?.();
++      finalizeOp(account?.address, opId, "success");
++    } else {
++      // See swap()'s identical comment: ok===false is not the same thing
++      // as "safe to restore" — check the receipt before touching notes.
++      const pending = getPendingOps(account?.address).find(o => o.opId === opId);
++      if (!pending?.txHash) {
++        finalizeOp(account?.address, opId, "abandoned");
++      } else {
++        const outcome = await checkReceiptOutcome(pending.txHash);
++        if (outcome === "reverted") finalizeOp(account?.address, opId, "reverted");
++      }
+     }
++    recomputeShielded?.();
+ 
+     setAmount(""); setDest(""); setLoading(false);
+   };
+@@ -5157,7 +5502,7 @@
+ 
+     // 2. Find shielded note for the selected token
+     const notes      = getNotes(account?.address);
+-    const tokenNotes = notes.filter(n => n.token?.toLowerCase() === tk.addr.toLowerCase());
++    const tokenNotes = notes.filter(n => n.token?.toLowerCase() === tk.addr.toLowerCase() && n.status !== "locked");
+     let note = tokenNotes.find(n => BigInt(Math.round(Number(n.amount)||0)) >= amountBig);
+     if (!note && tokenNotes.length > 0) {
+       // Fallback to largest note — clamp amountBig so we never request more
+@@ -5225,19 +5570,44 @@
+       encryptedEntry: journalEntry || "0x",
+     });
+ 
++    // ── Robust note lifecycle (see lockNotesForOp doc comment) ───────────
++    // Bridged funds leave the shielded pool entirely (destination chain),
++    // so the only local output is the change note, if any.
++    const bridgeOutputs = changeCommitment
++      ? [{ ...note, amount: remaining.toString(), commitment: changeCommitment, cloudSynced: !!journalEntry }]
++      : [];
++    const opId = lockNotesForOp(account?.address, {
++      kind: "bridge", label: `Bridge → ${ch.name}`,
++      inputCommitments: [note.commitment], outputs: bridgeOutputs,
++    });
++    if (!opId) {
++      notify("Bridge", "This note was just used by another operation — please retry.", "error");
++      setLoading(false); setStep(""); return;
++    }
++    recomputeShielded?.();
++
+     const bridgeOk = await sendRealTx({
+       label: `Bridge → ${ch.name}`,
+       description: `${amount} ${token} → ${ch.name} via LiFiPrivacyBridge (privé, 1 tx)`,
+       buildTx: () => ({ to: bridgeAddr, value, data }),
++      onHash: (hash) => markOpSubmitted(account?.address, opId, hash),
+     });
+ 
+     if (bridgeOk) {
+-      const updated = notes.filter(n => n.commitment !== note.commitment);
+-      if (changeCommitment) updated.push({ ...note, amount: remaining.toString(), commitment: changeCommitment, cloudSynced: !!journalEntry });
+-      saveNotes(account?.address, updated);
++      finalizeOp(account?.address, opId, "success");
+       recomputeShielded?.();
+       notify("Bridge ✓", `${amount} ${token} → ${ch.name} — arriving in 1-5 min.`, "success");
+     } else {
++      // See swap()'s identical comment: ok===false is not the same thing
++      // as "safe to restore" — check the receipt before touching notes.
++      const pending = getPendingOps(account?.address).find(o => o.opId === opId);
++      if (!pending?.txHash) {
++        finalizeOp(account?.address, opId, "abandoned");
++      } else {
++        const outcome = await checkReceiptOutcome(pending.txHash);
++        if (outcome === "reverted") finalizeOp(account?.address, opId, "reverted");
++      }
++      recomputeShielded?.();
+       notify("Bridge", "LI.FI bridge failed.", "error");
+     }
+ 
