@@ -1,37 +1,57 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v17.1.3-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v17.2.0-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
-![contracts](https://img.shields.io/badge/Contracts-v5.0.0-4ade80?style=flat-square&labelColor=0a1628)
+![contracts](https://img.shields.io/badge/Contracts-v5.1.0-4ade80?style=flat-square&labelColor=0a1628)
 ![status](https://img.shields.io/badge/status-testnet-4ade80?style=flat-square&labelColor=0a1628)
 
 Confidential on-chain capital management built on **Arc Testnet** (Circle L1, USDC native gas): shield, swap, send, withdraw, and bridge USDC/EURC/cirBTC privately, with protocol-wide note-journal persistence embedded directly in every shielding transaction (v3.4) — no separate broadcast that can silently fail.
 
 ---
 
-## Deployed contracts — Arc Testnet (v5.0.0)
+## Table of contents
+
+- [Deployed contracts — Arc Testnet (v5.1.0)](#deployed-contracts--arc-testnet-v510)
+- [Native-USDC swap fix (v5.1.0 / v17.2.0)](#native-usdc-swap-fix-v510--v1720)
+- [Multi-note withdrawal (v5.1.0 / v17.2.0)](#multi-note-withdrawal-v510--v1720)
+- [Swap decimal-scale fix (v3.4.2)](#swap-decimal-scale-fix-v342)
+- [Swap accounting fix (v3.4.1)](#swap-accounting-fix-v341)
+- [Network](#network)
+- [Feature status](#feature-status)
+- [Architecture](#architecture)
+- [Note-journal persistence (v3.4)](#note-journal-persistence-v34)
+- [Privacy model](#privacy-model)
+- [Protocol fees](#protocol-fees)
+- [Quick start](#quick-start)
+- [Changelog](#changelog)
+- [License](#license)
+
+---
+
+## Deployed contracts — Arc Testnet (v5.1.0)
 
 Deployer / treasury: `0x1Dc72450B3e2782AcD669D7C27073f2C8F2c9894`
-Deployed: 2026-08-20T22:23:28Z — full protocol redeployment. **Not a migration** — prior shielded balances stay in the previous `PrivarShieldVault` address and must be withdrawn from there separately.
+Deployed: 2026-08-21T17:37:31.441Z — full protocol redeployment (`scripts/deploy-v5.1.0-full.js`). **Not a migration** — prior shielded balances stay in the previous `PrivarShieldVault` address and must be withdrawn from there separately.
 
 | Contract | Address | Frontend key (`src/contracts.js`) |
 |---|---|---|
-| **PrivarShieldVault** | `0x67a3c2aEE021ED109c0F84B5190F7e8DD84c415B` | `PrivarShieldVault` |
-| PrivarMerkleTreeManager | `0x88d80fe571668C569066186DEA23727a36dEc8e3` | `PrivarMerkleTreeManager` |
-| PrivarNullifierRegistry | `0xf0DaCEa8B651BE697DEb9aB83db6F28fAcA8A320` | `PrivarNullifierRegistry` |
-| PrivarVerifierZK (Mock¹) | `0x03B8e2cECf8a5CBf3057BAe83581AcbA7ED38c1C` | *(called internally by the vault — no frontend key)* |
-| PrivarDepositManager | `0x89Ef0d180e33a322e005980f6C41d52ae5e4D6e1` | `PrivarDepositManager` |
-| PrivarWithdrawManager | `0x31E52C3e3c6A4d94efdb787aA6B608cbac125161` | *(called internally by the vault — no frontend key)* |
-| **XyloNetPrivacyAdapter** ⁵ ⁶ (direct adapter, primary — always deployed) | `0xFa2B659C16F6a1C71161c1aECA4141425B624DD0` | `XyloNetPrivacyAdapter` |
+| **PrivarShieldVault** ⁷ | `0x52aC41c1a7E7E9d4B531F103b5dB8E7cfe6fDC96` | `PrivarShieldVault` |
+| PrivarMerkleTreeManager | `0xFB793D1f263B0B1deb635b3EaA0d33cC18a04D8C` | `PrivarMerkleTreeManager` |
+| PrivarNullifierRegistry | `0x4190c9A9e2fC2B98DFaBD371e2525609d4C38b64` | `PrivarNullifierRegistry` |
+| PrivarVerifierZK (Mock¹) | `0x9A012Bf753eEc96100d95F438eB81F803D6141C2` | *(called internally by the vault — no frontend key)* |
+| PrivarDepositManager | `0x2aa6Aa9341783BFcF7Ad6CC4aF741F5c00D26fE2` | `PrivarDepositManager` |
+| PrivarWithdrawManager | `0x93143024a6022978df553511323EBE471DE1a336` | *(called internally by the vault — no frontend key)* |
+| **XyloNetPrivacyAdapter** ⁵ ⁸ (direct adapter, primary — always deployed) | `0xCBC60F9dBED1d2a03E434A9dAa379Ab2B6C7d598` | `XyloNetPrivacyAdapter` |
 | UniswapPrivacyAdapter (direct adapter, independent — not deployed, `UNISWAP_ROUTER_ADDRESS` unset) | *(null)* | `UniswapPrivacyAdapter` |
-| LiFiPrivacyAdapter (reserve/aggregator, active, non-default) | `0x1A9278097F58f79aa02b8684207FAd29460F13A9` | `LiFiPrivacyAdapter` |
-| LiFiPrivacyBridge ³ | `0x13C01FbefDb92B19403E431Da5670D266550cDf6` | `LiFiPrivacyBridge` |
-| LiFiDiamond | `0xFf70F4A1d11995621854F3692acF286d8aCd04b2` | `LiFiDiamond` |
-| CurvePrivacyAdapter (reserve, active, empty pool whitelist — see below) | `0x0cd0f3E552081D8d0696062A2bD88b6Bb0f0e001` | `CurvePrivacyAdapter` |
-| PrivarStaking (public, no notes — see below) | `0x08133df916E68b4ac4e9138378D118717Aa85f28` | `PrivarStaking` |
-| **PrivarCloudVault** ² | `0xb3cac16d0388D45ed4b614a162A5890c6658e35F` | `PrivarCloudVault` |
+| LiFiPrivacyAdapter (reserve/aggregator, active, non-default) | `0xc59d76698bA3b731ab69aAdbD5BdfaA535AC5A22` | `LiFiPrivacyAdapter` |
+| LiFiPrivacyBridge ³ | `0xae006654b14e9A2176c09E375DB678e86F08D39e` | `LiFiPrivacyBridge` |
+| LiFiDiamond (unchanged) | `0xFf70F4A1d11995621854F3692acF286d8aCd04b2` | `LiFiDiamond` |
+| XyloRouter (raw DEX router, quoting only — see below) | `0x73742278c31a76dBb0D2587d03ef92E6E2141023` | `XyloRouter` |
+| CurvePrivacyAdapter (reserve, active, empty pool whitelist — see below) | `0x041c2D111da80ddcd5a5d3Af15c582fc6e4736e0` | `CurvePrivacyAdapter` |
+| PrivarStaking (public, no notes — see below) | `0x8bFEA88d7F46cAd14436402827aEa0e286FA64d4` | `PrivarStaking` |
+| **PrivarCloudVault** ² | `0xe009218eEdffE8d69a25235954b1cE7470e9c699` | `PrivarCloudVault` |
 | ViewKeyRegistry (unchanged since v1.0.0) | `0x590D1FDC3FbD4CAb151cb7E1557D9C4ecEa2C24b` | `ViewKeyRegistry` |
 | USDC (native gas token) | `0x3600000000000000000000000000000000000000` | `NATIVE_USDC` |
 | EURC | `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a` | `EURC` |
@@ -42,11 +62,38 @@ Deployed: 2026-08-20T22:23:28Z — full protocol redeployment. **Not a migration
 ² Standalone, additive deployment — no constructor args, no dependency on ShieldVault or any other contract. ShieldVault's own `NoteJournal` event is the *primary* persistence path for new activity — CloudVault stays deployed for backward compatibility with pre-v3.4 journal entries and as the manual "Sync Notes to Cloud" backfill in Settings.
 ³ Repointed at the new ShieldVault via `setShieldVault()` — logic unchanged since v3.4.0.
 ⁵ New in v5.0.0 — dedicated, independent adapter for XyloRouter (XyloNet's own Uniswap V2-compatible router). Fully separate contract/whitelist entry from `UniswapPrivacyAdapter` — see the contracts repo's `XyloNetPrivacyAdapter.sol` doc comment and its [v4.0.0 → v5.0.0 changes](../privar-contracts-v3.4/README.md#v400--v500-changes) section.
-⁶ Redeployed 2026-08-21 (v5.0.1 bug fix — native-tokenIn swaps, e.g. USDC → EURC, previously reverted with `ERC20: transfer amount exceeds balance`; fixed to use the payable `swapExactETHForTokens` variant instead of approve+`swapExactTokensForTokens` when the vault forwards `tokenIn` as raw `msg.value`). Targeted redeploy only — every other v5.0.0 address is unchanged. See the contracts repo's [v5.0.0 → v5.0.1 changes](../privar-contracts-v3.4/README.md#v500--v501-changes).
+⁷ Redeployed 2026-08-21 as part of the full v5.1.0 suite — adds `withdrawBatch()` (multi-note withdrawal). See [Multi-note withdrawal](#multi-note-withdrawal-v510--v1720) below.
+⁸ Redeployed 2026-08-21 (v5.1.0 fix — native-tokenIn swaps, e.g. USDC → EURC, now correctly scale the native 18-decimal `amountIn` to the router's 6-decimal ERC-20 view before `approve()`/`swapExactTokensForTokens()`; two earlier attempts — an unverified payable `swapExactETHForTokens` call, then a temporary outright refusal of native-`tokenIn` swaps — are both superseded). See [Native-USDC swap fix](#native-usdc-swap-fix-v510--v1720) below and the contracts repo's [v5.0.1 → v5.1.0 changes](../privar-contracts-v3.4/README.md#v501--v510-changes).
 
 `TowerSwapAdapter` (the simulated/self-funded rollback target referenced in earlier versions) was removed in v4.0.0 and is no longer part of the stack — a real direct adapter (`XyloNetPrivacyAdapter`) is guaranteed deployed instead, so there's no more single-point-of-failure risk on LI.FI.
 
+`PrivarWithdrawManager` and `PrivarVerifierZK` addresses both changed in this redeploy (called internally by `PrivarShieldVault`, so neither has a direct `CONTRACTS` key in `src/contracts.js`) — listed here for completeness against `deployments/latest.json`.
+
 All fallback addresses are hardcoded in `src/contracts.js` and can be overridden per-deployment with `VITE_*` env vars (Vercel) without touching code.
+
+---
+
+## Native-USDC swap fix (v5.1.0 / v17.2.0)
+
+Native-`tokenIn` swaps (USDC → EURC/cirBTC) previously reverted with `ERC20: transfer amount exceeds balance` inside `XyloRouter`. Root cause: `PrivarShieldVault` forwards a native `tokenIn` amount as `msg.value`, scaled 18-decimal (the vault's internal convention) — but Arc's native-USDC ERC-20 view (`0x3600...0000`, the SAME balance `XyloRouter` reads via `approve()`/`transferFrom()`) is scaled 6-decimal, like any other token. Passing the raw 18-decimal amount straight into the router asked it to pull ~10¹² times too much, which trivially exceeded the real (6-dec) balance.
+
+Two earlier attempts didn't resolve it:
+1. **v5.0.1** — assumed the router needed a dedicated payable `swapExactETHForTokens` entrypoint (standard on canonical Uniswap V2 Router02 forks). Shipped, but failed on a real transaction: the call reverted with empty data at ~400 gas, confirming that entrypoint doesn't exist on `XyloRouter`.
+2. **Interim mitigation** — reverted native-`tokenIn` calls immediately instead of attempting a doomed swap, routing that case to `LiFiPrivacyAdapter` only. Not a real fix, just a safe stopgap.
+
+**Real fix (v5.1.0 contracts):** `XyloNetPrivacyAdapter`/`UniswapPrivacyAdapter` now scale a native `amountIn` down by `1e12` before `approve()`/`swapExactTokensForTokens()` — otherwise the exact same ERC-20 flow used for any other token. No wrapping, no minting, no special entrypoint.
+
+**Frontend (v17.2.0):** the interim `tokenInIsNative` skip in `attemptXyloNet()`/`attemptUniswap()` (added when the interim mitigation shipped) is removed — both direct adapters are tried normally for native-`tokenIn` swaps again, now that they actually work. Confirmed on-chain in both directions: EURC → USDC and USDC → EURC.
+
+---
+
+## Multi-note withdrawal (v5.1.0 / v17.2.0)
+
+The shielded balance shown to the user is the SUM of every unspent note for a token, but `PrivarShieldVault.withdraw()` can only spend ONE nullifier per call. A balance built up across multiple operations (e.g. shield 10 USDC, swap 5 → EURC, swap the EURC back → USDC) commonly ends up as 2+ separate notes — "Tap Max" previously could only withdraw whatever the single largest note covered, silently leaving the rest, and required several manual withdrawals to fully empty the wallet.
+
+Contracts add `PrivarShieldVault.withdrawBatch(bytes32[] nullifiers, uint256[] amounts, bytes32 root, address token, address recipient, address relayer, uint256 relayerFee, address noteOwner, bytes encryptedEntry)`, spending N nullifiers and paying out their combined value in one transaction. `withdraw()` itself is untouched — `LiFiPrivacyBridge.privateBridge()` and every other single-note caller keeps using it directly.
+
+Frontend note selection (`src/contracts.js` / `src/DApp.jsx`) now picks the fewest notes (largest-first) needed to cover the requested amount, instead of requiring one note to cover it alone. A single sufficient note still goes through the exact same, unmodified `withdraw()` call — `withdrawBatch()` is only used when 2+ notes are genuinely needed. New selector: `SEL.withdrawBatch = "0x775968f5"`.
 
 ---
 
@@ -94,10 +141,10 @@ This is a full-suite redeploy (every contract fresh) for a clean, internally-con
 | Panel | Status | Notes |
 |---|---|---|
 | Shield | ✅ | USDC / EURC / cirBTC — protocol fee read live from `PrivarShieldVault.protocolFeeBps()` |
-| Withdraw | ✅ | Unshield to any public address |
+| Withdraw | ✅ | Unshield to any public address — `withdrawBatch()` (v5.1.0) automatically spends multiple notes in one tx when the requested amount needs more than one |
 | Confidential Send | ✅ | ECDH stealth note (real P-256 view keys via `ViewKeyRegistry`), auto-decrypted on connect |
 | Public Send | ✅ | Direct USDC transfer (0x address only) |
-| Confidential Swap | ✅ | `PrivarShieldVault` + LI.FI (`LiFiPrivacyAdapter`) |
+| Confidential Swap | ✅ | Liquidity Engine: direct adapters (`XyloNetPrivacyAdapter`, `UniswapPrivacyAdapter`) tried first, `LiFiPrivacyAdapter`/`CurvePrivacyAdapter` as dynamic reserve — see [Native-USDC swap fix](#native-usdc-swap-fix-v510--v1720) |
 | Bridge | ✅ | LI.FI privacy bridge + CCTP v2 |
 | Cross-device note sync | ✅ | `PrivarCloudVault` — see below |
 | Portfolio | ✅ | Live balances + shielded notes |
@@ -202,7 +249,13 @@ Override any address via Vercel env vars (`VITE_SHIELD_VAULT`, `VITE_CLOUD_VAULT
 
 ## Changelog
 
-### v17.1.3 (current) — real on-chain swap quoting for XyloNet/Uniswap
+### v17.2.0 (current) — native-USDC swaps fixed for real, multi-note withdrawal
+- **Native-USDC swap fix**: removed the interim `tokenInIsNative` skip in `attemptXyloNet()`/`attemptUniswap()` — both direct adapters handle native-`tokenIn` swaps correctly again now that the contracts-side decimal-scale bug (not a missing router feature) is actually fixed. See [Native-USDC swap fix](#native-usdc-swap-fix-v510--v1720) above. Confirmed on-chain: EURC → USDC and USDC → EURC both succeed.
+- **Multi-note withdrawal**: note selection now picks the fewest notes (largest-first) needed to cover a requested amount instead of requiring a single note to cover it alone; uses the new `PrivarShieldVault.withdrawBatch()` (`SEL.withdrawBatch = "0x775968f5"`) when 2+ notes are needed, falls back to the unmodified `withdraw()` for a single sufficient note. See [Multi-note withdrawal](#multi-note-withdrawal-v510--v1720) above.
+- Synced against contracts `v5.1.0` (`deployments/latest.json`) — full-suite redeploy, every address refreshed (`PrivarShieldVault`, `XyloNetPrivacyAdapter`, `LiFiPrivacyAdapter`/`Bridge`, `CurvePrivacyAdapter`, `PrivarStaking`, `PrivarCloudVault`, infra managers)
+- Not a migration — prior shielded balances remain in the previous `PrivarShieldVault` address
+
+### v17.1.3 — real on-chain swap quoting for XyloNet/Uniswap
 - Root cause of the `XyloRouter: INSUFFICIENT_OUTPUT` revert seen after the v5.0.2 contract fix: the Swap panel's `minAmountOut` was derived entirely from an off-chain price-matrix estimate (external EUR/USD feed × 0.9995, then 1% slippage tolerance) — never from the pool's actual reserves. On a thin/imbalanced testnet pool that estimate can diverge from the real rate by more than the tolerance, so the router correctly rejects the trade even though nothing else is broken.
 - Added `buildGetAmountsOutCall()` / `decodeAmountsOutReturn()` (`src/contracts.js`) — standard Uniswap V2 `getAmountsOut(uint256,address[])`, works against both XyloRouter and any future Uniswap V2-shaped router.
 - Added `CONTRACTS.XyloRouter` / `CONTRACTS.UniswapRouter` — raw router addresses, read-only quoting only, never a swap tx target (that stays the `*PrivacyAdapter` address).
