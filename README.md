@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v18.0.2-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v18.0.3-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -13,7 +13,8 @@ Confidential on-chain capital management built on **Arc Testnet** (Circle L1, US
 
 ## Table of contents
 
-- [Swap-in real-balance clamp (v18.0.2)](#v1802-current--swap-in-real-balance-clamp)
+- [Note-lifecycle: stop quarantining swap/send/bridge/withdraw outputs (v18.0.3)](#v1803-current--note-lifecycle-stop-quarantining-swapsendbridgewithdraw-outputs)
+- [Swap-in real-balance clamp (v18.0.2)](#v1802--swap-in-real-balance-clamp)
 - [Sync contract addresses (v18.0.1)](#v1801--sync-contract-addresses-v510-redeploy-2026-08-22)
 - [Robust note lifecycle — swap/send/withdraw/bridge (v18.0.0)](#robust-note-lifecycle--swapsendwithdrawbridge-v1800)
 - [Tx-history decimal-scale fix (v18.0.0)](#tx-history-decimal-scale-fix-v1800)
@@ -253,7 +254,13 @@ Override any address via Vercel env vars (`VITE_SHIELD_VAULT`, `VITE_CLOUD_VAULT
 
 ## Changelog
 
-### v18.0.2 (current) — swap-in real-balance clamp
+### v18.0.3 (current) — note-lifecycle: stop quarantining swap/send/bridge/withdraw outputs
+- **Root cause**: `reconcileAndVerifyNotes()` required every local note to have a matching `Deposited` event once past the 10-minute grace window. Notes created as the *output* of a swap, send, bridge, or partial withdraw (e.g. the leftover "change" note of a partial swap) are added purely from that operation's own embedded NoteJournal entry — they structurally never have, and never will have, a `Deposited` event of their own. Once past the grace window, every one of these perfectly legitimate notes got silently moved to the quarantine bucket ("no matching Deposited event on-chain") and dropped from the displayed shielded balance — even though the vault's real on-chain balance (and protocol TVL) still held the funds. With enough swap/send/bridge activity this can end up quarantining *every* local note, leaving the shielded wallet at $0.00 while TVL is still nonzero — confirmed via ArcScan + the app's own TVL dashboard vs. shielded-wallet panel.
+- **Fix (forward-looking)**: `finalizeOp()` now tags every output note with `origin: op.kind` ("swap"/"send"/"bridge"/"withdraw"); legacy notes without an `origin` field are treated as `"deposit"` for backward compatibility. `reconcileAndVerifyNotes()` now only requires a matching `Deposited` event for `origin === "deposit"` notes — swap/send/bridge/withdraw-created notes are exempt, since checking them against an event type they can never emit was the bug.
+- **Fix (retroactive recovery)**: new `recoverWronglyQuarantinedNotes()`, wired into `useShieldedBalances()`'s `compute()`, replays the local `pendingOps` ledger (untouched by this bug — it records each op's confirmed outcome directly) to identify quarantined notes that were legitimately created by a successful swap/send/bridge/withdraw and never later spent, and restores them to the active, spendable note set. Idempotent, runs on every balance computation, no manual action needed.
+- Frontend-only — no contract changes, no new deployed addresses.
+
+### v18.0.2 — swap-in real-balance clamp
 - **Root cause**: a swap's output note is journaled locally (and in the encrypted cross-device entry) using the pre-trade router quote (`attemptXyloNet()`'s on-chain `getAmountsOut()` read, or its price-matrix fallback) — never the post-trade amount the vault actually measured and credited. On Arc Testnet this local figure ended up exactly 1 raw unit (0.000001 EURC) ahead of the vault's real on-chain EURC balance — confirmed via ArcScan's raw call trace (`ERC20: transfer amount exceeds balance` inside a plain `EURC.transfer(dexRouter, amountIn)`, no adapter ever reached) cross-checked against the vault's real `ERC-20 tokens` balance vs. the shielded-wallet panel's MAX-prefilled amount.
 - **Fix**: `swap()` (`src/DApp.jsx`) now reads the vault's real `tokenIn.balanceOf(PrivarShieldVault)` right before building the transaction and clamps `amountIn` down to it if the locally-recorded note is even slightly ahead — mirroring the same defensive pattern the v3.4.2 MAX-button/note-selection fix already applies to the *local* note-vs-request mismatch, extended to the *local note-vs-real-chain-balance* mismatch. The clamp only ever makes the request smaller, never larger, so it introduces no new failure mode; if the RPC read itself fails, the swap proceeds with the local amount as before rather than blocking outright.
 - Frontend-only — no contract changes, no new deployed addresses.

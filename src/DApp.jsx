@@ -3303,7 +3303,15 @@ function finalizeOp(address, opId, outcome) {
       // (e.g. sendShielded()'s sender-side history copy of the note it just
       // gave away — real ownership transferred to the recipient, so THAT
       // copy must stay non-spendable, not "available").
-      if (!existing.has(out.commitment)) nextNotes.push({ ...out, ts: out.ts || Date.now(), status: out.status || "available" });
+      // `origin: op.kind` ("swap"/"send"/"bridge") records that this note
+      // was NOT created via ShieldPanel's deposit() flow — it has no
+      // corresponding Deposited event of its own (it's a change/output
+      // commitment embedded in this op's own NoteJournal entry instead).
+      // reconcileAndVerifyNotes() below relies on this to avoid wrongly
+      // quarantining a legitimate swap/send/bridge-created note just
+      // because it never had — and never will have — a matching Deposited
+      // event on-chain.
+      if (!existing.has(out.commitment)) nextNotes.push({ ...out, ts: out.ts || Date.now(), status: out.status || "available", origin: out.origin || op.kind });
     }
   } else {
     // reverted / abandoned — on-chain state never changed for this op's
@@ -3755,11 +3763,23 @@ async function reconcileAndVerifyNotes(address) {
         spentNotes.push(n);
         continue;
       }
-      // Only ever quarantine for "unbacked" if this pass's Deposited scan
-      // actually succeeded and returned something — an empty/failed scan
-      // must never be read as "no commitments exist on-chain".
+      // A note's `origin` tells us WHERE it was created:
+      //   - "deposit" or undefined (legacy notes, all pre-dating the
+      //     `origin` field, are assumed deposit-sourced) -> must have a
+      //     matching Deposited event, exactly as before.
+      //   - "swap" / "send" / "bridge" (tagged by finalizeOp from the op's
+      //     own `kind`) -> created via that op's embedded NoteJournal
+      //     entry, NOT a top-level deposit() call. It structurally has no
+      //     Deposited event of its own and never will — checking for one
+      //     was mistakenly quarantining perfectly legitimate change/output
+      //     notes (e.g. the leftover USDC from a partial swap) once they
+      //     aged past the grace window. Confirmed: a swap-created USDC
+      //     note vanished from the shielded wallet ~10+ min after a
+      //     successful swap while the vault's real on-chain balance (and
+      //     protocol TVL) still held the funds.
+      const origin = n.origin || "deposit";
       const pastGrace = (Date.now() - (n.ts || 0)) > VERIFY_SKIP_WINDOW_MS;
-      if (depositedScanOk && depositedCommitments.size > 0 && n.commitment && pastGrace
+      if (origin === "deposit" && depositedScanOk && depositedCommitments.size > 0 && n.commitment && pastGrace
           && !depositedCommitments.has(n.commitment.toLowerCase())) {
         unbackedNotes.push(n);
         continue;
@@ -3828,6 +3848,74 @@ function loadQuarantinedCommitments(address) {
   } catch { return new Set(); }
 }
 
+// ── One-time retroactive recovery for the "unbacked" quarantine bug ────────
+// Before the `origin` field existed, reconcileAndVerifyNotes() required
+// EVERY local note — including perfectly legitimate swap/send/bridge/
+// withdraw-change outputs, which structurally never have a Deposited event
+// of their own — to match a Deposited event once past the grace window.
+// That wrongly quarantined real, spendable notes (confirmed: a swap-created
+// USDC note vanished from the shielded wallet ~10+ min after a successful
+// swap while the vault's real on-chain balance/TVL still held the funds;
+// with enough swap/send/bridge activity this can end up quarantining
+// EVERY local note, leaving the shielded wallet at $0.00 while TVL is
+// still nonzero).
+//
+// The pending-ops ledger (getPendingOps) is untouched by that bug — it's
+// written directly by lockNotesForOp/finalizeOp from each op's own
+// confirmed outcome, never from the Deposited-event check — so it's a
+// reliable, independent record of which commitments were legitimately
+// created by a successful swap/send/bridge/withdraw, and which of those
+// were later themselves spent (i.e. appear as an input of a LATER
+// successful op). Anything sitting in the quarantine bucket that (a) was
+// quarantined only for "no matching Deposited event on-chain", (b) appears
+// as an output of some successful non-deposit op in the ledger, and (c) was
+// never itself later spent, is restored to active notes. Idempotent — safe
+// to call on every load; does nothing once everything's recovered.
+function recoverWronglyQuarantinedNotes(address) {
+  if (!address) return 0;
+  let bucket;
+  try { bucket = JSON.parse(localStorage.getItem(quarantineKey(address)) || "[]"); } catch { return 0; }
+  if (!Array.isArray(bucket) || bucket.length === 0) return 0;
+
+  const ops = getPendingOps(address).filter(o => o.status === "success");
+  const createdBy = new Map(); // commitment(lowercase) -> op.kind that created it
+  const laterSpent = new Set(); // commitment(lowercase) that was itself later spent as an input
+  for (const op of ops) {
+    for (const out of op.outputs || []) {
+      if (out?.commitment) createdBy.set(out.commitment.toLowerCase(), op.kind);
+    }
+  }
+  for (const op of ops) {
+    for (const c of op.inputCommitments || []) {
+      if (c) laterSpent.add(c.toLowerCase());
+    }
+  }
+
+  const stillBad = [], recovered = [];
+  for (const n of bucket) {
+    const c = n.commitment?.toLowerCase();
+    const kind = c ? createdBy.get(c) : undefined;
+    if (n.quarantineReason === "no matching Deposited event on-chain"
+        && kind && kind !== "deposit"
+        && !laterSpent.has(c)) {
+      const { quarantineReason, ...clean } = n;
+      recovered.push({ ...clean, origin: clean.origin || kind, status: "available" });
+    } else {
+      stillBad.push(n);
+    }
+  }
+
+  if (recovered.length > 0) {
+    const notes = getNotes(address);
+    const existing = new Set(notes.map(x => x.commitment));
+    const merged = notes.concat(recovered.filter(r => !existing.has(r.commitment)));
+    saveNotes(address, merged);
+    try { localStorage.setItem(quarantineKey(address), JSON.stringify(stillBad)); } catch {}
+    console.warn(`[Privar] Recovered ${recovered.length} note(s) wrongly quarantined by the Deposited-event check (legitimate swap/send/bridge/withdraw outputs).`);
+  }
+  return recovered.length;
+}
+
 // Sweep local notes for implausible amounts, moving anything corrupt to a
 // separate "quarantined" bucket (kept for audit/manual recovery, never
 // summed into the displayed balance) instead of leaving it in the active
@@ -3871,7 +3959,12 @@ function useShieldedBalances(prices, address) {
   const unbackedRemovedRef = useRef(0);
 
   const compute = useCallback(() => {
-    // Sanity sweep FIRST — never sum a note past the plausibility ceiling.
+    // Retroactive recovery FIRST — restores any note previously (and
+    // wrongly) quarantined for lacking a Deposited event when it was
+    // actually a legitimate swap/send/bridge/withdraw output. Synchronous
+    // (localStorage-only) and idempotent — cheap to run every pass.
+    recoverWronglyQuarantinedNotes(address);
+    // Sanity sweep — never sum a note past the plausibility ceiling.
     const quarantinedNow = quarantineCorruptNotes(address);
     // Wallet-scoped notes — address-keyed to prevent cross-account leakage
     const notes = getNotes(address);
