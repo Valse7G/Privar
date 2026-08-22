@@ -1955,6 +1955,37 @@ async function fetchLogsChunked(address, topics, blocksBack = 2_000_000) {
 const topicToAddress = (t) => "0x" + t.slice(-40);
 const dataWord = (data, i) => "0x" + data.slice(2 + i * 64, 2 + i * 64 + 64);
 
+// ── Ground-truth note reconciliation ────────────────────────────────────
+// Deposited(bytes32 indexed commitment, address indexed token, uint256
+// amount, uint256 leafIndex, bytes32 root) is emitted by EVERY op that
+// creates a note — plain deposit() AND the re-shield step at the end of
+// _privateSwap()/_privateSend()/privateBridge() — always with the REAL,
+// post-fee, correctly-scaled amount the contract actually credited to
+// totalShieldedByToken. Any pre-tx client estimate (a swap quote, a
+// mirrored fee calc) is a best-effort prediction for gas/UX only; THIS is
+// the only number that should ever be persisted as a note's amount. Used
+// by sendRealTx's onReceipt hook (see useTxSend) to correct an op's
+// predicted output(s) right before finalizeOp() writes them to storage —
+// makes local note tracking immune to any future fee-model or
+// decimal-scaling change, instead of needing a fresh client-side mirror
+// fix every time the contract's accounting changes (see swapFeeBps: the
+// v18.0.6 client mirrored flatFeeUsdc but not swapFeeBps, silently
+// overcrediting every swap that landed in native USDC — this makes that
+// whole class of bug structurally impossible instead of patching this one
+// instance of it).
+function decodeDepositedAmountForCommitment(receipt, commitment) {
+  if (!receipt?.logs || !commitment) return null;
+  const commTopic = "0x" + commitment.replace("0x", "").padStart(64, "0").toLowerCase();
+  const vault = (CONTRACTS.PrivarShieldVault || "").toLowerCase();
+  for (const log of receipt.logs) {
+    if (log.address?.toLowerCase() !== vault) continue;
+    if (log.topics?.[0]?.toLowerCase() !== EV2.Deposited) continue;
+    if (log.topics?.[1]?.toLowerCase() !== commTopic) continue;
+    try { return BigInt(dataWord(log.data, 0)); } catch { return null; }
+  }
+  return null; // no matching log — caller keeps its pre-tx estimate, unchanged behavior
+}
+
 function useOnChainActivity(onArc) {
   const cacheKey = `privar_onchain_activity_${(CONTRACTS.PrivarShieldVault||"").toLowerCase()}`;
   const loadCache = () => {
@@ -3281,6 +3312,26 @@ function markOpSubmitted(address, opId, txHash) {
   savePendingOps(address, ops);
 }
 
+// Step 2.5 (optional) — called from sendRealTx's onReceipt once the tx is
+// confirmed, BEFORE finalizeOp() persists the op's outputs as real notes.
+// Overwrites one predicted output's amount with the value actually decoded
+// from the matching on-chain Deposited log (see
+// decodeDepositedAmountForCommitment) — the whole point being that
+// finalizeOp() never has to trust a pre-tx client estimate for what gets
+// written to storage. Silently a no-op if the op/commitment isn't found
+// (e.g. already finalized by a background watcher) — reconciliation is
+// best-effort, never a hard requirement for the op to complete.
+function correctOpOutputAmount(address, opId, commitment, newAmount) {
+  const ops = getPendingOps(address);
+  const idx = ops.findIndex(o => o.opId === opId);
+  if (idx === -1 || ops[idx].finalized) return;
+  const outputs = (ops[idx].outputs || []).map(o =>
+    o.commitment === commitment ? { ...o, amount: newAmount.toString() } : o
+  );
+  ops[idx] = { ...ops[idx], outputs };
+  savePendingOps(address, ops);
+}
+
 // Step 3 — resolve an op. outcome: "success" | "reverted" | "abandoned" | "unknown".
 // "unknown" is intentionally a no-op — see module doc comment (invariant:
 // PENDING ≠ SUCCESS, PENDING ≠ FAILURE — never modify notes on an
@@ -4228,7 +4279,7 @@ function ShieldedWallet({ bals, onMax, tokenFilter, actionableFilter, compact = 
 }
 
 function useTxSend({ account, onArc, notify, refreshBalance, onSuccess }) {
-  const sendRealTx = useCallback(async ({ label, description, buildTx, onHash }) => {
+  const sendRealTx = useCallback(async ({ label, description, buildTx, onHash, onReceipt }) => {
     if (!onArc) { notify(label, "Switch to Arc Testnet first", "error"); return false; }
     if (!account?.address) { notify(label, "Wallet not connected", "error"); return false; }
     notify(label, description + " — confirm in wallet...", "pending");
@@ -4245,6 +4296,18 @@ function useTxSend({ account, onArc, notify, refreshBalance, onSuccess }) {
       if (Number(receipt.status) === 1) {  // FIX F-11: handles both "0x1" (string) and 1 (int) from different RPC implementations
         notify(`${label} ✓`, "Transaction confirmed on Arc Testnet", "success", hash);
         await refreshBalance(account.address);
+        // Optional hook — lets a caller reconcile a pre-tx-predicted note
+        // (e.g. swap()'s noteAmountOut, computed from an off-chain quote +
+        // client-mirrored fee math) against the AUTHORITATIVE value the
+        // contract actually emitted in this same receipt, before the op is
+        // finalized into local storage. This is what keeps the local
+        // shielded balance from ever drifting out of sync with
+        // totalShielded() on-chain — the client's pre-tx estimate is only
+        // ever a best-effort guess for gas/UX purposes, never the source of
+        // truth for what gets persisted. Awaited so finalizeOp() below (in
+        // the caller) always sees the corrected outputs. No-op for every
+        // existing caller that doesn't pass one.
+        try { await onReceipt?.(receipt); } catch (e) { console.warn(`[${label}] onReceipt reconciliation failed (note kept at its pre-tx estimate):`, e.message); }
         // Dashboard stats (TVL, tx count, volume, fees) poll on a timer and
         // would otherwise wait up to 30s to reflect this transaction — refresh
         // them immediately instead of leaving the UI looking stale/unchanged.
@@ -4260,6 +4323,7 @@ function useTxSend({ account, onArc, notify, refreshBalance, onSuccess }) {
       return false;
     }
   }, [account, onArc, notify, refreshBalance, onSuccess]);
+
 
   return { sendRealTx };
 }
@@ -4856,18 +4920,37 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     // outAmountBig here would double-apply the conversion (it's re-applied
     // again by buildWithdrawCalldata later), inflating the displayed
     // shielded balance by 1e12 — confirmed exactly by this bug report.
-    const noteAmountOut = outAmountBig;
-
-    // Protocol fee — only flatFeeUsdc is real; there's no separate swapFeeBps()
-    // on this contract (single unified protocolFeeBps applies everywhere).
-    let flatFeeUsdc = 0n;
+    // Protocol fee — flatFeeUsdc (ERC-20-out leg, paid as separate msg.value,
+    // never touches the shielded note) AND swapFeeBps (native-USDC-out leg,
+    // skimmed on-chain from amountOut BEFORE it's credited to
+    // totalShieldedByToken[USDC] / the new note — see PrivarShieldVault.sol
+    // _privateSwap()'s `if (isNativeOut && swapFeeBps > 0) { ... amountOut -= fee }`).
+    // Both must be read here: the on-chain skim on the output leg was
+    // previously never mirrored client-side, so every swap landing in USDC
+    // journaled/tracked a note for the FULL pre-fee amountOut while the vault
+    // only ever shielded amountOut-fee — a silent, compounding overcount of
+    // the local balance vs the real on-chain totalShielded(USDC), which is
+    // exactly the "local balance higher than TVL" drift reported in prod.
+    const isNativeOut = tkTo.addr.toLowerCase() === NATIVE_USDC.toLowerCase();
+    let flatFeeUsdc = 0n, swapFeeBps = 0n;
     try {
-      const flatRes = await rpcCallWithRetry("eth_call",[{ to:CONTRACTS.PrivarShieldVault, data:SEL.flatFeeUsdc },"latest"]);
+      const [flatRes, swapFeeBpsRes] = await Promise.all([
+        rpcCallWithRetry("eth_call",[{ to:CONTRACTS.PrivarShieldVault, data:SEL.flatFeeUsdc },"latest"]),
+        rpcCallWithRetry("eth_call",[{ to:CONTRACTS.PrivarShieldVault, data:SEL.swapFeeBps },"latest"]),
+      ]);
       flatFeeUsdc = flatRes && flatRes !== "0x" ? BigInt(flatRes) : 0n;
+      swapFeeBps  = swapFeeBpsRes && swapFeeBpsRes !== "0x" ? BigInt(swapFeeBpsRes) : 0n;
     } catch (e) {
       notify("Swap", "Could not read current fees (slow network) — please retry.", "error");
       setLoading(false); return;
     }
+
+    // Mirror the contract's skim exactly (integer division, same rounding
+    // as Solidity) so the local note never claims more than what actually
+    // lands in totalShieldedByToken[USDC].
+    const noteAmountOut = (isNativeOut && swapFeeBps > 0n)
+      ? outAmountBig - (outAmountBig * swapFeeBps / 10000n)
+      : outAmountBig;
 
     // v3.4 — embed the SPEND + ADD(s) journal ops directly in this SAME swap
     // transaction instead of 2-3 separate follow-up calls. See
@@ -4925,6 +5008,23 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       description: `Private swap ${amount} ${fr} → ~${q.out} ${to} via PrivarShieldVault + ${routerLabel}`,
       buildTx: () => ({ to: CONTRACTS.PrivarShieldVault, value, data }),
       onHash: (hash) => markOpSubmitted(account?.address, opId, hash),
+      // Ground truth over prediction (see decodeDepositedAmountForCommitment's
+      // doc comment): noteAmountOut above already mirrors the contract's
+      // swapFeeBps skim, but a mirror can still drift from reality (admin
+      // changes swapFeeBps between quote-time and confirmation, a future fee
+      // model change, a rounding edge case). Reading the real Deposited log
+      // makes that drift structurally impossible instead of relying on the
+      // client math staying perfectly in sync forever.
+      onReceipt: (receipt) => {
+        const real = decodeDepositedAmountForCommitment(receipt, commitmentOut);
+        if (real == null) return; // no matching log — keep the pre-tx estimate, unchanged behavior
+        // Deposited's `amount` is native 18-dec wei for NATIVE_USDC (same
+        // scale as totalShieldedByToken on-chain); local notes are tracked
+        // in display decimals (6-dec) — see noteAmountOut's own doc comment
+        // above for why. Scale back down before persisting.
+        const realDisplay = isNativeOut ? real / NATIVE_TO_ERC20 : real;
+        correctOpOutputAmount(account?.address, opId, commitmentOut, realDisplay);
+      },
     });
 
     if (ok) {
