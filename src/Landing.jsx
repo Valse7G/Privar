@@ -200,13 +200,14 @@ export function Landing({ navigate }) {
     return () => clearInterval(id);
   }, []);
 
+  const short = (addr) => addr ? `${addr.slice(0,6)}...${addr.slice(-4)}` : "···";
   const TERMINAL_LINES = [
-    "ShieldVault :: deployed @ 0xDC92...e8D02  ✓",
-    "MerkleTreeManager :: depth 20 — Poseidon2  ✓",
-    "NullifierRegistry :: append-only, anti double-spend  ✓",
+    `ShieldVault :: deployed @ ${short(CONTRACTS.PrivarShieldVault)}  ✓`,
+    `MerkleTreeManager :: depth 20 — Poseidon2 @ ${short(CONTRACTS.PrivarMerkleTreeManager)}  ✓`,
+    `NullifierRegistry :: append-only, anti double-spend @ ${short(CONTRACTS.PrivarNullifierRegistry)}  ✓`,
     "EmergencyController :: circuit breaker ARMED  ✓",
     "CCTP v2 Bridge :: 6 chains supported  ✓",
-    "Timelock :: 48h minimum delay on upgrades  ✓",
+    `Timelock :: 48h minimum delay on upgrades @ ${short(CONTRACTS.Timelock)}  ✓`,
   ];
 
   // Primary product nav — mirrors the real panels inside Privar OS

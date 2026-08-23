@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, createContext, useContext, us
 import { useTheme, cssVars, THEMES } from "./theme.jsx";
 import {
   CONTRACTS, TOKENS, TOKEN_LIST, SEL, CCTP_DOMAINS,
-  NATIVE_USDC, NATIVE_TO_ERC20, ARC_CHAIN_ID,
+  NATIVE_USDC, NATIVE_TO_ERC20, ARC_CHAIN_ID, PROTOCOL_VERSION,
   encodeAddress, encodeUint256, encodeBytes32,
   decodeUint256, decodeUint8, formatToken,
   buildDepositCalldata, buildWithdrawCalldata, buildWithdrawBatchCalldata,
@@ -487,46 +487,6 @@ function HexGrid({ theme }) {
     draw(); return () => { cancelAnimationFrame(raf); window.removeEventListener("resize", rz); };
   }, [theme?.id]);
   return <canvas ref={ref} style={{ position:"fixed", inset:0, zIndex:0, pointerEvents:"none" }} />;
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   BOOT SEQUENCE
-═══════════════════════════════════════════════════════════════ */
-function Boot({ onDone }) {
-  const [lines, setLines] = useState([]); const [done, setDone] = useState(false);
-  const BL = [
-    { t:0,    c:"#00FFB0", m:"PRIVAR OS v12.0.0  —  Arc Testnet" },
-    { t:280,  c:"#4ADE80", m:"Connecting to Arc Testnet RPC..." },
-    { t:560,  c:"#4ADE80", m:`RPC: ${ARC_TESTNET.rpcUrl}` },
-    { t:840,  c:"#4ADE80", m:`Chain ID: ${ARC_TESTNET.id}  ✓` },
-    { t:1100, c:"#4ADE80", m:"EIP-1193 provider  detecting..." },
-    { t:1380, c:"#00FFB0", m:"Gas token: USDC (ERC-20, 6 dec)  ✓" },
-    { t:1660, c:"#4ADE80", m:"Faucet: faucet.circle.com" },
-    { t:1940, c:"#F59E0B", m:"Mainnet: LOCKED — not yet available" },
-    { t:2200, c:"#00FFB0", m:"━━━  TESTNET READY — CONNECT WALLET  ━━━" },
-  ];
-  useEffect(() => {
-    BL.forEach(({ t, c, m }) => setTimeout(() => setLines(p => [...p, { c, m }]), t));
-    setTimeout(() => { setDone(true); setTimeout(onDone, 500); }, 2800);
-  }, []);
-  return (
-    <div style={{ position:"fixed", inset:0, zIndex:300, background:"#000A06", display:"flex", flexDirection:"column", justifyContent:"center", padding:"0 10vw", fontFamily:"monospace", opacity:done?0:1, transition:"opacity .5s", pointerEvents:done?"none":"all" }}>
-      <div style={{ marginBottom:20 }}>
-        <div style={{ fontSize:9, color:"#1A4A30", letterSpacing:".3em", marginBottom:5 }}>PRIVAR AUTONOMOUS CRYPTO OS — ARC TESTNET (CIRCLE L1)</div>
-        <div style={{ width:40, height:1.5, background:"#00FFB0", marginBottom:16 }} />
-      </div>
-      {lines.map((l, i) => (
-        <div key={i} style={{ fontSize:12, color:l.c, marginBottom:4, letterSpacing:".05em", lineHeight:1.6, animation:"fi .3s ease" }}>
-          <span style={{ color:"#1A4A30", marginRight:8 }}>[{String(i).padStart(2,"0")}]</span>{l.m}
-        </div>
-      ))}
-      {lines.length > 0 && (
-        <div style={{ marginTop:16, height:2, background:"#0A2018", position:"relative", overflow:"hidden" }}>
-          <div style={{ position:"absolute", top:0, left:0, height:"100%", background:"linear-gradient(90deg,#00FFB0,#0EA5E9)", width:`${Math.min(100,(lines.length/BL.length)*100)}%`, transition:"width .28s", boxShadow:"0 0 8px #00FFB0" }} />
-        </div>
-      )}
-    </div>
-  );
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -4553,7 +4513,7 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
           { l:"COMMITMENTS (tree, all-time)", v:leafCnt,  c:"#a78bfa" },
           { l:"VAULT",       v: vaultState==="active" ? "🟢 ACTIVE" : vaultState==="paused" ? "🔴 PAUSED" : "⚪ —",
                               c: vaultState==="active" ? "#4ade80"   : vaultState==="paused" ? "#f87171"   : "#64748b" },
-          { l:"VERSION",     v:ps?.version ? "v"+ps.version : "—", c:"#64748b" },
+          { l:"VERSION",     v:"v"+PROTOCOL_VERSION, c:"#64748b" },
           { l:"PROTOCOL TXS",  v: ps?.totalTxCount != null ? ps.totalTxCount.toString() : (onChainActivity?.ready ? onChainActivity.totalTxCount.toString() : (onChainActivity?.loading ? "loading…" : "—")), c:"#38bdf8" },
           { l:"VOLUME (TOTAL)", v:protocolVolumeUsd, c:"#facc15" },
           { l:"FEES COLLECTED", v:protocolFeesUsd,   c:"#fb923c" },
@@ -6909,7 +6869,6 @@ function SettingsPanel({ account, onArc, notify, sendRealTx, recomputeShielded }
    ROOT APP
 ═══════════════════════════════════════════════════════════════ */
 function AppCore() {
-  const [booted,    setBooted]    = useState(false);
   const [user,      setUser]      = useState(null);
   const [showTour,  setShowTour]  = useState(false);
   const { prices, changes, change24h, lastUpdate, priceError } = usePriceFeed();
@@ -6942,11 +6901,10 @@ function AppCore() {
       `}</style>
 
       <HexGrid theme={theme} />
-      {!booted && <Boot onDone={() => setBooted(true)} />}
       <ChainBanner />
       {showTour && <OnboardingTour onFinish={() => setShowTour(false)} />}
 
-      <div style={{ height:"100vh", display:"flex", alignItems:"center", justifyContent:"center", padding:user?"0":"24px 16px", position:"relative", zIndex:1, opacity:booted?1:0, transition:"opacity .6s ease .2s", overflow:"hidden" }}>
+      <div style={{ height:"100vh", display:"flex", alignItems:"center", justifyContent:"center", padding:user?"0":"24px 16px", position:"relative", zIndex:1, overflow:"hidden" }}>
         {!user
           ? <AuthScreen onAuth={handleAuth} />
           : <Dashboard user={user} prices={prices} changes={changes} change24h={change24h} lastUpdate={lastUpdate} priceError={priceError} />

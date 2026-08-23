@@ -42,6 +42,17 @@
 
 export const ARC_CHAIN_ID = 5042002;
 
+// Deployed protocol/suite version — sourced from latest.json's top-level
+// "_version" field, kept in sync BY HAND every time the address block below
+// is updated from a new latest.json (same manual workflow already used for
+// the addresses themselves). NOT read from the ShieldVault contract's own
+// version() getter: that function is declared `pure` in PrivarShieldVault.sol
+// and returns the hardcoded literal "3.5.0" — it was never bumped across the
+// v4.0.0 / v5.0.0 / v5.1.0 redeploys, so an on-chain eth_call to it is
+// reliably stale forever until the Solidity source itself is fixed and
+// redeployed. This constant is the accurate one to display in the UI.
+export const PROTOCOL_VERSION = "5.1.0"; // latest.json _version — synced 2026-08-22
+
 // ── Contract addresses ────────────────────────────────────────────────────────
 const _c = {
   PrivarShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0xc4c985Aaf3497173435c68E4FACfDfa66c7352A0",
