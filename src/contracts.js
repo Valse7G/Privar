@@ -4,17 +4,20 @@
 //  Addresses synced with latest.json v5.2.0 — Arc Testnet — deployed 2026-08-23T09:14:51.263Z
 //  Full suite redeploy — every Privar-deployed address below was refreshed
 //  in this run (superseding the prior 2026-08-22T20:02:27.418Z deploy — not
-//  a migration, prior shielded balances stay in the old ShieldVault address).
-//  latest.json's _priorShieldVault is null for this deploy (not recorded by
-//  the deploy script this time) — the prior address is carried over below
-//  from what this file had before this sync.
+//  a migration: latest.json's _priorShieldVault is null again, so this
+//  deploy makes no claim of continuity with the previous vault. ANY
+//  shielded balance sitting in the old PrivarShieldVault
+//  (0xc4c985Aaf3497173435c68E4FACfDfa66c7352A0) is now unreachable from
+//  this frontend build and must be withdrawn from the OLD address — e.g.
+//  by pointing VITE_SHIELD_VAULT at it temporarily — before switching
+//  users over to this config).
 //  Two contracts present in latest.json — PrivarWithdrawManager
-//  (0x994aA5543940744f0Ee957dFC0331615A1CAb75D) and PrivarVerifierZK
-//  (0xE47573aE3ccEfAD263008ec95B2cC2Ac6Cb0Ba44) — are NOT wired into
+//  (0x09585dD1709bC2D18209424BD52754E1615F0C84) and PrivarVerifierZK
+//  (0x6DF29f62Bf80fAc35cd25EaeeAFEC395FA5c7700) — are still NOT wired into
 //  _c/CONTRACTS below; this file never referenced them before this deploy
 //  either, so they're left out pending an explicit integration pass rather
-//  than guessed at. XyloRouter and LiFiDiamond are unchanged from v5.0.x
-//  (same addresses in the new latest.json).
+//  than guessed at. XyloRouter, LiFiDiamond, EURC and cirBTC are unchanged
+//  from the prior deploy (same addresses in the new latest.json).
 //  ARCHITECTURE — PrivateSwapRouter / Liquidity Engine, best-execution routing:
 //    - DIRECT ADAPTERS (primary, tried first): XyloNetPrivacyAdapter
 //      (XyloRouter) and UniswapPrivacyAdapter (a real, independently-verified
@@ -48,12 +51,14 @@ export const ARC_CHAIN_ID = 5042002;
 // Deployed protocol/suite version — sourced from latest.json's top-level
 // "_version" field, kept in sync BY HAND every time the address block below
 // is updated from a new latest.json (same manual workflow already used for
-// the addresses themselves). NOT read from the ShieldVault contract's own
-// version() getter: that function is declared `pure` in PrivarShieldVault.sol
-// and returns the hardcoded literal "3.5.0" — it was never bumped across the
-// v4.0.0 / v5.0.0 / v5.1.0 redeploys, so an on-chain eth_call to it is
-// reliably stale forever until the Solidity source itself is fixed and
-// redeployed. This constant is the accurate one to display in the UI.
+// the addresses themselves). As of v5.2.0, PrivarShieldVault.version() is
+// no longer a hardcoded `pure` literal either — it's storage-backed and
+// admin-correctable via setVersion() — but this constant is still kept as
+// the UI's source of truth rather than switching to an on-chain eth_call:
+// an on-chain read would reflect whatever setVersion() was last called
+// with, which could drift from what's actually deployed in this specific
+// frontend build if the two are ever bumped independently. Keeping both
+// hand-synced from the same latest.json avoids that ambiguity.
 export const PROTOCOL_VERSION = "5.2.0"; // latest.json _version — synced 2026-08-23
 
 // ── Contract addresses ────────────────────────────────────────────────────────
@@ -92,7 +97,7 @@ const _c = {
   XyloNetPrivacyAdapter: import.meta.env.VITE_XYLONET_ADAPTER ?? "0x97010582f41D157f11E5c8268325316d6bB4A473",
   // UniswapPrivacyAdapter — DIRECT adapter, independent, reserved for a
   // real Uniswap deployment. null in latest.json: no UNISWAP_ROUTER_ADDRESS
-  // was supplied at deploy time (see contracts repo's deploy-v5.0.0-full.js
+  // was supplied at deploy time (see contracts repo's deploy-v5.2.0-full.js
   // CONFIG comment and UniswapPrivacyAdapter.sol's doc comment for why this
   // wasn't pre-filled with a guessed address) — swap() simply skips it
   // until a verified address is deployed and set here.
