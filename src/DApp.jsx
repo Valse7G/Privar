@@ -1390,29 +1390,34 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
   useEffect(() => { window._privarRecomputeShielded = recomputeShielded; }, [recomputeShielded]);
 
   return (
-    <div style={{ display:"flex", height:"100vh", width:"100%", maxWidth: isMobile ? "100%" : 960, margin:"0 auto", position:"relative", zIndex:2 }}>
+    <div style={{ display:"flex", height:"100vh", width:"100%", maxWidth: isMobile ? "100%" : 1320, margin:"0 auto", position:"relative", zIndex:2 }}>
       {showSearch   && <GlobalSearch onSelect={p=>{setPanel(p);setShowSearch(false);}} onClose={()=>setShowSearch(false)}/>}
       {showDisc     && <DisconnectModal walletName={account?.walletName} address={account?.address} onConfirm={disconnect} onCancel={()=>setShowDisc(false)}/>}
       {mobileNavOpen && <MobileNavMenu nav={NAV} panel={panel} setPanel={setPanel} onClose={()=>setMobileNavOpen(false)} onArc={onArc} account={account}/>}
 
       {/* Sidebar — desktop/tablet only; collapses to a hamburger + MobileNavMenu below MOBILE_BREAKPOINT */}
       {!isMobile && (
-        <div style={{ width:52, flexShrink:0, background:"rgba(var(--panel-rgb),.96)", borderRight:"1px solid rgba(var(--accent-rgb),.08)", display:"flex", flexDirection:"column", alignItems:"center", paddingTop:12, paddingBottom:12, gap:1 }}>
-          <div style={{ width:30, height:30, border:"1.5px solid var(--accent)", borderRadius:3, display:"flex", alignItems:"center", justifyContent:"center", fontSize:14, color:"var(--accent)", boxShadow:"0 0 10px rgba(var(--accent-rgb),.2)", marginBottom:9 }}>◈</div>
-          <div style={{ width:26, height:1, background:"rgba(var(--accent-rgb),.1)", marginBottom:5 }}/>
+        <div style={{ width:208, flexShrink:0, background:"rgba(var(--panel-rgb),.96)", borderRight:"1px solid rgba(var(--accent-rgb),.08)", display:"flex", flexDirection:"column", paddingTop:18, paddingBottom:14, paddingLeft:14, paddingRight:14, gap:2 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:9, marginBottom:18, paddingLeft:2 }}>
+            <div style={{ width:28, height:28, border:"1.5px solid var(--accent)", borderRadius:6, display:"flex", alignItems:"center", justifyContent:"center", fontSize:14, color:"var(--accent)", boxShadow:"0 0 10px rgba(var(--accent-rgb),.2)", flexShrink:0 }}>◈</div>
+            <span style={{ fontSize:15, fontWeight:800, color:"var(--text)", fontFamily:"'Syne',sans-serif", letterSpacing:"-.01em" }}>privar</span>
+          </div>
           {NAV.map((n, i) => n===null
-            ? <div key={i} style={{ width:24, height:1, background:"rgba(var(--accent-rgb),.06)", margin:"3px 0" }}/>
+            ? <div key={i} style={{ height:1, background:"rgba(var(--accent-rgb),.08)", margin:"7px 4px" }}/>
             : <button key={n.id} onClick={()=>setPanel(n.id)} title={n.label}
-                style={{ width:36, height:33, background:panel===n.id?"rgba(var(--accent-rgb),.12)":"transparent", border:`1px solid ${panel===n.id?"rgba(var(--accent-rgb),.3)":"transparent"}`, borderRadius:4, cursor:"pointer", color:panel===n.id?"var(--accent)":"var(--text-faint)", fontSize:14, display:"flex", alignItems:"center", justifyContent:"center", transition:"all .2s", flexShrink:0 }}
-                onMouseEnter={e=>{if(panel!==n.id){e.currentTarget.style.background="rgba(var(--accent-rgb),.06)";e.currentTarget.style.color="var(--text-dim)";}}}
-                onMouseLeave={e=>{if(panel!==n.id){e.currentTarget.style.background="transparent";e.currentTarget.style.color="var(--text-faint)";}}}>
-                {n.icon}
+                style={{ width:"100%", height:34, background:panel===n.id?"rgba(var(--accent-rgb),.12)":"transparent", border:`1px solid ${panel===n.id?"rgba(var(--accent-rgb),.3)":"transparent"}`, borderRadius:5, cursor:"pointer", color:panel===n.id?"var(--accent)":"var(--text-dim)", fontSize:12, display:"flex", alignItems:"center", gap:10, paddingLeft:10, transition:"all .2s", flexShrink:0, fontFamily:"'JetBrains Mono',monospace", letterSpacing:".02em", textAlign:"left" }}
+                onMouseEnter={e=>{if(panel!==n.id){e.currentTarget.style.background="rgba(var(--accent-rgb),.06)";e.currentTarget.style.color="var(--text)";}}}
+                onMouseLeave={e=>{if(panel!==n.id){e.currentTarget.style.background="transparent";e.currentTarget.style.color="var(--text-dim)";}}}>
+                <span style={{ fontSize:14, width:16, textAlign:"center", flexShrink:0 }}>{n.icon}</span>
+                <span>{n.label}</span>
               </button>
           )}
           <div style={{ flex:1 }}/>
           {/* Network indicator */}
-          <div style={{ width:7, height:7, borderRadius:"50%", background:onArc?"var(--accent)":"var(--danger)", boxShadow:onArc?"0 0 6px var(--accent)":"0 0 6px var(--danger)", animation:"pulse 2s infinite", marginBottom:3 }}/>
-          <div style={{ fontSize:7, color:onArc?"var(--text-faint)":"var(--text-dim2)", fontFamily:"monospace", letterSpacing:".04em" }}>{onArc?"TEST":"WRONG"}</div>
+          <div style={{ display:"flex", alignItems:"center", gap:7, paddingLeft:10, paddingTop:8, borderTop:"1px solid rgba(var(--accent-rgb),.08)" }}>
+            <div style={{ width:7, height:7, borderRadius:"50%", background:onArc?"var(--accent)":"var(--danger)", boxShadow:onArc?"0 0 6px var(--accent)":"0 0 6px var(--danger)", animation:"pulse 2s infinite", flexShrink:0 }}/>
+            <span style={{ fontSize:9, color:onArc?"var(--text-faint)":"var(--text-dim2)", fontFamily:"monospace", letterSpacing:".08em" }}>{onArc?"ARC TESTNET":"WRONG NETWORK"}</span>
+          </div>
         </div>
       )}
 
@@ -1422,15 +1427,15 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
         <PriceTicker prices={prices} changes={changes} change24h={change24h} lastUpdate={lastUpdate} priceError={priceError}/>
 
         {/* Top bar */}
-        <div style={{ height:40, flexShrink:0, background:"rgba(var(--panel-rgb),.96)", borderBottom:"1px solid rgba(var(--accent-rgb),.08)", display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 14px", position:"relative" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+        <div style={{ height:52, flexShrink:0, background:"rgba(var(--panel-rgb),.96)", borderBottom:"1px solid rgba(var(--accent-rgb),.08)", display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 18px", position:"relative" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
             {isMobile && (
               <button onClick={()=>setMobileNavOpen(true)} aria-label="Open menu" style={{ width:26, height:26, background:"rgba(var(--accent-rgb),.08)", border:"1px solid rgba(var(--accent-rgb),.2)", borderRadius:3, color:"var(--accent)", fontSize:13, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", marginRight:2, flexShrink:0 }}>
                 ☰
               </button>
             )}
-            <Glitch text="privar" style={{ fontSize:14, fontWeight:800, color:"var(--accent)", fontFamily:"'Syne',sans-serif" }}/>
-            {!isMobile && <span style={{ fontSize:7, color:"var(--text-faint)", fontFamily:"monospace", letterSpacing:".1em" }}>OS v12.0</span>}
+            {isMobile && <Glitch text="privar" style={{ fontSize:14, fontWeight:800, color:"var(--accent)", fontFamily:"'Syne',sans-serif" }}/>}
+            {!isMobile && <span style={{ fontSize:8, color:"var(--text-faint)", fontFamily:"monospace", letterSpacing:".1em" }}>OS v{PROTOCOL_VERSION}</span>}
             <span style={{ fontSize:7, background:"rgba(var(--accent-rgb),.08)", border:"1px solid rgba(var(--accent-rgb),.18)", borderRadius:2, padding:"1px 5px", color:"var(--accent)", fontFamily:"monospace" }}>
               {isMobile ? (onArc?"ARC":"WRONG") : (onArc?"ARC TESTNET":"WRONG NETWORK")}
             </span>
@@ -1468,7 +1473,7 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
         </div>
 
         {/* Panel */}
-        <div style={{ flex:1, padding:"14px", overflow:"auto" }}>
+        <div style={{ flex:1, padding: isMobile ? "14px" : "22px 26px", overflow:"auto" }}>
           {panel==="overview"   && <OverviewPanel   {...panelProps}/>}
           {panel==="shield"     && <ShieldPanel     {...panelProps}/>}
           {panel==="swap"       && <SwapPanel       {...panelProps}/>}
