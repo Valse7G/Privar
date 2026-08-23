@@ -1,10 +1,10 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v18.11.1-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v19.0.0-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
-![contracts](https://img.shields.io/badge/Contracts-v5.1.0-4ade80?style=flat-square&labelColor=0a1628)
+![contracts](https://img.shields.io/badge/Contracts-v5.2.0-4ade80?style=flat-square&labelColor=0a1628)
 ![status](https://img.shields.io/badge/status-testnet-4ade80?style=flat-square&labelColor=0a1628)
 
 Confidential on-chain capital management built on **Arc Testnet** (Circle L1, USDC native gas): shield, swap, send, withdraw, and bridge USDC/EURC/cirBTC privately, with protocol-wide note-journal persistence embedded directly in every shielding transaction (v3.4) — no separate broadcast that can silently fail.
@@ -13,7 +13,8 @@ Confidential on-chain capital management built on **Arc Testnet** (Circle L1, US
 
 ## Table of contents
 
-- [Sync contract addresses (v18.11.1)](#v18111-current-sync-contract-addresses-v510-redeploy-2026-08-22)
+- [Sync contract addresses (v19.0.0)](#v1900-current-sync-contract-addresses-v520-redeploy-2026-08-23)
+- [Sync contract addresses (v18.11.1)](#v18111-sync-contract-addresses-v510-redeploy-2026-08-22)
 - [Sync contract addresses (v18.11.0)](#v18110-sync-contract-addresses-v510-redeploy-2026-08-22)
 - [Fix phantom change-note leak from the v18.0.2 clamp (v18.0.5)](#v1805--fix-phantom-change-note-leak-from-the-v1802-clamp)
 - [Sync contract addresses (v18.0.4)](#v1804--sync-contract-addresses-v510-redeploy-2026-08-22-1)
@@ -39,28 +40,28 @@ Confidential on-chain capital management built on **Arc Testnet** (Circle L1, US
 
 ---
 
-## Deployed contracts — Arc Testnet (v5.1.0)
+## Deployed contracts — Arc Testnet (v5.2.0)
 
 Deployer / treasury: `0x1Dc72450B3e2782AcD669D7C27073f2C8F2c9894`
-Deployed: 2026-08-22T20:02:27.418Z — full protocol redeployment. **Not a migration** — prior shielded balances stay in the previous `PrivarShieldVault` address and must be withdrawn from there separately.
+Deployed: 2026-08-23T09:14:51.263Z — full protocol redeployment. **Not a migration** — prior shielded balances stay in the previous `PrivarShieldVault` address and must be withdrawn from there separately.
 
 | Contract | Address | Frontend key (`src/contracts.js`) |
 |---|---|---|
-| **PrivarShieldVault** ⁷ | `0xc4c985Aaf3497173435c68E4FACfDfa66c7352A0` | `PrivarShieldVault` |
-| PrivarMerkleTreeManager | `0xbdD31fC58D576bEa72E79F0e489639C8EBA8B4d0` | `PrivarMerkleTreeManager` |
-| PrivarNullifierRegistry | `0x8A0ef13993B3531486286484B05DAc8698d52D2e` | `PrivarNullifierRegistry` |
-| PrivarVerifierZK (Mock¹) | `0xE47573aE3ccEfAD263008ec95B2cC2Ac6Cb0Ba44` | *(called internally by the vault — no frontend key)* |
-| PrivarDepositManager | `0xB1415cfb9FD19B162c8F9da6a19ca233E31C26ED` | `PrivarDepositManager` |
-| PrivarWithdrawManager | `0x994aA5543940744f0Ee957dFC0331615A1CAb75D` | *(called internally by the vault — no frontend key)* |
-| **XyloNetPrivacyAdapter** ⁵ ⁸ (direct adapter, primary — always deployed) | `0xa2e7ac19A9014DACaEb82A7eedbed915eAAB766e` | `XyloNetPrivacyAdapter` |
+| **PrivarShieldVault** ⁷ | `0x326E29e573d6d3DFB26a1fB3bFe6Ea9EF1ca7D5d` | `PrivarShieldVault` |
+| PrivarMerkleTreeManager | `0xcdF943a15116A8E7bdfD4d4d850E06a2c887453c` | `PrivarMerkleTreeManager` |
+| PrivarNullifierRegistry | `0x23358454772CffBe07E52F55f078C039A10B06A4` | `PrivarNullifierRegistry` |
+| PrivarVerifierZK (Mock¹) | `0x6DF29f62Bf80fAc35cd25EaeeAFEC395FA5c7700` | *(called internally by the vault — no frontend key)* |
+| PrivarDepositManager | `0x08Aebd48454808251fB7c27799629F313E873d7d` | `PrivarDepositManager` |
+| PrivarWithdrawManager | `0x09585dD1709bC2D18209424BD52754E1615F0C84` | *(called internally by the vault — no frontend key)* |
+| **XyloNetPrivacyAdapter** ⁵ ⁸ (direct adapter, primary — always deployed) | `0x97010582f41D157f11E5c8268325316d6bB4A473` | `XyloNetPrivacyAdapter` |
 | UniswapPrivacyAdapter (direct adapter, independent — not deployed, `UNISWAP_ROUTER_ADDRESS` unset) | *(null)* | `UniswapPrivacyAdapter` |
-| LiFiPrivacyAdapter (reserve/aggregator, active, non-default) | `0x56C168bD66Ad54dCa3a080A89F7Fb65D8300fBE3` | `LiFiPrivacyAdapter` |
-| LiFiPrivacyBridge ³ | `0x0881ecCaA94d6831E7E9640B6F4751425dD4918D` | `LiFiPrivacyBridge` |
+| LiFiPrivacyAdapter (reserve/aggregator, active, non-default) | `0xAF30d301F0D4a633bbFc1c18712aFdd016889AB4` | `LiFiPrivacyAdapter` |
+| LiFiPrivacyBridge ³ | `0x4B7699b88dE3Dc1b57f7a486C3a89bf0DF1Dd900` | `LiFiPrivacyBridge` |
 | LiFiDiamond (unchanged) | `0xFf70F4A1d11995621854F3692acF286d8aCd04b2` | `LiFiDiamond` |
 | XyloRouter (raw DEX router, quoting only — see below) | `0x73742278c31a76dBb0D2587d03ef92E6E2141023` | `XyloRouter` |
-| CurvePrivacyAdapter (reserve, active, empty pool whitelist — see below) | `0x8E7Fcd58f0c1990677a592F9526f3E36161d1Cf0` | `CurvePrivacyAdapter` |
-| PrivarStaking (public, no notes — see below) | `0x92c0C7653999F8e2E1C629930665514d27C7Fe1a` | `PrivarStaking` |
-| **PrivarCloudVault** ² | `0x86615CBcf1925597Ce68E7072A9bE713d35581CF` | `PrivarCloudVault` |
+| CurvePrivacyAdapter (reserve, active, empty pool whitelist — see below) | `0x47B2143e947B6E9F370e834dADDf6587809d3DCf` | `CurvePrivacyAdapter` |
+| PrivarStaking (public, no notes — see below) | `0xbd182b15140451CD6e9165d344E93264871efCB0` | `PrivarStaking` |
+| **PrivarCloudVault** ² | `0x63ceECBd58b36AC094B58018b8433440278e4C2b` | `PrivarCloudVault` |
 | ViewKeyRegistry (unchanged since v1.0.0) | `0x590D1FDC3FbD4CAb151cb7E1557D9C4ecEa2C24b` | `ViewKeyRegistry` |
 | USDC (native gas token) | `0x3600000000000000000000000000000000000000` | `NATIVE_USDC` |
 | EURC | `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a` | `EURC` |
@@ -258,7 +259,14 @@ Override any address via Vercel env vars (`VITE_SHIELD_VAULT`, `VITE_CLOUD_VAULT
 
 ## Changelog
 
-### v18.11.1 (current) — sync contract addresses (v5.1.0 redeploy, 2026-08-22)
+### v19.0.0 (current) — sync contract addresses (v5.2.0 redeploy, 2026-08-23)
+- Config-only sync against the new `deployments/latest.json` (deployed `2026-08-23T09:14:51.263Z`) — full-suite redeploy, every Privar-deployed address refreshed: `PrivarShieldVault`, `PrivarMerkleTreeManager`, `PrivarNullifierRegistry`, `PrivarDepositManager`, `XyloNetPrivacyAdapter`, `LiFiPrivacyAdapter`/`LiFiPrivacyBridge`, `CurvePrivacyAdapter`, `PrivarStaking`, `PrivarCloudVault`.
+- `XyloRouter`, `LiFiDiamond`, `UniswapPrivacyAdapter` (still unset), `Timelock`, `Governance`, `ViewKeyRegistry`, `NATIVE_USDC`/`EURC`/`cirBTC` unchanged.
+- No frontend logic touched — all prior v18.x fixes (note lifecycle, tx-history decimals, swap-in real-balance clamp, phantom change-note leak) carry over unaffected.
+- Not a migration — prior shielded balances remain in the previous `PrivarShieldVault` address (`0x326E29e573d6d3DFB26a1fB3bFe6Ea9EF1ca7D5d` supersedes `0xc4c985Aaf3497173435c68E4FACfDfa66c7352A0`).
+- Major version bump (18 → 19) to mark this as a distinct release line going forward; no breaking change in this release itself.
+
+### v18.11.1 — sync contract addresses (v5.1.0 redeploy, 2026-08-22)
 - Config-only sync against the new `deployments/latest.json` (deployed `2026-08-22T20:02:27.418Z`) — full-suite redeploy, every Privar-deployed address refreshed: `PrivarShieldVault`, `PrivarMerkleTreeManager`, `PrivarNullifierRegistry`, `PrivarDepositManager`, `XyloNetPrivacyAdapter`, `LiFiPrivacyAdapter`/`LiFiPrivacyBridge`, `CurvePrivacyAdapter`, `PrivarStaking`, `PrivarCloudVault`.
 - `XyloRouter`, `LiFiDiamond`, `UniswapPrivacyAdapter` (still unset), `Timelock`, `Governance`, `ViewKeyRegistry`, `NATIVE_USDC`/`EURC`/`cirBTC` unchanged.
 - No frontend logic touched — all v18.0.2/v18.0.3/v18.0.5 fixes (swap-in real-balance clamp, note-lifecycle quarantine fix + retroactive recovery, phantom change-note leak fix) carry over unaffected.
