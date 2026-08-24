@@ -87,7 +87,11 @@ const USDC_ABI = [
 /* ═══════════════════════════════════════════════════════════════
    UTILS
 ═══════════════════════════════════════════════════════════════ */
-const hx = (n) => Array.from({ length: n }, () => "0123456789abcdef"[Math.floor(Math.random() * 16)]).join("");
+// SECURITY AUDIT FIX: was Math.random() — predictable (recoverable from a
+// handful of outputs on some JS engines). Used for the wallet sign-in
+// message's nonce; crypto.getRandomValues() is a CSPRNG, same output shape
+// (n-char hex string), no behavior change.
+const hx = (n) => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => (b % 16).toString(16)).join("");
 const sl = (ms) => new Promise(r => setTimeout(r, ms));
 
 // Format USDC with 6 decimals (ERC-20 interface)
@@ -2202,6 +2206,47 @@ function bytesToHex(bytes) { return "0x" + Array.from(bytes).map(b=>b.toString(1
 // ── View keypair storage (per-wallet, localStorage-scoped) ────────────────
 const viewKeyStorageKey = (addr) => `privar_viewkeypair_${addr.toLowerCase()}`;
 
+// SECURITY AUDIT FIX: this private key material (used to decrypt confidential
+// notes sent to this wallet) used to always sit in localStorage as a raw JWK
+// — readable in full by any future XSS, a malicious browser extension, or
+// local device access. It's now wrapped with AES-GCM under the SAME derived
+// key already used for CloudVault journal encryption (see
+// deriveSelfBackupKey below) — a distinct HKDF `info` string keeps the two
+// key domains separated even though the input signature is shared.
+//
+// Deliberately does NOT introduce any new wallet-signature prompt: wrapping
+// only happens when a backup signature is ALREADY cached locally (from
+// CloudVault sync or an earlier explicit action elsewhere in the app) —
+// checked synchronously via getCachedBackupSignature, no async wallet call.
+// If none is cached yet (e.g. very first connect, before any other feature
+// requested one), the key is stored unwrapped exactly as before — current
+// behavior, unchanged, never worse than the pre-fix baseline. Once a backup
+// signature does become cached (naturally, through normal use of any other
+// feature that needs it), the NEXT read of an unwrapped key transparently
+// re-saves it wrapped — no user action, no prompt, silent upgrade.
+async function _deriveViewKeyWrapKey(address) {
+  const key = await deriveSelfBackupKey(address);
+  return key; // null if no backup signature cached yet — caller handles fallback
+}
+
+async function _wrapViewKeyJwk(address, privateKeyJwk) {
+  const aesKey = await _deriveViewKeyWrapKey(address);
+  if (!aesKey) return null; // no signature cached — caller falls back to plaintext
+  const plaintext = new TextEncoder().encode(JSON.stringify(privateKeyJwk));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, aesKey, plaintext);
+  return { wrapped: true, iv: bytesToHex(iv), ct: bytesToHex(new Uint8Array(ct)) };
+}
+
+async function _unwrapViewKeyJwk(address, wrapped) {
+  const aesKey = await _deriveViewKeyWrapKey(address);
+  if (!aesKey) return null; // signature not cached on this device/session — can't unwrap
+  const pt = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: hexToBytes(wrapped.iv) }, aesKey, hexToBytes(wrapped.ct)
+  );
+  return JSON.parse(new TextDecoder().decode(pt));
+}
+
 // Load an EXISTING local view keypair, or null if none was ever generated on
 // this device. Deliberately does NOT auto-generate — used by the decrypt path,
 // where silently generating a fresh (non-matching) key would mask real failures.
@@ -2209,11 +2254,27 @@ async function loadViewKeyPair(address) {
   try {
     const raw = localStorage.getItem(viewKeyStorageKey(address));
     if (!raw) return null;
-    const { privateKeyJwk, publicKeyHex } = JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    let privateKeyJwk;
+    if (parsed.wrapped) {
+      privateKeyJwk = await _unwrapViewKeyJwk(address, parsed);
+      if (!privateKeyJwk) return null; // wrapped but no signature cached this session — can't decrypt yet
+    } else {
+      privateKeyJwk = parsed.privateKeyJwk;
+      // Opportunistic silent upgrade — see this section's top doc comment.
+      // Best-effort only: if it fails for any reason, the key stays exactly
+      // as readable/usable as it already was, just not yet upgraded.
+      try {
+        const rewrapped = await _wrapViewKeyJwk(address, privateKeyJwk);
+        if (rewrapped) {
+          localStorage.setItem(viewKeyStorageKey(address), JSON.stringify({ ...rewrapped, publicKeyHex: parsed.publicKeyHex }));
+        }
+      } catch {}
+    }
     const privateKey = await crypto.subtle.importKey(
       "jwk", privateKeyJwk, { name:"ECDH", namedCurve:"P-256" }, true, ["deriveBits"]
     );
-    return { privateKey, publicKeyHex };
+    return { privateKey, publicKeyHex: parsed.publicKeyHex };
   } catch { return null; }
 }
 
@@ -2231,7 +2292,13 @@ async function getOrCreateViewKeyPair(address) {
   const publicKeyRaw  = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey)); // 65 bytes, 0x04 prefix
   const publicKeyHex  = bytesToHex(publicKeyRaw);
 
-  localStorage.setItem(viewKeyStorageKey(address), JSON.stringify({ privateKeyJwk, publicKeyHex }));
+  // Wrap at rest if a backup signature is already cached (no new prompt —
+  // see this section's top doc comment); plaintext fallback otherwise,
+  // identical to pre-fix behavior.
+  let stored = null;
+  try { stored = await _wrapViewKeyJwk(address, privateKeyJwk); } catch {}
+  const record = stored ? { ...stored, publicKeyHex } : { privateKeyJwk, publicKeyHex };
+  localStorage.setItem(viewKeyStorageKey(address), JSON.stringify(record));
   return { privateKey: pair.privateKey, publicKeyHex };
 }
 
