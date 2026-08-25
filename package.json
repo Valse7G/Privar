@@ -11,7 +11,9 @@
   },
   "dependencies": {
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "poseidon-lite": "^0.3.0",
+    "@zk-kit/baby-jubjub": "^1.0.3"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.2.1",

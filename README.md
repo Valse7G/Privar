@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v19.1.0-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v19.2.0-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -29,6 +29,7 @@ Confidential on-chain capital management built on **Arc Testnet** (Circle L1, US
 - [Deployment](#deployment)
 - [GitHub / Release procedure](#github--release-procedure)
 - [Changelog](#changelog)
+  - [v19.2.0](#v1920--note-engine-private-sendbridge-to-third-parties-address-free-note-relay-v530-redeploy-2026-08-25)
   - [v19.1.0](#v1910--sync-contract-addresses-v520-redeploy-2026-08-23)
   - [v18.11.1 / v18.11.0 / v18.0.4 / v18.0.1](#config-only-address-syncs)
   - [v18.0.5 — phantom change-note leak fix](#v1805--fix-phantom-change-note-leak-from-the-v1802-clamp)
@@ -53,26 +54,29 @@ Two structural pieces make the client side robust, both explained in full below:
 ## Deployed addresses
 
 Deployer / treasury: `0x1Dc72450B3e2782AcD669D7C27073f2C8F2c9894`
-Deployed: `2026-08-23T09:14:51.263Z` — full protocol redeployment. **Not a migration** — prior shielded balances stay in the previous `PrivarShieldVault` address and must be withdrawn from there separately.
+Deployed: `2026-08-25T20:50:51.702Z` — full protocol redeployment. **Not a migration** — prior shielded balances stay in the previous `PrivarShieldVault` address and must be withdrawn from there separately.
 
 | Contract | Address | Frontend key (`src/contracts.js`) |
 |---|---|---|
-| **PrivarShieldVault** ⁷ | `0x326E29e573d6d3DFB26a1fB3bFe6Ea9EF1ca7D5d` | `PrivarShieldVault` |
-| PrivarMerkleTreeManager | `0xcdF943a15116A8E7bdfD4d4d850E06a2c887453c` | `PrivarMerkleTreeManager` |
-| PrivarNullifierRegistry | `0x23358454772CffBe07E52F55f078C039A10B06A4` | `PrivarNullifierRegistry` |
-| PrivarVerifierZK (Mock¹) | `0x6DF29f62Bf80fAc35cd25EaeeAFEC395FA5c7700` | *(called internally by the vault — no frontend key)* |
-| PrivarDepositManager | `0x08Aebd48454808251fB7c27799629F313E873d7d` | `PrivarDepositManager` |
-| PrivarWithdrawManager | `0x09585dD1709bC2D18209424BD52754E1615F0C84` | *(called internally by the vault — no frontend key)* |
-| **XyloNetPrivacyAdapter** ⁵ ⁸ (direct adapter, primary — always deployed) | `0x97010582f41D157f11E5c8268325316d6bB4A473` | `XyloNetPrivacyAdapter` |
+| **PrivarShieldVault** ⁷ ⁹ | `0xBcC87AE23759385ff232aE5f5a32B5BcCfa9e071` | `PrivarShieldVault` |
+| PrivarMerkleTreeManager | `0x0059fA8930724F42Cb0FFEa15B85591B6E5bfc24` | `PrivarMerkleTreeManager` |
+| PrivarNullifierRegistry | `0x4F613d60e6d0E9E1Fc0062EbefA9eBa292FD9aD3` | `PrivarNullifierRegistry` |
+| PrivarVerifierZK (Mock¹) | `0x28372f13942CAF93eeC59278911cdd5CAFFeA671` | *(called internally by the vault — no frontend key)* |
+| PrivarDepositManager | `0xCF43B5136b3D4aA5cc77A1E6ed4dB551D7eD5D03` | `PrivarDepositManager` |
+| PrivarWithdrawManager | `0x0BC495FC9011315488Fe42a8d5c37ECAB76bC7e7` | *(called internally by the vault — no frontend key)* |
+| **XyloNetPrivacyAdapter** ⁵ ⁸ (direct adapter, primary — always deployed) | `0xb5C65A894124FA0037AfE52d0aC5D9F682339ccf` | `XyloNetPrivacyAdapter` |
 | UniswapPrivacyAdapter (direct adapter, independent — not deployed, `UNISWAP_ROUTER_ADDRESS` unset) | *(null)* | `UniswapPrivacyAdapter` |
-| LiFiPrivacyAdapter (reserve/aggregator, active, non-default) | `0xAF30d301F0D4a633bbFc1c18712aFdd016889AB4` | `LiFiPrivacyAdapter` |
-| LiFiPrivacyBridge ³ | `0x4B7699b88dE3Dc1b57f7a486C3a89bf0DF1Dd900` | `LiFiPrivacyBridge` |
+| LiFiPrivacyAdapter (reserve/aggregator, active, non-default) | `0xdE87bBB30d704caCC1791deE5103C26bfb70Df19` | `LiFiPrivacyAdapter` |
+| LiFiPrivacyBridge ³ | `0x9bB897B490E5979a9e885632AF3FE9714Ee4B0f8` | `LiFiPrivacyBridge` |
+| **LiFiBridgeAdapter** ⁹ (multi-adapter bridge, whitelisted) | `0x395d601286dbff99e38006D865E0B4185a19f6c4` | `LiFiBridgeAdapter` |
 | LiFiDiamond (unchanged) | `0xFf70F4A1d11995621854F3692acF286d8aCd04b2` | `LiFiDiamond` |
 | XyloRouter (raw DEX router, quoting only — see below) | `0x73742278c31a76dBb0D2587d03ef92E6E2141023` | `XyloRouter` |
-| CurvePrivacyAdapter (reserve, active, empty pool whitelist — see below) | `0x47B2143e947B6E9F370e834dADDf6587809d3DCf` | `CurvePrivacyAdapter` |
-| PrivarStaking (public, no notes — see below) | `0xbd182b15140451CD6e9165d344E93264871efCB0` | `PrivarStaking` |
-| **PrivarCloudVault** ² | `0x63ceECBd58b36AC094B58018b8433440278e4C2b` | `PrivarCloudVault` |
+| CurvePrivacyAdapter (reserve, active, empty pool whitelist — see below) | `0x9A781E4BbD2E22BaCEEDB77c3a6D0DE5dBf11742` | `CurvePrivacyAdapter` |
+| PrivarStaking (public, no notes — see below) | `0xa87A2cb3D7A4a334B3605AB4Be4A6F70160E0809` | `PrivarStaking` |
+| **PrivarCloudVault** ² | `0xEb67E6d78C9EE3f10B8A22C018BA11b35830732C` | `PrivarCloudVault` |
 | ViewKeyRegistry (unchanged since v1.0.0) | `0x590D1FDC3FbD4CAb151cb7E1557D9C4ecEa2C24b` | `ViewKeyRegistry` |
+| **PrivarSpendKeyRegistry** ⁹ (Note Engine spend-identity keys) | `0x76B1Ac51c25500A8E90Cb43C99B6053d0B1dC433` | `PrivarSpendKeyRegistry` |
+| **PrivarNoteRelay** ⁹ (address-free encrypted-note relay) | `0xd3aC219D3F73fa2dDE71470E6a99E1760fff5b2B` | `PrivarNoteRelay` |
 | USDC (native gas token) | `0x3600000000000000000000000000000000000000` | `NATIVE_USDC` |
 | EURC | `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a` | `EURC` |
 | cirBTC | `0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF` | `cirBTC` |
@@ -84,6 +88,7 @@ Deployed: `2026-08-23T09:14:51.263Z` — full protocol redeployment. **Not a mig
 ⁵ New in contracts v5.0.0 — dedicated, independent adapter for XyloRouter (XyloNet's own Uniswap V2-compatible router). Fully separate contract/whitelist entry from `UniswapPrivacyAdapter` — see the contracts repo's `XyloNetPrivacyAdapter.sol` doc comment.
 ⁷ Redeployed 2026-08-23 as part of the full contracts v5.2.0 suite — `version()` is no longer a hardcoded `pure` literal, now storage-backed and admin-correctable via `setVersion()`. Same selector, no frontend ABI change needed. See the contracts repo's `PrivarShieldVault.sol` changelog.
 ⁸ Handles native-`tokenIn` swaps correctly since contracts v5.1.0 — see [Native-USDC swap fix](#native-usdc-swap-fix) below.
+⁹ New in contracts v5.3.0 (2026-08-25) — Note Engine additions. `PrivarShieldVault` also gains `privateBridgeWithAdapter()`/`bridgeAdapterWhitelist` (same constructor args, no ABI break for existing callers). See [v19.2.0 changelog entry](#v1920--note-engine-private-sendbridge-to-third-parties-address-free-note-relay-v530-redeploy-2026-08-25) and `NOTE-ENGINE-PROGRESS.md`.
 
 `TowerSwapAdapter` (the simulated/self-funded rollback target referenced in earlier versions) was removed in contracts v4.0.0 and is no longer part of the stack — a real direct adapter (`XyloNetPrivacyAdapter`) is guaranteed deployed instead, so there's no more single-point-of-failure risk on LI.FI.
 
@@ -265,6 +270,16 @@ git push origin main --tags
 Open a PR against `main`, and before merging a contract-address sync specifically: confirm the Shield panel's TVL/version stats reflect the new vault, and — since a full-suite redeploy is never a migration — communicate to users that any balance on the previous `PrivarShieldVault` address must be withdrawn from there before switching over.
 
 ## Changelog
+
+### v19.2.0 — Note Engine: private send/bridge to third parties, address-free note relay (v5.3.0 redeploy, 2026-08-25)
+- Full-suite redeploy sync against the new `deployments/latest.json` (deployed `2026-08-25T20:50:51.702Z`) — every Privar-deployed address refreshed: `PrivarShieldVault`, `PrivarMerkleTreeManager`, `PrivarNullifierRegistry`, `PrivarDepositManager`, `XyloNetPrivacyAdapter`, `LiFiPrivacyAdapter`/`LiFiPrivacyBridge`, `CurvePrivacyAdapter`, `PrivarStaking`, `PrivarCloudVault` — **plus three newly-deployed contracts**: `PrivarSpendKeyRegistry`, `PrivarNoteRelay`, `LiFiBridgeAdapter` (all previously `0x000…000`/not deployed, now live). `PROTOCOL_VERSION` bumped to `"5.3.0"`.
+- **Note Engine (Analyse-Private-Send-Privar.md §7–9)** — deterministic Poseidon/Baby Jubjub commitment & nullifier derivation (`src/noteCrypto.js`, new) now used across `deposit()`, `sendShielded()`, `swap()`, `withdraw()` (single-note and batch), and `bridge()`, replacing the prior `randomBytes32()` commitments/nullifiers everywhere a wallet signature is available — falls back to the old random behavior only for legacy notes or an unavailable signature (never a hard failure).
+- **Private send to a real third party**: `sendShielded()` can now derive a deterministic output commitment for a recipient who has registered a Baby Jubjub spend key on `PrivarSpendKeyRegistry` (previously deterministic derivation only worked for self-sends).
+- **`deposit()` to a third party** (`ShieldPanel`, new optional "DEPOSIT TO" field): shields funds directly into someone else's balance. Hard-blocks (no fallback) if the recipient hasn't registered a spend key — unlike send, a random commitment here would create permanently unspendable funds.
+- **Address-free note relay** (`PrivarNoteRelay`, new): `sendShielded()`/third-party `deposit()` now prefer relaying the encrypted note via `PrivarNoteRelay.relayNote()` — which carries no recipient address at all — over the legacy `ViewKeyRegistry.emitNote()` (recipient address in clear). Falls back to `ViewKeyRegistry` when the recipient hasn't registered a spend key or `PrivarNoteRelay` isn't reachable. `ViewKeyRegistry` itself is unchanged.
+- **Private bridge, multi-adapter** (`PrivarShieldVault.privateBridgeWithAdapter()`, new): the `bridge()` UI flow now prefers this over the legacy standalone `LiFiPrivacyBridge` contract when `LiFiBridgeAdapter` is deployed — same LI.FI route, but through the vault's own whitelisted-adapter mechanism (`bridgeAdapterWhitelist`), same model already used for swap routers. Falls back to `LiFiPrivacyBridge` otherwise.
+- See `NOTE-ENGINE-PROGRESS.md` for the full session-by-session implementation log and the design decisions behind each piece above.
+- Not a migration — prior shielded balances remain in the previous `PrivarShieldVault` address; communicate to users that they need to withdraw from there before switching over.
 
 ### v19.1.0 — sync contract addresses (v5.2.0 redeploy, 2026-08-23)
 - Config-only sync against the new `deployments/latest.json` (deployed `2026-08-23T09:14:51.263Z`) — full-suite redeploy, every Privar-deployed address refreshed: `PrivarShieldVault`, `PrivarMerkleTreeManager`, `PrivarNullifierRegistry`, `PrivarDepositManager`, `XyloNetPrivacyAdapter`, `LiFiPrivacyAdapter`/`LiFiPrivacyBridge`, `CurvePrivacyAdapter`, `PrivarStaking`, `PrivarCloudVault`.

@@ -70,22 +70,30 @@ export const ARC_CHAIN_ID = 5042002;
 // with, which could drift from what's actually deployed in this specific
 // frontend build if the two are ever bumped independently. Keeping both
 // hand-synced from the same latest.json avoids that ambiguity.
-export const PROTOCOL_VERSION = "5.2.0"; // latest.json _version — synced 2026-08-24
+export const PROTOCOL_VERSION = "5.3.0"; // latest.json _version — synced 2026-08-25
 
 // ── Contract addresses ────────────────────────────────────────────────────────
 const _c = {
-  PrivarShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0x22E34d6c2BD5f95fb2da59C59cf51cc55f355aF2",
+  PrivarShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0xBcC87AE23759385ff232aE5f5a32B5BcCfa9e071",
   Timelock:            import.meta.env.VITE_TIMELOCK              ?? "0x8DF7C02012EBec968bdEc100F4fEAF772AcAab99",
   Governance:          import.meta.env.VITE_GOVERNANCE            ?? "0x89F08E2BBc963e48986D8A0FfA23858bA643C78A",
-  PrivarStaking:             import.meta.env.VITE_STAKING               ?? "0xB28905909B072E3CACD5fcdBf380277a9A64c0Ed",
-  PrivarNullifierRegistry:   import.meta.env.VITE_NULLIFIER_REGISTRY    ?? "0x47Cc05B99FB42cFaB86adcB825F7b02d99D48256",
-  PrivarMerkleTreeManager:   import.meta.env.VITE_MERKLE_TREE_MANAGER   ?? "0xaC53C16e5C6A604B8F58Eb78ee35c5C8DBBB674B",
-  PrivarDepositManager:      import.meta.env.VITE_DEPOSIT_MANAGER       ?? "0xCdD8f83E3c9B7ac0640BB73C4cE0AcD9D4ad641e",
+  PrivarStaking:             import.meta.env.VITE_STAKING               ?? "0xa87A2cb3D7A4a334B3605AB4Be4A6F70160E0809",
+  PrivarNullifierRegistry:   import.meta.env.VITE_NULLIFIER_REGISTRY    ?? "0x4F613d60e6d0E9E1Fc0062EbefA9eBa292FD9aD3",
+  PrivarMerkleTreeManager:   import.meta.env.VITE_MERKLE_TREE_MANAGER   ?? "0x0059fA8930724F42Cb0FFEa15B85591B6E5bfc24",
+  PrivarDepositManager:      import.meta.env.VITE_DEPOSIT_MANAGER       ?? "0xCF43B5136b3D4aA5cc77A1E6ed4dB551D7eD5D03",
   // ViewKeyRegistry v1.0.0 — deployed 2026-06-20. Confidential-send auto-discovery
   // (real ECDH stealth notes) is feature-gated on this being non-null — see
   // DApp.jsx ensureViewKeyRegistered()/scanStealthNotes(). NOT part of the
   // ShieldVault-suite redeploys — unchanged, still the original address.
   ViewKeyRegistry:     import.meta.env.VITE_VIEW_KEY_REGISTRY     ?? "0x590D1FDC3FbD4CAb151cb7E1557D9C4ecEa2C24b",
+  // PrivarSpendKeyRegistry — §7.5/§8.4 point 4. Deployed 2026-08-25 as part
+  // of the v5.3.0 Note Engine suite.
+  PrivarSpendKeyRegistry: import.meta.env.VITE_SPEND_KEY_REGISTRY ?? "0x76B1Ac51c25500A8E90Cb43C99B6053d0B1dC433",
+  // v5.3.0 — §9.4. Deployed and whitelisted (setBridgeAdapterWhitelist) as
+  // part of the same run.
+  LiFiBridgeAdapter: import.meta.env.VITE_LIFI_BRIDGE_ADAPTER ?? "0x395d601286dbff99e38006D865E0B4185a19f6c4",
+  // §7.5. Deployed 2026-08-25 as part of the v5.3.0 Note Engine suite.
+  PrivarNoteRelay: import.meta.env.VITE_NOTE_RELAY ?? "0xd3aC219D3F73fa2dDE71470E6a99E1760fff5b2B",
   // PrivarCloudVault — standalone, additive (no constructor args, no link to
   // ShieldVault). Decentralized events-only backup registry for the shielded
   // note journal. Since v3.4, ShieldVault's own NoteJournal event is the
@@ -93,10 +101,10 @@ const _c = {
   // in DApp.jsx) — this stays deployed for backward compatibility with
   // journal entries pushed before the v3.4 upgrade, and as the manual
   // "Sync Notes to Cloud" backfill path in Settings.
-  PrivarCloudVault:    import.meta.env.VITE_CLOUD_VAULT           ?? "0x0805dDFaD62f744B33be472906a8a276Fc262471",
-  // LI.FI privacy adapters — redeployed 2026-08-24 as part of the security-audit-fix v5.2.0 suite.
-  LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0x8836347391c956173668e8699a57A8062d4C5E2A",
-  LiFiPrivacyBridge:   import.meta.env.VITE_LIFI_BRIDGE           ?? "0xCB39c0B12aDcb43c75a89F9a5Adb2138e005147f",
+  PrivarCloudVault:    import.meta.env.VITE_CLOUD_VAULT           ?? "0xEb67E6d78C9EE3f10B8A22C018BA11b35830732C",
+  // LI.FI privacy adapters — redeployed 2026-08-25 as part of the v5.3.0 Note Engine suite.
+  LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0xdE87bBB30d704caCC1791deE5103C26bfb70Df19",
+  LiFiPrivacyBridge:   import.meta.env.VITE_LIFI_BRIDGE           ?? "0x9bB897B490E5979a9e885632AF3FE9714Ee4B0f8",
   LiFiDiamond:         import.meta.env.VITE_LIFI_DIAMOND          ?? "0xFf70F4A1d11995621854F3692acF286d8aCd04b2",
   // v5.0.0 — "0x000...0" (zero address) means "not deployed / not verified
   // yet" and the frontend MUST treat that as "skip this router" — never
@@ -105,7 +113,7 @@ const _c = {
   // Fully independent from UniswapPrivacyAdapter below (own contract, own
   // whitelist entry — see contracts repo's XyloNetPrivacyAdapter.sol doc
   // comment). Deployed via scripts/deploy-xylonet-adapter.js.
-  XyloNetPrivacyAdapter: import.meta.env.VITE_XYLONET_ADAPTER ?? "0x4a40A67472b6cC03591d254ec6545116649dAC76",
+  XyloNetPrivacyAdapter: import.meta.env.VITE_XYLONET_ADAPTER ?? "0xb5C65A894124FA0037AfE52d0aC5D9F682339ccf",
   // UniswapPrivacyAdapter — DIRECT adapter, independent, reserved for a
   // real Uniswap deployment. null in latest.json: no UNISWAP_ROUTER_ADDRESS
   // was supplied at deploy time (see contracts repo's deploy-v5.2.0-full.js
@@ -120,7 +128,7 @@ const _c = {
   // doesn't route through it yet (see DApp.jsx swap()'s comment on why
   // attemptCurve() isn't wired up: needs a per-pair (pool, i, j) config
   // this repo doesn't have yet).
-  CurvePrivacyAdapter:   import.meta.env.VITE_CURVE_ADAPTER   ?? "0x007D44933fd2db78918e61783f0c191CD321DaF6",
+  CurvePrivacyAdapter:   import.meta.env.VITE_CURVE_ADAPTER   ?? "0x9A781E4BbD2E22BaCEEDB77c3a6D0DE5dBf11742",
   // Raw DEX router addresses (NOT the Privar adapter addresses above) — used
   // only for read-only getAmountsOut() eth_call quoting before a XyloNet/
   // Uniswap swap is submitted, so minAmountOut reflects the pool's real
@@ -151,6 +159,9 @@ export const CONTRACTS = {
   PrivarDepositManager:      _c.PrivarDepositManager,
   // TowerSwapAdapter removed in v4.0.0/v5.0.0 — see file header.
   ViewKeyRegistry:     _c.ViewKeyRegistry,
+  PrivarSpendKeyRegistry: _c.PrivarSpendKeyRegistry,
+  LiFiBridgeAdapter: _c.LiFiBridgeAdapter,
+  PrivarNoteRelay: _c.PrivarNoteRelay,
   PrivarCloudVault:    _c.PrivarCloudVault,
   // Direct adapters — primary path, tried first by swap()'s Liquidity
   // Engine. XyloNetPrivacyAdapter and UniswapPrivacyAdapter are fully
@@ -285,6 +296,10 @@ export const SEL = {
   // same keccak256 implementation before trusting this one — see the git
   // history for scripts/compute-selectors if this ever needs re-deriving.
   privateSwapWithRouter:  "0xb4e23fb3", // privateSwapWithRouter(bytes32,bytes32,address,address,uint256,uint256,bytes32,uint256,address,bytes,bytes)
+  // v5.3.0 — §9.4. Selector computed with the same pure-Python keccak256
+  // implementation used for the PrivarSpendKeyRegistry selectors above,
+  // cross-checked against the same known-good selectors before use.
+  privateBridgeWithAdapter: "0x1a9190df", // privateBridgeWithAdapter(bytes32,bytes32,address,uint256,address,uint256,address,address,uint256,bytes,address,bytes)
   setSwapRouterWhitelist: "0x25012238", // setSwapRouterWhitelist(address,bool)
   getWhitelistedSwapRouters: "0x7b79c1bb", // getWhitelistedSwapRouters()
   swapRouterWhitelist:    "0x6332c0fb", // swapRouterWhitelist(address) view
@@ -346,6 +361,20 @@ export const SEL = {
   hasViewKey:         "0x9e0607f1",  // hasViewKey(address)
   getViewKey:         "0xc1f5c989",  // getViewKey(address)
   emitNote:           "0xdefb8b15",  // emitNote(address,bytes,bytes)
+  // PrivarSpendKeyRegistry — selectors computed with a pure-Python keccak256
+  // implementation cross-checked against the FOUR selectors immediately
+  // above (registerViewKey/removeViewKey/hasViewKey/getViewKey, all of
+  // which are already known-correct on-chain) before being trusted — same
+  // verification discipline as the rest of this file (see this file's
+  // header comment on how the ABI-encoding helpers below were validated).
+  registerSpendKey:   "0xa3dead54",  // registerSpendKey(bytes32,bytes32)
+  removeSpendKey:      "0x255ba52e",  // removeSpendKey()
+  hasSpendKey:         "0x67f9b8f2",  // hasSpendKey(address)
+  getSpendKey:         "0xab8387ca",  // getSpendKey(address)
+  // PrivarNoteRelay — §7.5. Same verification discipline (pure-Python
+  // keccak256, cross-checked against known-good selectors first).
+  relayNote:           "0xd24d947c",  // relayNote(bytes32,bytes,bytes)
+  noteCount:           "0x317a4c76",  // noteCount()
 
   // PrivarCloudVault — decentralized events-only note-journal backup registry.
   // Selectors computed from contracts/core/PrivarCloudVault.sol's exact
@@ -1041,6 +1070,55 @@ export function buildApproveCalldata(spender, amount) {
   return SEL.approve + encodeAddress(spender) + encodeUint256(amount);
 }
 
+// PrivarShieldVault.privateBridgeWithAdapter() — v5.3.0, §9.4. The
+// multi-adapter counterpart of buildLiFiBridgeCalldata above (which still
+// targets the separate, standalone LiFiPrivacyBridge contract, unchanged).
+// This one targets PrivarShieldVault directly, letting the caller choose
+// ANY whitelisted IPrivarBridgeAdapter per call — same relationship
+// buildSwapWithRouterCalldata has to the older single-swapRouter model.
+// `amount`/`relayerFee` scaling for native USDC mirrors buildWithdrawCalldata
+// exactly (native branch expects 18-dec wei, not 6-dec display units) — the
+// contract-side accounting is the same withdrawManager.processWithdrawal()
+// path as withdraw() itself.
+export function buildPrivateBridgeWithAdapterCalldata({
+  nullifier, root, token, amount,
+  relayer = "0x0000000000000000000000000000000000000000", relayerFee = 0n,
+  bridgeAdapter, destRecipient, destChainId,
+  routeData = "0x",
+  noteOwner, flatFeeUsdc = 0n, encryptedEntry = "0x",
+}) {
+  const isNativeUsdc = token.toLowerCase() === NATIVE_USDC.toLowerCase();
+  const amountForCalldata     = isNativeUsdc ? BigInt(amount) * NATIVE_TO_ERC20     : BigInt(amount);
+  const relayerFeeForCalldata = isNativeUsdc ? BigInt(relayerFee) * NATIVE_TO_ERC20 : BigInt(relayerFee);
+
+  // 12 args, 2 dynamic (routeData at position 10, encryptedEntry at position
+  // 12) → head = 12 words = 0x180.
+  const offRoute = 0x180n;
+  const offEntry = offRoute + BigInt(encodedBytesSize(routeData));
+  const data = SEL.privateBridgeWithAdapter
+    + encodeBytes32(nullifier)
+    + encodeBytes32(root)
+    + encodeAddress(token)
+    + encodeUint256(amountForCalldata)
+    + encodeAddress(relayer)
+    + encodeUint256(relayerFeeForCalldata)
+    + encodeAddress(bridgeAdapter)
+    + encodeAddress(destRecipient)
+    + encodeUint256(BigInt(destChainId))
+    + encodeUint256(offRoute)
+    + encodeAddress(noteOwner)
+    + encodeUint256(offEntry)
+    + encodeBytes(routeData)
+    + encodeBytes(encryptedEntry);
+
+  // Same convention as buildLiFiBridgeCalldata: native USDC needs no extra
+  // msg.value (the bridged amount already sits in the vault's own balance
+  // from prior deposits); ERC-20 pays its flat fee, if any, as USDC msg.value.
+  const value = isNativeUsdc ? "0x0" : "0x" + (BigInt(flatFeeUsdc) * NATIVE_TO_ERC20).toString(16);
+
+  return { data, value };
+}
+
 // ─── NATIVE USDC GATE ────────────────────────────────────────────────────────
 // Native USDC uses msg.value — no ERC-20 approve needed before deposit
 export function needsApproveBeforeDeposit(tokenAddress) {
@@ -1245,6 +1323,56 @@ export function decodeBytesReturn(hex) {
   const len = parseInt(clean.slice(64, 128), 16);
   if (!len) return null;
   return "0x" + clean.slice(128, 128 + len * 2);
+}
+
+// PrivarSpendKeyRegistry.sol — Baby Jubjub spend-identity key registry (§7.5/§8.4
+// point 4 of the Note Engine plan). Simpler ABI than ViewKeyRegistry above: both
+// functions taking/returning the key deal in two fixed-size bytes32 words (no
+// dynamic `bytes`, no offset/length encoding needed).
+
+// registerSpendKey(bytes32 x, bytes32 y) — head-only, both args static
+export function buildRegisterSpendKeyCalldata(xHex, yHex) {
+  return { data: SEL.registerSpendKey + encodeUint256(BigInt(xHex)) + encodeUint256(BigInt(yHex)), value: "0x0" };
+}
+
+// removeSpendKey() — no args
+export function buildRemoveSpendKeyCalldata() {
+  return { data: SEL.removeSpendKey, value: "0x0" };
+}
+
+// hasSpendKey(address owner) view returns (bool) — for eth_call
+export function buildHasSpendKeyCall(owner) {
+  return SEL.hasSpendKey + encodeAddress(owner);
+}
+
+// getSpendKey(address owner) view returns (bytes32 x, bytes32 y) — for eth_call.
+// Two static return words, no offset/length decoding needed (unlike getViewKey's
+// dynamic `bytes` return, see decodeBytesReturn above) — just slice the raw hex.
+export function buildGetSpendKeyCall(owner) {
+  return SEL.getSpendKey + encodeAddress(owner);
+}
+export function decodeSpendKeyReturn(hex) {
+  if (!hex || hex === "0x" || hex.length < 2 + 128) return null;
+  const clean = hex.replace("0x", "");
+  const x = "0x" + clean.slice(0, 64);
+  const y = "0x" + clean.slice(64, 128);
+  if (/^0x0+$/.test(x) && /^0x0+$/.test(y)) return null; // unregistered — both words zero
+  return { x, y };
+}
+
+// PrivarNoteRelay.sol — §7.5. relayNote(bytes32 viewTag, bytes encryptedNote,
+// bytes ephemeralPubKey): one static bytes32 head word + 2 dynamic bytes
+// params (3 args total, 2 dynamic) → head = 3 words = 0x60.
+export function buildRelayNoteCalldata({ viewTag, encryptedNote, ephemeralPubKey }) {
+  const offEnc = 0x60n;
+  const offEph = offEnc + BigInt(encodedBytesSize(encryptedNote));
+  const data = SEL.relayNote
+    + encodeBytes32(viewTag)
+    + encodeUint256(offEnc)
+    + encodeUint256(offEph)
+    + encodeBytes(encryptedNote)
+    + encodeBytes(ephemeralPubKey);
+  return { data, value: "0x0" };
 }
 
 // ─── PRIVAR CLOUD VAULT ───────────────────────────────────────────────────────

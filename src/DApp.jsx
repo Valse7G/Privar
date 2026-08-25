@@ -20,8 +20,15 @@ import {
   decodeUint64Return,
   previewDepositFee, previewWithdrawFee, previewSwapFee, previewBridgeFee, sendFeeValueHex,
   buildGetAmountsOutCall, decodeAmountsOutReturn,
+  buildRegisterSpendKeyCalldata, buildHasSpendKeyCall, buildGetSpendKeyCall, decodeSpendKeyReturn,
+  buildPrivateBridgeWithAdapterCalldata,
+  buildRelayNoteCalldata,
 } from "./contracts.js";
-
+import {
+  scalarFromEntropy, createOwnedNote, deriveNullifierForSpend, randomBlinding,
+  pubkeyFromSecret, fieldToBytes32, bytes32ToField, computeCommitment,
+  generateEphemeralKeyPair, computeSharedSecret, computeViewTag,
+} from "./noteCrypto.js";
 /* ═══════════════════════════════════════════════════════════════
    ARC NETWORK — OFFICIAL CHAIN CONFIGS (docs.arc.io)
    Testnet : chainId 5042002 | LIVE
@@ -1368,6 +1375,7 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
       await ensureSelfBackupKeyReady(account.address).catch(() => {});
       if (cancelled) return;
       scanStealthNotes(account.address, recomputeShielded).catch(() => {});
+      scanNoteRelay(account.address, recomputeShielded).catch(() => {}); // §7.5 — address-free counterpart
       resyncFromCloudVault(account.address, recomputeShielded).catch(() => {});
       resyncFromShieldVaultJournal(account.address, recomputeShielded).catch(() => {});
       // Retry any SPEND broadcasts that failed on a previous session (see
@@ -1378,9 +1386,15 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
       }).catch(() => {});
     })();
     ensureViewKeyRegistered(account.address, sendViewKeyTx, notify).catch(() => {});
+    // §7.5/§8.4 point 4 — same connect-time, once-per-address pattern as the
+    // view-key registration immediately above, for the Note Engine's spend
+    // identity key. Independent contract, independent guard flag — a
+    // rejected view-key signature doesn't block this, and vice versa.
+    ensureSpendKeyRegistered(account.address, sendViewKeyTx, notify).catch(() => {});
     // Rescan every 2 minutes in case new stealth notes / cloud journal entries arrive
     const id = setInterval(() => {
       scanStealthNotes(account.address, recomputeShielded).catch(() => {});
+      scanNoteRelay(account.address, recomputeShielded).catch(() => {});
       resyncFromCloudVault(account.address, recomputeShielded).catch(() => {});
       resyncFromShieldVaultJournal(account.address, recomputeShielded).catch(() => {});
     }, 120_000);
@@ -2554,6 +2568,96 @@ async function deriveSelfBackupKey(address) {
   return aesKey;
 }
 
+// ── Note Engine spending key (Baby Jubjub) — deterministic per wallet ─────
+// (Analyse-Private-Send-Privar.md §7.6 — dérivation déterministe, condition
+// bloquante pour toute la suite du plan.)
+//
+// Unlike the P-256 view keypair above (which Web Crypto cannot deterministically
+// re-derive from a seed — see exportViewKeyBackup's doc comment), the Note
+// Engine's spendingKey is a raw field scalar we control directly end-to-end,
+// so it CAN be deterministically re-derived from the same cached wallet
+// signature already used for CloudVault (getCachedBackupSignature), under a
+// separate HKDF `info` label to keep key domains apart (same pattern as the
+// view-key wrap-key vs cloudvault-key separation above). Consequences:
+//   - No new signature prompt: reuses the CloudVault backup signature.
+//   - No localStorage persistence needed: nothing sensitive to store, it's
+//     re-derived fresh each session from the cached signature — one fewer
+//     secret at rest than the view keypair.
+//   - Free cross-device recovery: any device that can produce the same
+//     personal_sign output (i.e. controls the wallet) re-derives the exact
+//     same spendingKey — no manual export/import step, unlike the view key.
+const _spendKeyCache = new Map();
+
+async function deriveSpendingKey(address) {
+  if (!address) return null;
+  const lower = address.toLowerCase();
+  if (_spendKeyCache.has(lower)) return _spendKeyCache.get(lower);
+  const sig = getCachedBackupSignature(address);
+  if (!sig) return null;
+  const sigBytes = hexToBytes(sig).slice(0, 64); // r‖s only — see deriveSelfBackupKey's comment on why
+  const keyBytes = await hkdf(sigBytes, hexToBytes(address.toLowerCase()), "privar-notekey-v1");
+  const secret = scalarFromEntropy(keyBytes);
+  _spendKeyCache.set(lower, secret);
+  return secret;
+}
+
+// Ensures a spendingKey is derivable (i.e. the backup signature is cached),
+// prompting the SAME gasless personal_sign as CloudVault if not yet cached —
+// same signature, distinct derived key (separate HKDF info label above).
+async function ensureSpendKeyReady(address) {
+  await ensureSelfBackupKeyReady(address);
+  return deriveSpendingKey(address);
+}
+
+// ── On-chain spend-key registration (§7.5/§8.4 point 4) ────────────────────
+// Mirrors ensureViewKeyRegistered() below exactly (same guard pattern, same
+// retry-once-per-address-per-signature-rejection behavior) — registers
+// pubkeyOwner on PrivarSpendKeyRegistry so OTHER users' sendShielded() can
+// look it up and derive a real deterministic commitmentOut for us (see
+// getRecipientSpendPubKey() further down, used at the sendShielded() call
+// site). Free (eth_call) existence check first, on-chain tx only if missing.
+const spendKeyAttemptedFlag = (addr) => `privar_spendkey_attempted_${addr.toLowerCase()}`;
+
+async function ensureSpendKeyRegistered(address, sendRealTx, notify) {
+  if (!CONTRACTS.PrivarSpendKeyRegistry || CONTRACTS.PrivarSpendKeyRegistry === "0x0000000000000000000000000000000000000000") return;
+  if (!address) return;
+
+  const secret = await ensureSpendKeyReady(address);
+  if (secret == null) return; // signature not available/cached yet — retried next connect, same as view key
+
+  let alreadyRegistered = false;
+  try {
+    const res = await rpcCall("eth_call", [{ to: CONTRACTS.PrivarSpendKeyRegistry, data: buildHasSpendKeyCall(address) }, "latest"]);
+    alreadyRegistered = decodeUint8(res) === 1 || /0{63}1$/.test((res||"").replace("0x",""));
+  } catch { return; }
+
+  if (alreadyRegistered) return;
+  if (localStorage.getItem(spendKeyAttemptedFlag(address))) return;
+
+  localStorage.setItem(spendKeyAttemptedFlag(address), "1");
+  const [x, y] = pubkeyFromSecret(secret);
+  const { data } = buildRegisterSpendKeyCalldata(fieldToBytes32(x), fieldToBytes32(y));
+  await sendRealTx({
+    label: "Enable Private Send to Others",
+    description: "Registering your spend key — lets senders compute a real note commitment when sending to you (instead of a placeholder).",
+    buildTx: () => ({ to: CONTRACTS.PrivarSpendKeyRegistry, value: "0x0", data }),
+  });
+}
+
+// Looks up a recipient's registered Baby Jubjub pubkeyOwner. Returns null if
+// PrivarSpendKeyRegistry isn't deployed or the recipient hasn't registered
+// yet — callers fall back to the pre-existing random-commitmentOut behavior,
+// same graceful-degradation convention as eciesEncryptNoteForRecipient().
+async function getRecipientSpendPubKey(recipientAddress) {
+  if (!CONTRACTS.PrivarSpendKeyRegistry || CONTRACTS.PrivarSpendKeyRegistry === "0x0000000000000000000000000000000000000000") return null;
+  try {
+    const res = await rpcCall("eth_call", [{ to: CONTRACTS.PrivarSpendKeyRegistry, data: buildGetSpendKeyCall(recipientAddress) }, "latest"]);
+    const decoded = decodeSpendKeyReturn(res);
+    if (!decoded) return null;
+    return [bytes32ToField(decoded.x), bytes32ToField(decoded.y)];
+  } catch { return null; }
+}
+
 // Generic encrypt/decrypt for a journal blob (a delta entry OR a checkpoint
 // snapshot — both are just JSON objects). Format: [1 byte flags][12 byte
 // IV][ciphertext + 16 byte GCM tag]. flags is reserved (always 0x01 today,
@@ -3154,6 +3258,113 @@ async function _resyncFromShieldVaultJournalImpl(address, recompute) {
 // Relayed via ViewKeyRegistry.emitNote() — NOT PrivarShieldVault — so this works
 // against the currently-deployed PrivarShieldVault v2.2 with no vault redeploy.
 const NOTE_EMITTED_TOPIC = "0x8aa4f1b6dca845fb984ab9e095ea9417a69f44be2922e9b5cc5e19f83e336851";
+// §7.5 — PrivarNoteRelay.NoteRelayed(uint256 indexed index, bytes32 viewTag,
+// bytes encryptedNote, bytes ephemeralPubKey). Deliberately NOT filterable
+// by a recipient-indexed topic — see PrivarNoteRelay.sol's doc comment for
+// why that's the entire point of this contract.
+const NOTE_RELAYED_TOPIC = "0x10938b0a96a1f8a7e57b0f6d68f56df4df0599842ebd09458a2914fea7fe821a";
+
+// ── Scan chain for address-free relayed notes (§7.5) ───────────────────────
+// Counterpart to scanStealthNotes() above, for PrivarNoteRelay instead of
+// ViewKeyRegistry. No recipientTopic filter is possible here BY DESIGN (see
+// PrivarNoteRelay.sol) — every entry must be checked via ECDH+viewTag
+// locally, so this scans the WHOLE relay log, not just entries addressed to
+// us. Passive: skipped entirely if PrivarNoteRelay isn't deployed on this
+// environment, or if the wallet signature isn't already cached (never
+// prompts from a background scan).
+async function scanNoteRelay(address, recompute) {
+  if (!address || !CONTRACTS.PrivarNoteRelay || CONTRACTS.PrivarNoteRelay === "0x0000000000000000000000000000000000000000") return;
+  const ownSpendingKey = await deriveSpendingKey(address);
+  if (ownSpendingKey == null) return;
+
+  try {
+    const cur = Number(BigInt(await rpcCallWithBackoff("eth_blockNumber", [])));
+    const logs = await fetchLogsPaginated(
+      CONTRACTS.PrivarNoteRelay, [NOTE_RELAYED_TOPIC],
+      Math.max(0, cur - 5_000_000), "privar_noterelay_scanprogress", address, "Privar note-relay scan"
+    );
+    if (!Array.isArray(logs) || logs.length === 0) return;
+
+    const existing = getNotes(address);
+    const existingSet = new Set(existing.map(n => n.commitment).filter(Boolean));
+    const quarantined = loadQuarantinedCommitments(address);
+    let added = 0;
+
+    for (const log of logs) {
+      try {
+        // data = abi.encode(bytes32 viewTag, bytes encryptedNote, bytes ephemeralPubKey)
+        // (index is topics[1], not in data — indexed uint256)
+        const data = (log.data || "").replace("0x", "");
+        if (data.length < 192) continue;
+
+        const viewTagHex = "0x" + data.slice(0, 64);
+        const offset1 = parseInt(data.slice(64, 128), 16);
+        const offset2 = parseInt(data.slice(128, 192), 16);
+
+        const len1   = parseInt(data.slice(offset1*2, offset1*2+64), 16);
+        const encHex = "0x" + data.slice(offset1*2+64, offset1*2+64+len1*2);
+        const len2   = parseInt(data.slice(offset2*2, offset2*2+64), 16);
+        const ephHex = "0x" + data.slice(offset2*2+64, offset2*2+64+len2*2);
+        if (!encHex || !ephHex || ephHex.length !== 2 + 128) continue; // ephemeralPubKey = x(32)‖y(32)
+
+        // Try the ECDH ourselves — this IS the filter (see PrivarNoteRelay.sol's
+        // doc comment on why there's no cheaper way without reintroducing a leak).
+        const ephX = bytes32ToField("0x" + ephHex.slice(2, 66));
+        const ephY = bytes32ToField("0x" + ephHex.slice(66, 130));
+        const shared = computeSharedSecret(ownSpendingKey, [ephX, ephY]);
+        const computedTag = fieldToBytes32(computeViewTag(shared));
+        if (computedTag.toLowerCase() !== viewTagHex.toLowerCase()) continue; // not ours
+
+        const aesKeyBytes = await hkdf(hexToBytes(fieldToBytes32(shared[0])), null, "privar-noterelay-v1");
+        let noteJsonStr;
+        try { noteJsonStr = await aesDecrypt(aesKeyBytes, hexToBytes(encHex)); } catch { continue; }
+        const note = JSON.parse(noteJsonStr);
+        if (!note || !note.commitment) continue;
+        if (existingSet.has(note.commitment)) continue;
+        if (quarantined.has(note.commitment.toLowerCase())) continue;
+        // Same vault-scoping guard as scanStealthNotes() — see its comment.
+        if (note.vault && note.vault.toLowerCase() !== CONTRACTS.PrivarShieldVault.toLowerCase()) continue;
+
+        // Same note-completion as scanStealthNotes(): a transmitted
+        // `blinding` means the sender derived our commitment against our
+        // pubkeyOwner — attach our own secret so it becomes spendable.
+        if (note.blinding) {
+          note.secret = fieldToBytes32(ownSpendingKey);
+          const [px, py] = pubkeyFromSecret(ownSpendingKey);
+          note.pubkeyOwner = [fieldToBytes32(px), fieldToBytes32(py)];
+        }
+
+        existing.push({ ...note, ts: note.ts || Date.now(), source: "noterelay" });
+        existingSet.add(note.commitment);
+        added++;
+      } catch (e) { console.warn("[note relay scan] entry skipped:", e.message); }
+    }
+
+    if (added > 0) {
+      saveNotes(address, existing);
+      recompute?.();
+      console.info(`[Privar note-relay scan] +${added} note(s) discovered`);
+    }
+  } catch (e) { console.warn("[note relay scan]", e.message); }
+}
+
+// ── Send an address-free relayed note (§7.5) ────────────────────────────────
+// Sender-side counterpart to scanNoteRelay() above — builds and broadcasts
+// one PrivarNoteRelay entry for `recipientPubkeyOwner` (a Baby Jubjub point,
+// e.g. from getRecipientSpendPubKey()). Returns the built calldata, or null
+// if PrivarNoteRelay isn't deployed on this environment — callers fall back
+// to the existing ViewKeyRegistry.emitNote() path in that case (see
+// sendShielded()/ShieldPanel.submit()'s relay-choice logic).
+async function buildNoteRelayCalldata(recipientPubkeyOwner, noteJson) {
+  if (!CONTRACTS.PrivarNoteRelay || CONTRACTS.PrivarNoteRelay === "0x0000000000000000000000000000000000000000") return null;
+  const { scalar: ephScalar, pubkey: ephPubkey } = generateEphemeralKeyPair();
+  const shared  = computeSharedSecret(ephScalar, recipientPubkeyOwner);
+  const viewTag = fieldToBytes32(computeViewTag(shared));
+  const aesKeyBytes = await hkdf(hexToBytes(fieldToBytes32(shared[0])), null, "privar-noterelay-v1");
+  const ciphertext  = await aesEncrypt(aesKeyBytes, noteJson);
+  const ephemeralPubKeyHex = "0x" + fieldToBytes32(ephPubkey[0]).slice(2) + fieldToBytes32(ephPubkey[1]).slice(2);
+  return buildRelayNoteCalldata({ viewTag, encryptedNote: bytesToHex(ciphertext), ephemeralPubKey: ephemeralPubKeyHex });
+}
 
 async function scanStealthNotes(address, recompute) {
   if (!address || !CONTRACTS.ViewKeyRegistry) return;
@@ -3177,6 +3388,14 @@ async function scanStealthNotes(address, recompute) {
     const existingSet = new Set(existing.map(n => n.commitment).filter(Boolean));
     const quarantined = loadQuarantinedCommitments(address);
     let added = 0;
+
+    // §7.5/§8.4 point 4 — needed to complete notes that carry a transmitted
+    // `blinding` (sent to us deterministically against OUR pubkeyOwner, see
+    // sendShielded()'s recipientPubkeyOwner branch). Passive lookup only —
+    // deriveSpendingKey() returns null rather than prompting if the backup
+    // signature isn't already cached, so a background scan never surprises
+    // the user with a signature request.
+    const ownSpendingKey = await deriveSpendingKey(address);
 
     for (const log of logs) {
       try {
@@ -3211,6 +3430,17 @@ async function scanStealthNotes(address, recompute) {
         // notesKey is the primary defense; this only closes the narrower stealth-
         // note path where ViewKeyRegistry events aren't vault-filtered upstream.
         if (note.vault && note.vault.toLowerCase() !== CONTRACTS.PrivarShieldVault.toLowerCase()) continue;
+
+        // §7.5/§8.4 point 4 — a transmitted `blinding` means the sender
+        // derived our commitment deterministically against our own
+        // pubkeyOwner (see sendShielded()). Complete the note with what
+        // WE alone can supply (our secret) so it becomes spendable via
+        // deriveNullifierForSpend() later, exactly like a self-created note.
+        if (note.blinding && ownSpendingKey != null) {
+          note.secret = fieldToBytes32(ownSpendingKey);
+          const [px, py] = pubkeyFromSecret(ownSpendingKey);
+          note.pubkeyOwner = [fieldToBytes32(px), fieldToBytes32(py)];
+        }
 
         existing.push({ ...note, ts: ts*1000 || Date.now(), source:"stealth" });
         existingSet.add(note.commitment);
@@ -4366,6 +4596,9 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
   const [loading, setLoading] = useState(false);
   const [confirmTx, setConfirmTx] = useState(null); // pending TxConfirmModal
   const confirmRef = useRef(null);                   // resolves the modal promise
+  // §8.4 point 4 — optional third-party recipient. Empty = deposit to own
+  // shielded balance (unchanged default). Mirrors SendPanel's `dest` field.
+  const [depositRecipient, setDepositRecipient] = useState("");
   const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(); onChainActivity?.refresh?.(); } });
 
   // Ask user to confirm before hitting wallet — shows real amount for ERC-20 / ZK txs
@@ -4393,6 +4626,30 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
     if (amountBig < token.minDeposit) {
       notify("Deposit", `Min deposit: ${token.minDisplay}`, "error");
       setLoading(false); return;
+    }
+
+    // §8.4 point 4 — optional third-party deposit. Unlike sendShielded()'s
+    // graceful fallback-to-random-commitment when a recipient hasn't
+    // registered a spend key (there, worst case is just "no determinism
+    // guarantee yet" for a note the SENDER still locally tracks as spent),
+    // a deposit has no such fallback: a random commitment here would create
+    // funds literally nobody could ever prove ownership of and spend — a
+    // permanent, unrecoverable loss, not a degraded feature. So this path
+    // hard-blocks instead of silently falling back, fails fast before any
+    // approve/deposit tx is even built.
+    const recipientTrim = depositRecipient.trim();
+    const isThirdPartyDeposit = recipientTrim.length > 0 && recipientTrim.toLowerCase() !== account?.address?.toLowerCase();
+    let thirdPartyPubkeyOwner = null;
+    if (isThirdPartyDeposit) {
+      if (!(recipientTrim.startsWith("0x") && recipientTrim.length === 42)) {
+        notify("Deposit", "Invalid recipient address.", "error");
+        setLoading(false); return;
+      }
+      thirdPartyPubkeyOwner = await getRecipientSpendPubKey(recipientTrim);
+      if (!thirdPartyPubkeyOwner) {
+        notify("Deposit", "Recipient hasn't enabled Private Send yet (no spend key registered) — depositing to them now would create funds nobody could ever spend. Ask them to open Privar once first, or deposit to your own balance and use Send afterward instead.", "error");
+        setLoading(false); return;
+      }
     }
 
     // ── PRE-FLIGHT: verify token is registered in PrivarDepositManager ──────────
@@ -4431,11 +4688,6 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
       if (!approved) { setLoading(false); return; }
     }
 
-    // Step 2: Generate commitment (random secret note)
-    // In a real ZK system: commitment = Poseidon(secret, nullifier, amount, token)
-    // With MockVerifierZK, any bytes32 is accepted — random is fine for testnet
-    const commitment = randomBytes32();
-
     // ── Protocol fee preview (v2.8 — ALWAYS denominated/collected in USDC) ──────
     // Native USDC: % fee (protocolFeeBps, floored at MIN_DEPOSIT_FEE), skimmed from
     // amount — note saved locally must use the NET amount, matching what PrivarShieldVault
@@ -4463,6 +4715,42 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
       return;
     }
 
+    // Step 2: Generate commitment — deterministic Note Engine derivation
+    // (Analyse-Private-Send-Privar.md §7.6/§8.3), replaces the old
+    // randomBytes32() commitment. Computed HERE (after netAmount is known,
+    // not before) because commitment = Poseidon(pubkeyOwner, amount, token,
+    // blinding) must embed the actual on-chain-credited amount.
+    // spendingKey is deterministically re-derivable from the same cached
+    // wallet signature already used for CloudVault — see ensureSpendKeyReady.
+    const spendingKey = isThirdPartyDeposit ? null : await ensureSpendKeyReady(account?.address);
+    let commitment, noteSecret, noteBlinding, notePubkeyOwner, thirdPartyBlinding;
+    if (isThirdPartyDeposit) {
+      // §8.4 point 4 — commitment built against the RECIPIENT's own
+      // pubkeyOwner (checked non-null above), never ours. We don't know
+      // their secret, only their public pubkeyOwner, so we pick the
+      // blinding ourselves and transmit it below (same pattern as
+      // sendShielded()'s third-party branch) — without it the recipient
+      // could never reconstruct this exact commitment.
+      const blinding = randomBlinding();
+      const c = computeCommitment({ pubkeyOwner: thirdPartyPubkeyOwner, amount: netAmount, token: token.address, blinding });
+      commitment = fieldToBytes32(c);
+      thirdPartyBlinding = fieldToBytes32(blinding);
+    } else if (spendingKey != null) {
+      const built = createOwnedNote({ spendingKey, amount: netAmount, token: token.address });
+      commitment = built.commitment;
+      noteSecret = built.secret;
+      noteBlinding = built.blinding;
+      notePubkeyOwner = built.pubkeyOwner;
+    } else {
+      // Fallback: wallet signature not available yet (e.g. user dismissed the
+      // gasless personal_sign prompt). Keep the pre-existing random-commitment
+      // behavior rather than blocking the deposit outright — the note just
+      // won't carry a deterministically derivable nullifier until the user
+      // signs once. reconcileAndVerifyNotes() already tolerates notes without
+      // a nullifier link (see AUDIT FINDING comment near getNotes()).
+      commitment = randomBytes32();
+    }
+
     // Step 3: Build deposit calldata
     // v3.4 — the note-journal entry is embedded DIRECTLY in this same
     // transaction (NoteJournal event) instead of a separate follow-up call
@@ -4471,8 +4759,15 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
     // signature, network drop) after the shield itself had already
     // succeeded, permanently orphaning the note's journal entry on every
     // OTHER device — see PrivarShieldVault.sol's NoteJournal doc comment.
+    // §8.4 point 4 — for a third-party deposit there is nothing to add to
+    // OUR OWN journal (it isn't our note), so this step is skipped entirely
+    // in that case; the recipient gets their own encrypted note payload
+    // separately, relayed via ViewKeyRegistry AFTER the deposit succeeds
+    // (see below), same transport sendShielded() already uses.
     await ensureSelfBackupKeyReady(account?.address);
-    const journalEntry = await encryptJournalBlob(account?.address, { ts: Date.now(), ops: [{ t: 0, commitment, amount: netAmount.toString(), token: token.address }] });
+    const journalEntry = isThirdPartyDeposit
+      ? null
+      : await encryptJournalBlob(account?.address, { ts: Date.now(), ops: [{ t: 0, commitment, amount: netAmount.toString(), token: token.address }] });
 
     // For native USDC: value = amount * 1e12 (wei), no ERC-20 transferFrom
     // For EURC/cirBTC: value = flatFeeUsdc * 1e12 (the separate USDC fee payment, v2.8), standard ERC-20 transferFrom
@@ -4480,14 +4775,15 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
 
     // Show confirmation modal before hitting wallet — shows real amount (wallet shows value=0 for ERC-20)
     const confirmed = await askConfirm({
-      label:  `Shield ${token.symbol}`,
+      label:  isThirdPartyDeposit ? `Shield ${token.symbol} → ${recipientTrim.slice(0,8)}…` : `Shield ${token.symbol}`,
       amount,
       token:  token.symbol,
       note:   (token.isNative
         ? "Native USDC — wallet will show the USDC value correctly. 1 transaction."
         : `Token deposit — your wallet shows value: 0 for the ${token.symbol} transfer itself (the protocol fee is paid separately, in USDC). 2 steps: approve then deposit.`)
         + (isNativeUsdc && depositFee > 0n ? ` Protocol fee: ${formatToken(depositFee, token.decimals)} ${token.symbol} — you'll receive ${formatToken(netAmount, token.decimals)} ${token.symbol} shielded.` : "")
-        + (!isNativeUsdc && flatFeeUsdc > 0n ? ` Protocol fee: ${formatToken(flatFeeUsdc, 6)} USDC (paid separately — your full ${amount} ${token.symbol} is shielded, untouched).` : ""),
+        + (!isNativeUsdc && flatFeeUsdc > 0n ? ` Protocol fee: ${formatToken(flatFeeUsdc, 6)} USDC (paid separately — your full ${amount} ${token.symbol} is shielded, untouched).` : "")
+        + (isThirdPartyDeposit ? ` These funds go directly to ${recipientTrim.slice(0,8)}…'s shielded balance — not yours. An extra transaction will relay them an encrypted note so their wallet auto-discovers it.` : ""),
     });
     if (!confirmed) { setLoading(false); return; }
 
@@ -4498,13 +4794,83 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
     });
 
     if (ok) {
+      if (isThirdPartyDeposit) {
+        // §8.4 point 4 — nothing to save locally: this note belongs to the
+        // recipient, not us. Relay it to them the same way sendShielded()
+        // does for a third-party output (second, non-blocking tx) — funds
+        // already moved successfully in tx 1 regardless of this outcome.
+        recomputeShielded?.();
+        try {
+          const noteJson = JSON.stringify({
+            commitment, amount: netAmount.toString(), token: token.address,
+            from: account?.address, ts: Date.now(), vault: CONTRACTS.PrivarShieldVault,
+            blinding: thirdPartyBlinding, // required — see commitment computation above
+          });
+          // §7.5 — prefer the address-free relay (we already have
+          // thirdPartyPubkeyOwner — same registry, no extra lookup) over
+          // ViewKeyRegistry.emitNote(), same preference order as
+          // sendShielded()'s third-party branch.
+          const noteRelay = await buildNoteRelayCalldata(thirdPartyPubkeyOwner, noteJson);
+          if (noteRelay) {
+            const relayed = await sendRealTx({
+              label: "Deposit · Note Relay",
+              description: `Delivering encrypted note (address-free relay)…`,
+              buildTx: () => ({ to: CONTRACTS.PrivarNoteRelay, value: "0x0", data: noteRelay.data }),
+            });
+            notify(
+              "Shield ✓",
+              relayed
+                ? `${formatToken(netAmount, token.decimals)} ${token.symbol} shielded directly to ${recipientTrim.slice(0,8)}…'s balance — no address was published on-chain.`
+                : `${formatToken(netAmount, token.decimals)} ${token.symbol} shielded to ${recipientTrim.slice(0,8)}…, but note relay wasn't confirmed — share the commitment manually so they can locate it: ${commitment}`,
+              "success"
+            );
+            setDepositRecipient("");
+            setAmount(""); setLoading(false);
+            return;
+          }
+          const ecies = await eciesEncryptNoteForRecipient(recipientTrim, noteJson);
+          if (ecies) {
+            const { data: noteData } = buildEmitNoteCalldata({ recipient: recipientTrim, encryptedNote: ecies.encryptedNote, ephemeralPubKey: ecies.ephemeralPubKey });
+            const relayed = await sendRealTx({
+              label: "Deposit · Note Relay",
+              description: `Delivering encrypted note to ${recipientTrim.slice(0,8)}…`,
+              buildTx: () => ({ to: CONTRACTS.ViewKeyRegistry, value: "0x0", data: noteData }),
+            });
+            notify(
+              "Shield ✓",
+              relayed
+                ? `${formatToken(netAmount, token.decimals)} ${token.symbol} shielded directly to ${recipientTrim.slice(0,8)}…'s balance.`
+                : `${formatToken(netAmount, token.decimals)} ${token.symbol} shielded to ${recipientTrim.slice(0,8)}…, but note relay wasn't confirmed — share the commitment manually so they can locate it: ${commitment}`,
+              "success"
+            );
+          } else {
+            // Shouldn't happen — thirdPartyPubkeyOwner required a
+            // PrivarSpendKeyRegistry entry, but ViewKeyRegistry (a
+            // SEPARATE, independent registration) might still be missing.
+            notify("Shield ✓", `${formatToken(netAmount, token.decimals)} ${token.symbol} shielded to ${recipientTrim.slice(0,8)}…, but they haven't enabled confidential receiving (no view key) — share this commitment with them manually: ${commitment}`, "success");
+          }
+        } catch (e) {
+          console.warn("[deposit note relay]", e.message);
+          notify("Shield ✓", `${formatToken(netAmount, token.decimals)} ${token.symbol} shielded to ${recipientTrim.slice(0,8)}…, but note relay failed — share this commitment with them manually: ${commitment}`, "success");
+        }
+        setDepositRecipient("");
+        setAmount(""); setLoading(false);
+        return;
+      }
+
       // Store note locally with the NET (post-fee) amount — matches what PrivarShieldVault
       // actually credited to totalShieldedByToken, so future withdraw/send/swap on this
       // note request an amount the pool can actually back.
       // cloudSynced is true here BY CONSTRUCTION (v3.4): the journal entry
       // was embedded in the SAME transaction that just confirmed — there is
       // no separate broadcast that could still be pending or fail.
-      const note = { commitment, amount: netAmount.toString(), token: token.address, ts: Date.now(), cloudSynced: !!journalEntry };
+      // secret/blinding/pubkeyOwner are only present when spendingKey was
+      // available at generation time (see fallback above) — deriveNullifierForSpend()
+      // in noteCrypto.js checks for their presence before using them.
+      const note = {
+        commitment, amount: netAmount.toString(), token: token.address, ts: Date.now(), cloudSynced: !!journalEntry,
+        ...(noteSecret ? { secret: noteSecret, blinding: noteBlinding, pubkeyOwner: notePubkeyOwner } : {}),
+      };
       const notes = getNotes(account?.address);
       notes.push(note);
       saveNotes(account?.address, notes);
@@ -4611,6 +4977,12 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
           AMOUNT — min {token.minDisplay}
         </div>
         <OsField label={`${token.symbol} AMOUNT`} value={amount} onChange={e=>setAmount(e.target.value)} placeholder="0.00" icon={token.logo} suffix={token.symbol}/>
+        {/* §8.4 point 4 — optional third-party recipient. Empty = deposit to
+            own shielded balance (unchanged default behavior). */}
+        <OsField label="DEPOSIT TO (optional — 0x address, defaults to yourself)" value={depositRecipient} onChange={e=>setDepositRecipient(e.target.value)} placeholder="0x… (leave empty to shield to your own balance)" icon="🎁"
+          hint={depositRecipient.trim() && depositRecipient.trim().toLowerCase() !== account?.address?.toLowerCase()
+            ? "Recipient must have opened Privar at least once (registered spend key) — otherwise these funds can't be spent by anyone."
+            : null}/>
         {(() => {
           if (token.isNative) {
             // Native USDC: % fee, naturally USDC-denominated
@@ -4937,8 +5309,13 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       setLoading(false); return;
     }
 
-    const nullifier     = randomBytes32();
-    const commitmentOut = randomBytes32();
+    const nullifier = note.secret
+      ? deriveNullifierForSpend(note.secret, note.commitment)
+      : randomBytes32();
+    // commitmentOut is computed further below, AFTER noteAmountOut (the
+    // fee-adjusted amount actually credited on-chain) is known — see that
+    // computation's comment for why outAmountBig alone isn't the right
+    // amount to embed here.
 
     // v3.4.2 correction: local notes are tracked in the SAME "display
     // decimals" convention everywhere (6-dec for USDC/EURC, matching
@@ -4984,6 +5361,23 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       ? outAmountBig - (outAmountBig * swapFeeBps / 10000n)
       : outAmountBig;
 
+    // commitmentOut: swap's output note is ALWAYS self-owned (there's no
+    // third-party swap-and-send — output always returns to whoever
+    // initiated the swap), so this is unconditionally the simple
+    // self-owned case, same as change notes elsewhere (§7.6). Uses
+    // noteAmountOut (fee-adjusted), NOT outAmountBig — must embed the exact
+    // amount actually credited on-chain, same reasoning as deposit()'s
+    // commitment being computed after netAmount, not before.
+    const swapSpendingKey = await ensureSpendKeyReady(account?.address);
+    let commitmentOut, outNoteSecret, outNoteBlinding, outNotePubkeyOwner;
+    if (swapSpendingKey != null) {
+      const built = createOwnedNote({ spendingKey: swapSpendingKey, amount: noteAmountOut, token: tkTo.addr });
+      commitmentOut = built.commitment;
+      outNoteSecret = built.secret; outNoteBlinding = built.blinding; outNotePubkeyOwner = built.pubkeyOwner;
+    } else {
+      commitmentOut = randomBytes32();
+    }
+
     // v3.4 — embed the SPEND + ADD(s) journal ops directly in this SAME swap
     // transaction instead of 2-3 separate follow-up calls. See
     // PrivarShieldVault.sol's NoteJournal doc comment.
@@ -4999,7 +5393,18 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     const noteAmt = BigInt(Math.round(Number(note.amount)||0));
     const changeBase = (realBal !== null && realBal < noteAmt) ? realBal : noteAmt;
     const remaining = changeBase - amountBig;
-    const changeCommitment = remaining > 0n ? randomBytes32() : null;
+    // Change stays with the sender — always self-owned, same reasoning as
+    // sendShielded()'s change note (§7.6).
+    let changeCommitment = null, changeNoteSecret, changeNoteBlinding, changeNotePubkeyOwner;
+    if (remaining > 0n) {
+      if (swapSpendingKey != null) {
+        const built = createOwnedNote({ spendingKey: swapSpendingKey, amount: remaining, token: note.token });
+        changeCommitment = built.commitment;
+        changeNoteSecret = built.secret; changeNoteBlinding = built.blinding; changeNotePubkeyOwner = built.pubkeyOwner;
+      } else {
+        changeCommitment = randomBytes32();
+      }
+    }
     const swapOps = [
       { t: 1, commitment: note.commitment },
       { t: 0, commitment: commitmentOut, amount: noteAmountOut.toString(), token: tkTo.addr },
@@ -5023,8 +5428,16 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     // this point the outcome is tracked in a durable ledger instead of
     // only in this function's local `notes` variable, so it survives a
     // closed tab, a dropped connection, or the waitForReceipt() timeout.
-    const swapOutputs = [{ commitment: commitmentOut, amount: noteAmountOut.toString(), token: tkTo.addr, cloudSynced: !!journalEntry }];
-    if (changeCommitment) swapOutputs.push({ ...note, amount: remaining.toString(), commitment: changeCommitment, cloudSynced: !!journalEntry });
+    const swapOutputs = [{
+      commitment: commitmentOut, amount: noteAmountOut.toString(), token: tkTo.addr, cloudSynced: !!journalEntry,
+      ...(outNoteSecret ? { secret: outNoteSecret, blinding: outNoteBlinding, pubkeyOwner: outNotePubkeyOwner } : {}),
+    }];
+    if (changeCommitment) {
+      swapOutputs.push({
+        ...note, amount: remaining.toString(), commitment: changeCommitment, cloudSynced: !!journalEntry,
+        ...(changeNoteSecret ? { secret: changeNoteSecret, blinding: changeNoteBlinding, pubkeyOwner: changeNotePubkeyOwner } : { secret: undefined, blinding: undefined, pubkeyOwner: undefined }),
+      });
+    }
     const opId = lockNotesForOp(account?.address, {
       kind: "swap", label: `Swap ${fr}→${to}`,
       inputCommitments: [note.commitment], outputs: swapOutputs,
@@ -5229,8 +5642,53 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       setLoading(false); return;
     }
 
-    const nullifierIn   = randomBytes32();
-    const commitmentOut = randomBytes32();
+    // ── Note Engine — deterministic derivation (§7.6/§8.3, replaces randomBytes32()) ──
+    // nullifierIn: this is the exact fix for the audit finding at the top of
+    // this file (AUDIT FINDING 2026-08) — the nullifier now carries a real
+    // cryptographic link (Poseidon(secret, commitment)) to the note it
+    // spends, instead of being an unrelated random value. Falls back to the
+    // old random behavior only for legacy notes created before this change
+    // (no `secret` field), which have no way to derive a real nullifier
+    // retroactively — they remain spendable exactly as before, just without
+    // the new guarantee.
+    const isSelfSend = dest.toLowerCase() === account?.address?.toLowerCase?.();
+    const spendingKey = await ensureSpendKeyReady(account?.address);
+
+    const nullifierIn = note.secret
+      ? deriveNullifierForSpend(note.secret, note.commitment)
+      : randomBytes32();
+
+    // commitmentOut: deterministic in TWO cases now —
+    //  (a) self-send: derived from OUR OWN pubkeyOwner (we know our secret).
+    //  (b) third-party send: derived from the RECIPIENT's real pubkeyOwner,
+    //      looked up on PrivarSpendKeyRegistry (§7.5/§8.4 point 4 — this is
+    //      what TODO_THIRD_PARTY_PUBKEY in noteCrypto.js used to block on).
+    //      We don't know the recipient's secret, only their pubkeyOwner, so
+    //      we pick a fresh random `blinding` ourselves and transmit it in
+    //      the encrypted note payload below — the recipient reconstructs
+    //      the same commitment (and, once they have it, their own
+    //      nullifier) from their own secret + this blinding + this amount.
+    // Falls back to random ONLY when the recipient hasn't registered a
+    // spend key yet (or the registry isn't deployed on this environment) —
+    // graceful degradation, same convention as every other lookup in this file.
+    let commitmentOut, outSecret, outBlinding, outPubkeyOwner, recipientPubkeyOwner = null;
+    if (isSelfSend && spendingKey != null) {
+      const built = createOwnedNote({ spendingKey, amount: amountBig, token: note.token });
+      commitmentOut = built.commitment;
+      outSecret = built.secret; outBlinding = built.blinding; outPubkeyOwner = built.pubkeyOwner;
+    } else if (!isSelfSend) {
+      recipientPubkeyOwner = await getRecipientSpendPubKey(dest);
+      if (recipientPubkeyOwner) {
+        const blinding = randomBlinding();
+        const c = computeCommitment({ pubkeyOwner: recipientPubkeyOwner, amount: amountBig, token: note.token, blinding });
+        commitmentOut = fieldToBytes32(c);
+        outBlinding = fieldToBytes32(blinding); // transmitted to recipient below, NOT stored as our own note (we can't spend it)
+      } else {
+        commitmentOut = randomBytes32();
+      }
+    } else {
+      commitmentOut = randomBytes32();
+    }
 
     // ── ECDH: encrypt the note for the recipient (real P-256 ECDH, see eciesEncryptNoteForRecipient) ──
     // Looks up the recipient's registered view public key on ViewKeyRegistry. Returns null
@@ -5238,26 +5696,51 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     // registered a view key — the confidential send itself still proceeds either way.
     let encryptedNote   = null;
     let ephemeralPubKey = null;
-    const isSelfSend = dest.toLowerCase() === account?.address?.toLowerCase?.();
+    // §7.5 — when available (recipientPubkeyOwner resolved above via
+    // PrivarSpendKeyRegistry AND PrivarNoteRelay is deployed), prefer the
+    // address-free relay over ViewKeyRegistry.emitNote(): same underlying
+    // note payload, but the on-chain call carries no recipient address at
+    // all — see PrivarNoteRelay.sol's doc comment. Falls back to the
+    // existing ViewKeyRegistry/ECIES path when either isn't available
+    // (recipient hasn't registered a spend key, or PrivarNoteRelay isn't
+    // deployed on this environment) — same graceful-degradation convention
+    // as everywhere else in this file.
+    let noteRelayCalldata = null;
 
     if (!isSelfSend) {
-      try {
-        const noteJson = JSON.stringify({
-          commitment: commitmentOut,
-          amount:     amountBig.toString(),
-          token:      note.token,
-          from:       account?.address,
-          ts:         Date.now(),
-          vault:      CONTRACTS.PrivarShieldVault, // see relaySelfNote's v2.9 comment for why
-        });
-        const ecies = await eciesEncryptNoteForRecipient(dest, noteJson);
-        if (ecies) {
-          encryptedNote   = ecies.encryptedNote;
-          ephemeralPubKey = ecies.ephemeralPubKey;
+      const noteJson = JSON.stringify({
+        commitment: commitmentOut,
+        amount:     amountBig.toString(),
+        token:      note.token,
+        from:       account?.address,
+        ts:         Date.now(),
+        vault:      CONTRACTS.PrivarShieldVault, // see relaySelfNote's v2.9 comment for why
+        // §7.5/§8.4 point 4 — present only when commitmentOut was derived
+        // deterministically against the recipient's registered pubkeyOwner
+        // (see recipientPubkeyOwner above). The recipient needs this exact
+        // blinding value to reconstruct commitment/nullifier with their own
+        // secret — without it the note is unspendable even though its
+        // commitment is on-chain. Absent (undefined, dropped by
+        // JSON.stringify) when commitmentOut fell back to random.
+        ...(outBlinding ? { blinding: outBlinding } : {}),
+      });
+
+      if (recipientPubkeyOwner) {
+        try { noteRelayCalldata = await buildNoteRelayCalldata(recipientPubkeyOwner, noteJson); }
+        catch (e) { console.warn("[note relay build]", e.message); }
+      }
+
+      if (!noteRelayCalldata) {
+        try {
+          const ecies = await eciesEncryptNoteForRecipient(dest, noteJson);
+          if (ecies) {
+            encryptedNote   = ecies.encryptedNote;
+            ephemeralPubKey = ecies.ephemeralPubKey;
+          }
+        } catch(e) {
+          console.warn("[ECDH encrypt]", e.message);
+          // Fallback: recipient note stays local-only (existing manual-share behavior)
         }
-      } catch(e) {
-        console.warn("[ECDH encrypt]", e.message);
-        // Fallback: recipient note stays local-only (existing manual-share behavior)
       }
     }
 
@@ -5276,7 +5759,9 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       amount,
       token:  sendToken,
       to:     dest,
-      note:   (encryptedNote
+      note:   (noteRelayCalldata
+        ? "Recipient has confidential receiving enabled — an address-free encrypted note will be relayed on-chain (no recipient address in the relay call) so their wallet auto-discovers these funds. 2 transactions: shielded transfer, then note relay."
+        : encryptedNote
         ? "Recipient has confidential receiving enabled — an encrypted note will be relayed on-chain so their wallet auto-discovers these funds. 2 transactions: shielded transfer, then note relay."
         : "Private send — recipient hasn't enabled confidential receiving yet, so no auto-discovery note will be sent. 1 transaction.")
         + (sendFee > 0n ? ` Flat protocol fee: ${formatToken(sendFee, 6)} USDC (paid separately, not from your shielded balance).` : ""),
@@ -5291,7 +5776,18 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     // doc comment for why embedding beats a follow-up broadcast.
     await ensureSelfBackupKeyReady(account?.address);
     const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
-    const changeCommitment = remaining > 0n ? randomBytes32() : null;
+    // Change always stays with the sender — always self-owned, so always
+    // deterministically derivable when spendingKey is available (§7.6).
+    let changeCommitment = null, changeSecret, changeBlinding, changePubkeyOwner;
+    if (remaining > 0n) {
+      if (spendingKey != null) {
+        const built = createOwnedNote({ spendingKey, amount: remaining, token: note.token });
+        changeCommitment = built.commitment;
+        changeSecret = built.secret; changeBlinding = built.blinding; changePubkeyOwner = built.pubkeyOwner;
+      } else {
+        changeCommitment = randomBytes32();
+      }
+    }
     const selfOps = [{ t: 1, commitment: note.commitment }];
     if (changeCommitment) selfOps.push({ t: 0, commitment: changeCommitment, amount: remaining.toString(), token: note.token });
     const selfEntry = await encryptJournalBlob(account?.address, { ts: Date.now(), ops: selfOps });
@@ -5307,8 +5803,16 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     // "sent"`, not "available") — ownership transferred to the recipient,
     // so it must never re-enter the sender's spendable set even on
     // finalizeOp's SUCCESS path.
-    const sendOutputs = [{ commitment: commitmentOut, amount: amountBig.toString(), token: tkSend.addr, sentTo: dest, status: "sent" }];
-    if (changeCommitment) sendOutputs.push({ ...note, amount: remaining.toString(), commitment: changeCommitment, cloudSynced: !!selfEntry });
+    const sendOutputs = [{
+      commitment: commitmentOut, amount: amountBig.toString(), token: tkSend.addr, sentTo: dest, status: "sent",
+      ...(outSecret ? { secret: outSecret, blinding: outBlinding, pubkeyOwner: outPubkeyOwner } : {}),
+    }];
+    if (changeCommitment) {
+      sendOutputs.push({
+        ...note, amount: remaining.toString(), commitment: changeCommitment, cloudSynced: !!selfEntry,
+        ...(changeSecret ? { secret: changeSecret, blinding: changeBlinding, pubkeyOwner: changePubkeyOwner } : { secret: undefined, blinding: undefined, pubkeyOwner: undefined }),
+      });
+    }
     const opId = lockNotesForOp(account?.address, {
       kind: "send", label: "Confidential Send",
       inputCommitments: [note.commitment], outputs: sendOutputs,
@@ -5332,6 +5836,23 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
 
       if (isSelfSend) {
         notify("Confidential Send ✓", `${amount} ${sendToken} sent to your own shielded balance.`, "success");
+      } else if (noteRelayCalldata) {
+        // §7.5 — address-free relay: no recipient parameter anywhere in
+        // this call, unlike ViewKeyRegistry.emitNote() below. Non-blocking
+        // on failure, same as the ViewKeyRegistry path — funds already
+        // moved successfully in tx 1 regardless of this outcome.
+        const relayed = await sendRealTx({
+          label: "Confidential Send · Note Relay",
+          description: `Delivering encrypted note (address-free relay)…`,
+          buildTx: () => ({ to: CONTRACTS.PrivarNoteRelay, value: "0x0", data: noteRelayCalldata.data }),
+        });
+        notify(
+          "Confidential Send ✓",
+          relayed
+            ? `${amount} USDC sent. Recipient's wallet will auto-discover these funds — no address was published on-chain.`
+            : `${amount} USDC sent. Note relay was not confirmed — share the recipient address manually so they can locate the transfer.`,
+          "success"
+        );
       } else if (encryptedNote) {
         // Tx: relay the encrypted note via ViewKeyRegistry — non-blocking on failure,
         // funds already moved successfully in tx 1 regardless of this outcome.
@@ -5509,7 +6030,12 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
       setLoading(false); return;
     }
 
-    const nullifier = randomBytes32();
+    // Deterministic where derivable (§7.6) — `note` is only non-null in the
+    // single-note path (see below); the batch path derives its own
+    // nullifier per selected note further down.
+    const nullifier = (note && note.secret)
+      ? deriveNullifierForSpend(note.secret, note.commitment)
+      : randomBytes32();
 
     // ── Protocol fee (v2.8) ────────────────────────────────────────────────────
     // Native USDC: % bps skimmed on-chain from withdrawAmt → msg.value = 0x0
@@ -5536,19 +6062,33 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
     // directly in this SAME withdraw transaction instead of separate
     // follow-up calls — see PrivarShieldVault.sol's NoteJournal doc comment
     // for why that used to be a reliability gap.
-    await ensureSelfBackupKeyReady(account?.address);
+    // §7.6 — change stays with the sender regardless of `target` (withdraw
+    // can pay out to any recipient), so it's always self-owned/deterministic
+    // when spendingKey is available.
+    const withdrawSpendingKey = await ensureSpendKeyReady(account?.address);
 
     const feeDesc = withdrawFee > 0n
       ? ` (protocol fee: ${formatToken(withdrawFee, 6)} USDC)`
       : "";
 
     let data, txValue, updated, changeCommitment, remaining, journalEntry, withdrawInputCommitments;
+    let changeNoteSecret, changeNoteBlinding, changeNotePubkeyOwner;
 
     if (note) {
       // ── Single note covers it — UNCHANGED path (same withdraw() call as
       //    before this fix), for the common case.
       remaining = noteAmt(note) - amountBig;
-      changeCommitment = remaining > 0n ? randomBytes32() : null;
+      if (remaining > 0n) {
+        if (withdrawSpendingKey != null) {
+          const built = createOwnedNote({ spendingKey: withdrawSpendingKey, amount: remaining, token: note.token });
+          changeCommitment = built.commitment;
+          changeNoteSecret = built.secret; changeNoteBlinding = built.blinding; changeNotePubkeyOwner = built.pubkeyOwner;
+        } else {
+          changeCommitment = randomBytes32();
+        }
+      } else {
+        changeCommitment = null;
+      }
       const ops = [{ t: 1, commitment: note.commitment }];
       if (changeCommitment) ops.push({ t: 0, commitment: changeCommitment, amount: remaining.toString(), token: note.token });
       journalEntry = await encryptJournalBlob(account?.address, { ts: Date.now(), ops });
@@ -5566,7 +6106,12 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
       }));
 
       updated = notes.filter(n => n.commitment !== note.commitment);
-      if (changeCommitment) updated.push({ ...note, amount: remaining.toString(), commitment: changeCommitment, cloudSynced: !!journalEntry });
+      if (changeCommitment) {
+        updated.push({
+          ...note, amount: remaining.toString(), commitment: changeCommitment, cloudSynced: !!journalEntry,
+          ...(changeNoteSecret ? { secret: changeNoteSecret, blinding: changeNoteBlinding, pubkeyOwner: changeNotePubkeyOwner } : { secret: undefined, blinding: undefined, pubkeyOwner: undefined }),
+        });
+      }
       withdrawInputCommitments = [note.commitment];
 
     } else {
@@ -5584,11 +6129,24 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
         const need = amountBig - acc2;
         const use  = full <= need ? full : need;
         acc2 += use;
-        return { note: n, nullifier: randomBytes32(), amount: use, full };
+        // §7.6 — deterministic per selected note when it carries a secret,
+        // same fallback as the single-note path above.
+        const nf = n.secret ? deriveNullifierForSpend(n.secret, n.commitment) : randomBytes32();
+        return { note: n, nullifier: nf, amount: use, full };
       });
       const last = batchNotes[batchNotes.length - 1];
       remaining = last.full - last.amount;
-      changeCommitment = remaining > 0n ? randomBytes32() : null;
+      if (remaining > 0n) {
+        if (withdrawSpendingKey != null) {
+          const built = createOwnedNote({ spendingKey: withdrawSpendingKey, amount: remaining, token: tk.addr });
+          changeCommitment = built.commitment;
+          changeNoteSecret = built.secret; changeNoteBlinding = built.blinding; changeNotePubkeyOwner = built.pubkeyOwner;
+        } else {
+          changeCommitment = randomBytes32();
+        }
+      } else {
+        changeCommitment = null;
+      }
 
       const ops = batchNotes.map(bn => ({ t: 1, commitment: bn.note.commitment }));
       if (changeCommitment) ops.push({ t: 0, commitment: changeCommitment, amount: remaining.toString(), token: tk.addr });
@@ -5608,7 +6166,12 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
 
       const spentCommitments = new Set(selectedNotes.map(n => n.commitment));
       updated = notes.filter(n => !spentCommitments.has(n.commitment));
-      if (changeCommitment) updated.push({ ...last.note, amount: remaining.toString(), commitment: changeCommitment, cloudSynced: !!journalEntry });
+      if (changeCommitment) {
+        updated.push({
+          ...last.note, amount: remaining.toString(), commitment: changeCommitment, cloudSynced: !!journalEntry,
+          ...(changeNoteSecret ? { secret: changeNoteSecret, blinding: changeNoteBlinding, pubkeyOwner: changeNotePubkeyOwner } : { secret: undefined, blinding: undefined, pubkeyOwner: undefined }),
+        });
+      }
       withdrawInputCommitments = selectedNotes.map(n => n.commitment);
     }
 
@@ -5757,8 +6320,14 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
       return;
     }
 
+    // §9.4 — prefer the new multi-adapter path when LiFiBridgeAdapter is
+    // deployed on this environment; fall back to the legacy standalone
+    // LiFiPrivacyBridge contract otherwise (graceful degradation, same
+    // convention as every other optional-contract check in this file).
+    const useNewBridgeAdapter = CONTRACTS.LiFiBridgeAdapter && CONTRACTS.LiFiBridgeAdapter !== "0x0000000000000000000000000000000000000000";
+
     const bridgeAddr = CONTRACTS.LiFiPrivacyBridge;
-    if (!bridgeAddr || bridgeAddr === "0x0000000000000000000000000000000000000000") {
+    if (!useNewBridgeAdapter && (!bridgeAddr || bridgeAddr === "0x0000000000000000000000000000000000000000")) {
       notify("Bridge", "LiFiPrivacyBridge non déployé. Exécutez scripts/deploy-lifi.js et ajoutez VITE_LIFI_BRIDGE dans .env", "error");
       return;
     }
@@ -5799,19 +6368,23 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
       setLoading(false); setStep(""); return;
     }
 
-    // 3. LI.FI route: fromAddress is LiFiPrivacyBridge itself (never the
-    // user's EOA) — it's the contract that will hold the unshielded funds
-    // for the single atomic tx and is what LI.FI/any observer sees as
-    // counterparty on Arc. toAddress is the destination recipient, since
-    // that's inherently a public wallet on the destination chain anyway.
+    // 3. LI.FI route: fromAddress is whichever contract will actually HOLD
+    // and forward the unshielded funds on Arc for this single atomic tx —
+    // LiFiBridgeAdapter itself on the new path (funds are pushed to it by
+    // privateBridgeWithAdapter() before it calls the Diamond), or the
+    // standalone LiFiPrivacyBridge contract on the legacy path — never the
+    // user's EOA either way, since that's what LI.FI/any observer would see
+    // as the on-chain counterparty. toAddress is the destination recipient,
+    // inherently public on the destination chain regardless of path.
     setStep(`Étape 2/3 — Route LI.FI vers ${ch.name}…`);
+    const routeFromAddress = useNewBridgeAdapter ? CONTRACTS.LiFiBridgeAdapter : bridgeAddr;
     let routeData;
     try {
       const quote = await fetchLiFiQuote({
         fromChain: ARC_CHAIN_ID, toChain: ch.chainId,
         fromToken: tk.addr, toToken: "USDC",
         fromAmount: amountBig.toString(),
-        fromAddress: bridgeAddr, toAddress: recipientAddr,
+        fromAddress: routeFromAddress, toAddress: recipientAddr,
       });
       routeData = encodeLiFiRouteData(quote.transactionRequest.to, quote.transactionRequest.value, quote.transactionRequest.data);
     } catch (e) {
@@ -5835,27 +6408,59 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
     // NoteJournal doc comment.
     await ensureSelfBackupKeyReady(account?.address);
     const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
-    const changeCommitment = remaining > 0n ? randomBytes32() : null;
+    // §7.6 — bridge nullifier + change note, same pattern as withdraw()/swap():
+    // nullifier deterministic from the spent note when it carries a secret;
+    // change (always self-owned — bridged funds leave for `recipientAddr` on
+    // the destination chain, but leftover shielded change stays with the sender).
+    const bridgeNullifier = note.secret
+      ? deriveNullifierForSpend(note.secret, note.commitment)
+      : randomBytes32();
+    const bridgeSpendingKey = await ensureSpendKeyReady(account?.address);
+    let changeCommitment = null, changeNoteSecret, changeNoteBlinding, changeNotePubkeyOwner;
+    if (remaining > 0n) {
+      if (bridgeSpendingKey != null) {
+        const built = createOwnedNote({ spendingKey: bridgeSpendingKey, amount: remaining, token: note.token });
+        changeCommitment = built.commitment;
+        changeNoteSecret = built.secret; changeNoteBlinding = built.blinding; changeNotePubkeyOwner = built.pubkeyOwner;
+      } else {
+        changeCommitment = randomBytes32();
+      }
+    }
     const bridgeOps = [{ t: 1, commitment: note.commitment }];
     if (changeCommitment) bridgeOps.push({ t: 0, commitment: changeCommitment, amount: remaining.toString(), token: note.token });
     const journalEntry = await encryptJournalBlob(account?.address, { ts: Date.now(), ops: bridgeOps });
 
-    // 5. Atomic unshield + LI.FI bridge — ONE transaction, targeting
-    // LiFiPrivacyBridge directly (NOT PrivarShieldVault).
+    // 5. Atomic unshield + LI.FI bridge — ONE transaction, either through
+    // the new multi-adapter privateBridgeWithAdapter() on PrivarShieldVault
+    // (§9.4, preferred when LiFiBridgeAdapter is deployed) or, unchanged,
+    // through the legacy standalone LiFiPrivacyBridge.privateBridge().
     setStep(`Étape 3/3 — Unshield + Bridge ${token} → ${ch.name}…`);
-    const { data, value } = buildLiFiBridgeCalldata({
-      nullifier: randomBytes32(), root,
-      token: tk.addr, amount: amountBig,
-      relayer: "0x0000000000000000000000000000000000000000", relayerFee: 0n,
-      routeData, flatFeeUsdc,
-      encryptedEntry: journalEntry || "0x",
-    });
+    const { data, value } = useNewBridgeAdapter
+      ? buildPrivateBridgeWithAdapterCalldata({
+          nullifier: bridgeNullifier, root,
+          token: tk.addr, amount: amountBig,
+          relayer: "0x0000000000000000000000000000000000000000", relayerFee: 0n,
+          bridgeAdapter: CONTRACTS.LiFiBridgeAdapter,
+          destRecipient: recipientAddr, destChainId: ch.chainId,
+          routeData, noteOwner: account?.address, flatFeeUsdc,
+          encryptedEntry: journalEntry || "0x",
+        })
+      : buildLiFiBridgeCalldata({
+          nullifier: bridgeNullifier, root,
+          token: tk.addr, amount: amountBig,
+          relayer: "0x0000000000000000000000000000000000000000", relayerFee: 0n,
+          routeData, flatFeeUsdc,
+          encryptedEntry: journalEntry || "0x",
+        });
 
     // ── Robust note lifecycle (see lockNotesForOp doc comment) ───────────
     // Bridged funds leave the shielded pool entirely (destination chain),
     // so the only local output is the change note, if any.
     const bridgeOutputs = changeCommitment
-      ? [{ ...note, amount: remaining.toString(), commitment: changeCommitment, cloudSynced: !!journalEntry }]
+      ? [{
+          ...note, amount: remaining.toString(), commitment: changeCommitment, cloudSynced: !!journalEntry,
+          ...(changeNoteSecret ? { secret: changeNoteSecret, blinding: changeNoteBlinding, pubkeyOwner: changeNotePubkeyOwner } : {}),
+        }]
       : [];
     const opId = lockNotesForOp(account?.address, {
       kind: "bridge", label: `Bridge → ${ch.name}`,
@@ -5869,8 +6474,10 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
 
     const bridgeOk = await sendRealTx({
       label: `Bridge → ${ch.name}`,
-      description: `${amount} ${token} → ${ch.name} via LiFiPrivacyBridge (privé, 1 tx)`,
-      buildTx: () => ({ to: bridgeAddr, value, data }),
+      description: useNewBridgeAdapter
+        ? `${amount} ${token} → ${ch.name} via PrivarShieldVault (adapter LI.FI whitelisté, privé, 1 tx)`
+        : `${amount} ${token} → ${ch.name} via LiFiPrivacyBridge (privé, 1 tx)`,
+      buildTx: () => ({ to: useNewBridgeAdapter ? CONTRACTS.PrivarShieldVault : bridgeAddr, value, data }),
       onHash: (hash) => markOpSubmitted(account?.address, opId, hash),
     });
 
