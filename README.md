@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v19.2.3-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v19.2.4-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -29,6 +29,7 @@ Confidential on-chain capital management built on **Arc Testnet** (Circle L1, US
 - [Deployment](#deployment)
 - [GitHub / Release procedure](#github--release-procedure)
 - [Changelog](#changelog)
+  - [v19.2.4](#v1924--fix-misleading-verified-badge-discovery-scans-not-re-run-on-tab-focus-2026-08-26)
   - [v19.2.3](#v1923--fix-receiver-balance-not-updating-regression-from-v1921s-scan-checkpoint-fix-2026-08-26)
   - [v19.2.2](#v1922--sync-contract-addresses-v530-redeploy-2-2026-08-26)
   - [v19.2.1](#v1921--fix-shielded-balance-double-counting-ghost-note-resurrection-2026-08-26)
@@ -273,6 +274,11 @@ git push origin main --tags
 Open a PR against `main`, and before merging a contract-address sync specifically: confirm the Shield panel's TVL/version stats reflect the new vault, and — since a full-suite redeploy is never a migration — communicate to users that any balance on the previous `PrivarShieldVault` address must be withdrawn from there before switching over.
 
 ## Changelog
+
+### v19.2.4 — fix: misleading "verified" badge, discovery scans not re-run on tab focus (2026-08-26)
+- The "verified Xs ago" badge was driven ENTIRELY by `reconcileAndVerifyNotes()` — which only re-checks EXISTING local notes against on-chain spent/unbacked state. It had nothing to do with `scanStealthNotes()`/`scanNoteRelay()`/CloudVault/journal resync — the calls that actually DISCOVER new incoming notes. A user could see "verified Xs ago" (reasonably read as "my balance is now correct") while an incoming payment was still unscanned — exactly the pattern in the reported screenshots (swap panel stuck at $0.00 shielded, badge flips to "verified" anyway). Fixed: the badge now takes the OLDER of the two completion timestamps and only shows anything but "verifying…" once BOTH have run at least once — so it only ever claims what's actually been checked.
+- The discovery scans (unlike `reconcileAndVerifyNotes`) never re-ran when a backgrounded tab regained focus — only the 2-minute timer could trigger them, so tabbing away during that window meant waiting out the rest of it for a fresh scan. Fixed: same tab-visibility trigger `reconcileAndVerifyNotes` already had (15s-guarded against rapid switching), now also covers discovery. Still fully automatic — no user action required, no manual "rescan" control added.
+- Both this and the v19.2.3 checkpoint-lag fix now reset their "verified" state to "verifying…" on wallet switch, so a stale timestamp from a previously-connected account can never be shown against the newly-connected one.
 
 ### v19.2.3 — fix: receiver balance not updating (regression from v19.2.1's scan-checkpoint fix, 2026-08-26)
 - v19.2.1 fixed `fetchLogsPaginated()` re-scanning its full ~5,000,000-block window on every poll by finally honoring the persisted scan checkpoint — but advanced that checkpoint to `head + 1` (the RPC node's reported chain head) after every successful call, silently assuming Blockscout's indexer was caught up to that exact block at that exact instant. When Blockscout lags the RPC node even briefly — two independent services, this is normal, not an outage — a note relayed in that lag window (e.g. `PrivarNoteRelay`/`ViewKeyRegistry.emitNote()`) was skipped and never looked at again on any later scan, since the checkpoint had already moved past it. This is what broke the receiver's balance update reported right after v19.2.1/v19.2.2 shipped.

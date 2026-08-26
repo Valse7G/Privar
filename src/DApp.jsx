@@ -1359,6 +1359,21 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
 
   const { bals: shieldedBals, recompute: recomputeShielded, lastVerified: shieldedLastVerified } = useShieldedBalances(prices, account?.address);
   const { sendRealTx: sendViewKeyTx } = useTxSend({ account, onArc, notify, refreshBalance });
+  // BUG FIX (2026-08-26) — companion state to shieldedLastVerified above,
+  // but for the note-DISCOVERY scans (scanStealthNotes/scanNoteRelay/
+  // resyncFromCloudVault/resyncFromShieldVaultJournal) rather than the
+  // reconcile-existing-notes pass. See the effect below and
+  // ShieldedBalanceReadout's verifiedLabel computation for how the two are
+  // combined into one honest "verified Xs ago" reading.
+  const [discoveryLastVerified, setDiscoveryLastVerified] = useState(null);
+  // Reset to "verifying…" on every address change (including switching
+  // FROM a previously-connected account) — same reasoning as
+  // useShieldedBalances resetting its own notion of state per-address:
+  // showing a stale "verified Ns ago" left over from a DIFFERENT wallet
+  // while this one's own first scan hasn't completed yet would be its own
+  // flavor of the exact bug being fixed here.
+  useEffect(() => { setDiscoveryLastVerified(null); }, [account?.address]);
+  useEffect(() => { window._privarDiscoveryLastVerified = discoveryLastVerified; }, [discoveryLastVerified]);
 
   // Scan chain for ECDH stealth notes addressed to this wallet on every connect,
   // and opportunistically register a view key (real ECDH P-256) if missing —
@@ -1374,10 +1389,26 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
       migrateCloudSyncKeyScheme(account.address);
       await ensureSelfBackupKeyReady(account.address).catch(() => {});
       if (cancelled) return;
-      scanStealthNotes(account.address, recomputeShielded).catch(() => {});
-      scanNoteRelay(account.address, recomputeShielded).catch(() => {}); // §7.5 — address-free counterpart
-      resyncFromCloudVault(account.address, recomputeShielded).catch(() => {});
-      resyncFromShieldVaultJournal(account.address, recomputeShielded).catch(() => {});
+      // BUG FIX (2026-08-26): the "verified Xs ago" badge (see
+      // useShieldedBalances/ShieldedBalanceReadout) used to be driven
+      // ENTIRELY by reconcileAndVerifyNotes() completing — which only
+      // re-checks EXISTING local notes against on-chain spent/unbacked
+      // state. It has nothing to do with these four calls, which are what
+      // actually DISCOVER new incoming notes. Net effect: the badge could
+      // flip to "verified Xs ago" — reasonably read by a user as "my
+      // balance is now correct" — while a real incoming payment was still
+      // sitting unscanned (rate-limited, still within the 2-minute poll
+      // window, etc.), with no visible indication that discovery was
+      // still in flight. Promise.allSettled (not Promise.all) so one
+      // failing scan doesn't suppress the completion signal from the rest
+      // — same "never let one optional resync block the others" spirit as
+      // every individual .catch(() => {}) already here.
+      Promise.allSettled([
+        scanStealthNotes(account.address, recomputeShielded),
+        scanNoteRelay(account.address, recomputeShielded),
+        resyncFromCloudVault(account.address, recomputeShielded),
+        resyncFromShieldVaultJournal(account.address, recomputeShielded),
+      ]).then(() => { if (!cancelled) setDiscoveryLastVerified(Date.now()); });
       // Retry any SPEND broadcasts that failed on a previous session (see
       // "Pending SPEND broadcast queue") — a no-op wallet-side if the queue
       // is empty, so safe to run on every connect without extra prompts.
@@ -1392,13 +1423,32 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
     // rejected view-key signature doesn't block this, and vice versa.
     ensureSpendKeyRegistered(account.address, sendViewKeyTx, notify).catch(() => {});
     // Rescan every 2 minutes in case new stealth notes / cloud journal entries arrive
-    const id = setInterval(() => {
-      scanStealthNotes(account.address, recomputeShielded).catch(() => {});
-      scanNoteRelay(account.address, recomputeShielded).catch(() => {});
-      resyncFromCloudVault(account.address, recomputeShielded).catch(() => {});
-      resyncFromShieldVaultJournal(account.address, recomputeShielded).catch(() => {});
-    }, 120_000);
-    return () => { cancelled = true; clearInterval(id); };
+    const runDiscovery = () => {
+      Promise.allSettled([
+        scanStealthNotes(account.address, recomputeShielded),
+        scanNoteRelay(account.address, recomputeShielded),
+        resyncFromCloudVault(account.address, recomputeShielded),
+        resyncFromShieldVaultJournal(account.address, recomputeShielded),
+      ]).then(() => { if (!cancelled) setDiscoveryLastVerified(Date.now()); });
+    };
+    const id = setInterval(runDiscovery, 120_000);
+    // BUG FIX (2026-08-26) — mirrors useShieldedBalances' own
+    // visibilitychange handler (added for the SAME reason there): a user
+    // who tabbed away shouldn't have to wait up to 2 more minutes for
+    // fresh note DISCOVERY once they're actually looking at the screen
+    // again — reconcileAndVerifyNotes already got this treatment, but the
+    // scans that actually find NEW incoming notes hadn't, which was the
+    // more user-visible half of the "balance doesn't update" complaint
+    // this whole fix addresses. Same 15s guard against rapid tab-switching.
+    let lastVisRun = Date.now();
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - lastVisRun < 15_000) return;
+      lastVisRun = Date.now();
+      runDiscovery();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { cancelled = true; clearInterval(id); document.removeEventListener("visibilitychange", onVisible); };
   }, [account?.address, onArc, recomputeShielded, sendViewKeyTx, notify]);
 
   const panelProps = { account, balance, usdcBalance, onArc, notify, refreshBalance, txHistory, loadingBal, prices, changes, change24h, lastUpdate, priceError, setPanel, protocolStats, onChainActivity, shieldedBals, recomputeShielded, sendRealTx: sendViewKeyTx };
@@ -4332,6 +4382,13 @@ function useShieldedBalances(prices, address) {
   // can see, not just an invisible background promise. null = not yet
   // verified this session (e.g. still loading, or offline).
   const [lastVerified, setLastVerified] = useState(null);
+  // BUG FIX (2026-08-26) — reset to "verifying…" on address change, same
+  // reasoning as discoveryLastVerified's matching reset in the connect
+  // effect above: without this, switching wallets could briefly show a
+  // "verified Ns ago" timestamp left over from the PREVIOUS account before
+  // this one's own reconcile pass (re-triggered by the `[compute, address]`
+  // effect dependency below) has actually run.
+  useEffect(() => { setLastVerified(null); }, [address]);
   // Cumulative count of notes removed THIS SESSION by the async on-chain
   // existence check (verifyNotesBackedOnChain) — separate from the sync
   // amount-ceiling check because it resolves later (after an RPC round
@@ -4492,7 +4549,20 @@ function ShieldedWallet({ bals, onMax, tokenFilter, actionableFilter, compact = 
 
   if (!bals) return null;
 
-  const verifiedAt = window._privarShieldedLastVerified;
+  // BUG FIX (2026-08-26): this used to read ONLY
+  // window._privarShieldedLastVerified — the reconcile-EXISTING-notes pass
+  // (reconcileAndVerifyNotes). It said nothing about whether the separate
+  // note-DISCOVERY scans (scanStealthNotes/scanNoteRelay/CloudVault/journal
+  // resync — see the connect effect's window._privarDiscoveryLastVerified)
+  // had found everything there was to find yet. A user could see "verified
+  // Xs ago" — reasonably read as "my balance is now correct" — while an
+  // incoming payment was still sitting unscanned. Fixed: take the OLDER
+  // (more conservative) of the two timestamps, and require BOTH to be
+  // non-null before showing anything but "verifying…" — so the label only
+  // ever claims what's actually been checked.
+  const reconcileAt = window._privarShieldedLastVerified;
+  const discoveryAt = window._privarDiscoveryLastVerified;
+  const verifiedAt = (reconcileAt && discoveryAt) ? Math.min(reconcileAt, discoveryAt) : null;
   const verifiedAgoS = verifiedAt ? Math.max(0, Math.floor((Date.now() - verifiedAt) / 1000)) : null;
   const verifiedLabel = verifiedAgoS == null ? "verifying…"
     : verifiedAgoS < 5   ? "verified just now"
