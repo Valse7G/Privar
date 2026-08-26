@@ -5957,8 +5957,20 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     // "sent"`, not "available") — ownership transferred to the recipient,
     // so it must never re-enter the sender's spendable set even on
     // finalizeOp's SUCCESS path.
+    // BUG FIX (2026-08-26): the line below used to set `status: "sent"`
+    // UNCONDITIONALLY — including for isSelfSend, where "the recipient" IS
+    // the sender and ownership never actually left. Harmless before the
+    // balance-sum fix earlier this session (which didn't filter by status
+    // at all, so a self-send's output counted either way) — but once that
+    // fix correctly started excluding "sent" notes from the balance (the
+    // real 3rd-party-send case this comment describes), it also started
+    // wrongly hiding a self-send's own output, understating the balance
+    // right after a self-send. Fixed: only "sent" for a REAL third party;
+    // a self-send's output is genuinely spendable, so it's "available",
+    // same as any other owned note.
     const sendOutputs = [{
-      commitment: commitmentOut, amount: amountBig.toString(), token: tkSend.addr, sentTo: dest, status: "sent",
+      commitment: commitmentOut, amount: amountBig.toString(), token: tkSend.addr, sentTo: dest,
+      status: isSelfSend ? "available" : "sent",
       ...(outSecret ? { secret: outSecret, blinding: outBlinding, pubkeyOwner: outPubkeyOwner } : {}),
     }];
     if (changeCommitment) {
