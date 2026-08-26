@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v19.2.2-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v19.2.3-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -29,6 +29,7 @@ Confidential on-chain capital management built on **Arc Testnet** (Circle L1, US
 - [Deployment](#deployment)
 - [GitHub / Release procedure](#github--release-procedure)
 - [Changelog](#changelog)
+  - [v19.2.3](#v1923--fix-receiver-balance-not-updating-regression-from-v1921s-scan-checkpoint-fix-2026-08-26)
   - [v19.2.2](#v1922--sync-contract-addresses-v530-redeploy-2-2026-08-26)
   - [v19.2.1](#v1921--fix-shielded-balance-double-counting-ghost-note-resurrection-2026-08-26)
   - [v19.2.0](#v1920--note-engine-private-sendbridge-to-third-parties-address-free-note-relay-v530-redeploy-2026-08-25)
@@ -272,6 +273,11 @@ git push origin main --tags
 Open a PR against `main`, and before merging a contract-address sync specifically: confirm the Shield panel's TVL/version stats reflect the new vault, and — since a full-suite redeploy is never a migration — communicate to users that any balance on the previous `PrivarShieldVault` address must be withdrawn from there before switching over.
 
 ## Changelog
+
+### v19.2.3 — fix: receiver balance not updating (regression from v19.2.1's scan-checkpoint fix, 2026-08-26)
+- v19.2.1 fixed `fetchLogsPaginated()` re-scanning its full ~5,000,000-block window on every poll by finally honoring the persisted scan checkpoint — but advanced that checkpoint to `head + 1` (the RPC node's reported chain head) after every successful call, silently assuming Blockscout's indexer was caught up to that exact block at that exact instant. When Blockscout lags the RPC node even briefly — two independent services, this is normal, not an outage — a note relayed in that lag window (e.g. `PrivarNoteRelay`/`ViewKeyRegistry.emitNote()`) was skipped and never looked at again on any later scan, since the checkpoint had already moved past it. This is what broke the receiver's balance update reported right after v19.2.1/v19.2.2 shipped.
+- Fixed: the checkpoint no longer advances all the way to the RPC node's bare head. It now always keeps re-scanning the most recent 2,000 blocks on every pass (`SCAN_LAG_BUFFER`), cheap at this window size, closing the indexer-lag gap instead of racing it — while keeping essentially all of v19.2.1's fix (no more re-scanning the full multi-million-block window).
+- Self-healing for anyone affected: a note relayed during the lag window on v19.2.1/v19.2.2 is still sitting on-chain, immutable — the next scan under this fix picks it up normally, no manual action needed.
 
 ### v19.2.2 — sync contract addresses (v5.3.0 redeploy #2, 2026-08-26)
 - Second full-suite redeploy of the same v5.3.0 contract suite (no code/feature change since v19.2.1 on the contracts side) — sync against the new `deployments/latest.json` (deployed `2026-08-26T03:48:28.987Z`). Every address refreshed again: `PrivarShieldVault`, `PrivarMerkleTreeManager`, `PrivarNullifierRegistry`, `PrivarDepositManager`, `XyloNetPrivacyAdapter`, `LiFiPrivacyAdapter`/`LiFiPrivacyBridge`, `CurvePrivacyAdapter`, `PrivarSpendKeyRegistry`, `PrivarNoteRelay`, `LiFiBridgeAdapter`, `PrivarStaking`, `PrivarCloudVault`. `PROTOCOL_VERSION` stays `"5.3.0"` (unchanged — same contracts version, different deployment run).

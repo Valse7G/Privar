@@ -3026,6 +3026,23 @@ async function fetchLogsPaginated(contractAddress, topics, fromBlock, keyPrefix,
   // but confusingly, failed).
   const checkpointStart = Math.max(fromBlock, getScanProgress(keyPrefix, topics, address, fromBlock));
 
+  // REGRESSION FIX (2026-08-26, same day): the fix above introduced a NEW
+  // bug of its own — advancing the checkpoint to `head + 1` (below) after
+  // every successful Blockscout call assumed Blockscout's indexer is
+  // caught up to the RPC node's reported head at that exact instant. If
+  // Blockscout's indexer LAGS the RPC node even briefly (common — they're
+  // two independent services), a log in that lag gap (e.g. a note relayed
+  // moments ago, not yet Blockscout-indexed) gets silently, PERMANENTLY
+  // skipped: the next scan starts from `checkpointStart` — now already
+  // past that block — and never looks there again. Before the earlier fix
+  // this didn't matter (every scan re-covered the full wide window
+  // regardless), which is exactly why this only surfaced once the
+  // checkpoint started being honored. Fixed by never trusting the RPC
+  // node's bare head as "safely indexed" — always keep re-scanning the
+  // last SCAN_LAG_BUFFER blocks on every pass, cheap at this window size,
+  // to absorb indexer lag instead of racing it.
+  const SCAN_LAG_BUFFER = 2000; // blocks — matches the RPC-fallback pagination window below
+
   // 1) Try the Blockscout indexed API first — one request, no chunking,
   //    separate rate-limit budget from the RPC node.
   try {
@@ -3033,7 +3050,8 @@ async function fetchLogsPaginated(contractAddress, topics, fromBlock, keyPrefix,
     console.info(`[${label}] scan(${topics[0]?.slice(2,10)}): ${logs.length} log(s) via Blockscout API (single request, no RPC pagination needed), from block ${checkpointStart}`);
     try {
       const headHex = await rpcCallWithBackoff("eth_blockNumber", []);
-      saveScanProgress(keyPrefix, topics, address, Number(BigInt(headHex || "0x0")) + 1);
+      const head = Number(BigInt(headHex || "0x0"));
+      saveScanProgress(keyPrefix, topics, address, Math.max(checkpointStart, head - SCAN_LAG_BUFFER));
     } catch {} // progress bookkeeping only — the logs were already fetched successfully either way
     return logs;
   } catch (e) {
