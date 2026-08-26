@@ -3004,11 +3004,33 @@ async function fetchLogsViaBlockscout(contractAddress, topics, fromBlock) {
 // reconnects) accumulate steadily and visibly instead of one call spending
 // minutes retrying in silence, which looks indistinguishable from "stuck".
 async function fetchLogsPaginated(contractAddress, topics, fromBlock, keyPrefix, address, label) {
+  // BUG FIX (2026-08-26): `checkpointStart` used to only be computed inside
+  // the RPC-fallback branch below (§2) — the Blockscout branch (§1, tried
+  // FIRST and normally the one that actually runs, since it succeeds
+  // whenever Blockscout is up) ignored it entirely and queried from the
+  // raw, wide `fromBlock` the caller passed in (e.g. "current block minus
+  // 5,000,000") on EVERY call, checkpoint or not. saveScanProgress() below
+  // was still updating the checkpoint after each successful call, but
+  // nothing ever READ it back to narrow the Blockscout query — so it was
+  // pure unused bookkeeping on that path. Net effect: every periodic scan
+  // re-fetched and re-processed the ENTIRE ~5,000,000-block window from
+  // scratch, including notes discovered and already spent in a PRIOR scan.
+  // scanStealthNotes()/scanNoteRelay() only skip a decrypted note if its
+  // commitment is in the CALLER's *current* local notes — once a note is
+  // legitimately spent and removed, it no longer is, so the very next scan
+  // re-decrypted the same still-on-chain, immutable event and RE-ADDED the
+  // note as if it had just arrived. That's what made a withdrawn balance
+  // reappear (and, since a real third-party note carries a deterministic
+  // secret, made the resurrected note re-derive the SAME nullifier already
+  // marked spent on-chain — so a second withdraw attempt on it correctly,
+  // but confusingly, failed).
+  const checkpointStart = Math.max(fromBlock, getScanProgress(keyPrefix, topics, address, fromBlock));
+
   // 1) Try the Blockscout indexed API first — one request, no chunking,
   //    separate rate-limit budget from the RPC node.
   try {
-    const logs = await fetchLogsViaBlockscout(contractAddress, topics, fromBlock);
-    console.info(`[${label}] scan(${topics[0]?.slice(2,10)}): ${logs.length} log(s) via Blockscout API (single request, no RPC pagination needed)`);
+    const logs = await fetchLogsViaBlockscout(contractAddress, topics, checkpointStart);
+    console.info(`[${label}] scan(${topics[0]?.slice(2,10)}): ${logs.length} log(s) via Blockscout API (single request, no RPC pagination needed), from block ${checkpointStart}`);
     try {
       const headHex = await rpcCallWithBackoff("eth_blockNumber", []);
       saveScanProgress(keyPrefix, topics, address, Number(BigInt(headHex || "0x0")) + 1);
@@ -3022,7 +3044,7 @@ async function fetchLogsPaginated(contractAddress, topics, fromBlock, keyPrefix,
   const headHex = await rpcCallWithBackoff("eth_blockNumber", []);
   const head = Number(BigInt(headHex || "0x0"));
   const all = [];
-  let start = Math.max(fromBlock, getScanProgress(keyPrefix, topics, address, fromBlock));
+  let start = checkpointStart;
   let window = 2000;
   let rateLimitRetries = 0;
   let chunkCount = 0;
@@ -3479,22 +3501,27 @@ const saveNotes = (addr, notes) => { try { localStorage.setItem(notesKey(addr), 
 // ═══════════════════════════════════════════════════════════════════════
 // PENDING OPS LEDGER — robust note lifecycle for swap / send / withdraw / bridge
 // ═══════════════════════════════════════════════════════════════════════
-// AUDIT FINDING (2026-08): reconcileAndVerifyNotes() below prunes "spent"
-// notes by matching n.nullifier against on-chain Withdrawn events. But NO
-// code path anywhere ever writes a `nullifier` field onto a saved note —
-// the nullifier used to spend a note is generated fresh (randomBytes32())
-// at the moment of the spend and never persisted back onto the note object,
-// before or after. So that matching branch can never fire, for ANY
-// operation (swap/send/withdraw/bridge alike): there is no on-chain data
-// that lets you map "this nullifier was spent" back to "this local
-// commitment" after the fact — the mock ZK verifier here doesn't enforce
-// (or expose) a deterministic commitment↔nullifier relationship either.
-//
-// The only place that link can ever be captured is HERE, the instant a
-// spend is initiated — BEFORE the transaction is sent. That's what this
-// ledger does, and it's what actually implements "point 1" (detect
-// swap/send/bridge spends, not just explicit withdraw()) — scanning more
-// on-chain events alone cannot do it, given the above.
+// AUDIT FINDING (2026-08), UPDATE (2026-08-26): reconcileAndVerifyNotes()
+// below prunes "spent" notes by matching n.nullifier against on-chain
+// Withdrawn events — but no code path ever wrote a `nullifier` field onto a
+// saved note (it's generated fresh at spend time and never persisted back),
+// so that branch could never fire. This has now been fixed to recompute
+// each note's deterministic nullifier on the fly (Poseidon(secret,
+// commitment), from the Note Engine derivation added in §7.6) for any note
+// carrying a `secret` — see reconcileAndVerifyNotes()'s own comment for the
+// full fix. That closes the real second-order bug this dead code allowed
+// through: a note that was legitimately spent could reappear locally via
+// scanStealthNotes()/scanNoteRelay() re-decrypting the same still-on-chain,
+// immutable relay event on a later pass (see fetchLogsPaginated's
+// checkpoint fix, same date) — this reconciliation pass now self-heals
+// that away instead of leaving a permanent ghost balance. Notes without a
+// `secret` (legacy, or a third-party send that fell back to a random
+// nullifier) still can't be verified this way — the PENDING OPS LEDGER
+// below remains the PRIMARY mechanism for those, since it captures the
+// link synchronously at spend time regardless of whether a deterministic
+// nullifier exists at all, and is the only mechanism that runs BEFORE the
+// tx is even sent (needed for "point 2" below, which no amount of
+// after-the-fact event scanning can provide).
 //
 // Every note-consuming operation MUST, in order:
 //   1. lockNotesForOp()  — synchronously, before building/sending the tx.
@@ -4072,7 +4099,29 @@ async function reconcileAndVerifyNotes(address) {
 
     const kept = [], spentNotes = [], unbackedNotes = [];
     for (const n of notes) {
-      if (n.nullifier && spentNullifiers.has(n.nullifier.toLowerCase())) {
+      // BUG FIX (2026-08-26): this used to check `n.nullifier` — a field
+      // that NO note object has ever actually carried (the nullifier is
+      // computed fresh at spend time in withdraw()/sendShielded()/swap()/
+      // bridge(), never written back onto the note itself). This check was
+      // therefore silent dead code from the moment it was written: always
+      // false, so this pass never pruned a single already-spent note. Fixed
+      // to recompute the note's OWN deterministic nullifier — possible
+      // exactly when it carries `secret` (§7.6's Note Engine derivation:
+      // nullifier = Poseidon(secret, commitment), the same value that
+      // withdraw()/sendShielded()/swap()/bridge() would derive if this note
+      // were spent) — and check THAT against the on-chain Withdrawn set.
+      // This closes the real-world case this was meant to catch in the
+      // first place: a note that was legitimately spent, then reappeared
+      // locally by some other means (e.g. a stealth/relay scan
+      // re-decrypting the same still-on-chain, immutable event — see
+      // fetchLogsPaginated's checkpoint fix above) — self-heals it away on
+      // the next reconciliation pass, no manual cleanup needed. Notes
+      // without `secret` (legacy notes, or a third-party send that fell
+      // back to a random nullifier) can't be verified this way — same
+      // acknowledged limitation as everywhere else in this file that
+      // gracefully degrades rather than guesses.
+      const computedNullifier = n.secret ? deriveNullifierForSpend(n.secret, n.commitment) : null;
+      if (computedNullifier && spentNullifiers.has(computedNullifier.toLowerCase())) {
         spentNotes.push(n);
         continue;
       }
@@ -4286,7 +4335,24 @@ function useShieldedBalances(prices, address) {
       [CONTRACTS.EURC]:     0n,
       [CONTRACTS.cirBTC]:   0n,
     };
+    // BUG FIX (2026-08-26): this loop used to sum EVERY note regardless of
+    // `status`, including "sent" — the sender-side HISTORY COPY of an
+    // output note that finalizeOp() deliberately keeps in the sender's own
+    // local notes (for tx-history display) but explicitly marks
+    // non-spendable, precisely so it would never be offered as a spend
+    // candidate (see lockNotesForOp's doc comment: "must never re-enter the
+    // sender's spendable set"). It WAS being kept out of spend-candidate
+    // selection everywhere else in this file (every `tokenNotes = notes.filter(...)`
+    // site already excludes "locked" — now also "sent", see those sites'
+    // matching fix) — but this balance sum was the one place nobody had
+    // applied that same exclusion, so a "sent" note's amount kept counting
+    // toward the displayed balance even though it wasn't spendable. Net
+    // effect: sending 1 of 10 USDC correctly removed the 10 and added a 9
+    // change note + a 1 "sent" record — then this loop summed 9 + 1 = 10,
+    // making the balance look unchanged. "locked" is excluded too, for the
+    // same reason (mid-flight notes shouldn't count as available funds).
     for (const n of notes) {
+      if (n.status === "sent" || n.status === "locked") continue;
       const k = n.token?.toLowerCase?.();
       const match = Object.keys(acc).find(a => a.toLowerCase() === k);
       if (match) {
@@ -5121,7 +5187,7 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     // in-flight swap/send/withdraw/bridge — see lockNotesForOp() doc
     // comment. Old notes with no `status` field are treated as available
     // (undefined !== "locked"), so this is backward compatible.
-    const tokenNotes = notes.filter(n => n.token?.toLowerCase() === tkFr.addr.toLowerCase() && n.status !== "locked");
+    const tokenNotes = notes.filter(n => n.token?.toLowerCase() === tkFr.addr.toLowerCase() && n.status !== "locked" && n.status !== "sent"); // BUG FIX 2026-08-26 — "sent" notes are the sender-side history copy, never spendable
     let note = tokenNotes.find(n => BigInt(Math.round(Number(n.amount)||0)) >= amountBig);
     if (!note && tokenNotes.length > 0) {
       note = tokenNotes.reduce((best, n) =>
@@ -5616,7 +5682,7 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
 
     // Float-safe note lookup filtered by token — locked notes (already
     // committed to another in-flight op) are excluded, see lockNotesForOp.
-    const tokenNotes = notes.filter(n => n.token?.toLowerCase() === tkSend.addr.toLowerCase() && n.status !== "locked");
+    const tokenNotes = notes.filter(n => n.token?.toLowerCase() === tkSend.addr.toLowerCase() && n.status !== "locked" && n.status !== "sent"); // BUG FIX 2026-08-26 — "sent" notes are the sender-side history copy, never spendable
     let note = tokenNotes.find(n => BigInt(Math.round(Number(n.amount)||0)) >= amountBig);
     if (!note && tokenNotes.length > 0) {
       // Fallback to largest note — clamp amountBig so we never request more
@@ -5987,7 +6053,7 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
     let   amountBig = BigInt(Math.round(Number(amount) * (10 ** tk.dec)));
     const noteAmt   = (n) => BigInt(Math.round(Number(n.amount)||0));
 
-    const tokenNotes = notes.filter(n => n.token.toLowerCase() === tk.addr.toLowerCase() && n.status !== "locked");
+    const tokenNotes = notes.filter(n => n.token.toLowerCase() === tk.addr.toLowerCase() && n.status !== "locked" && n.status !== "sent"); // BUG FIX 2026-08-26 — "sent" notes are the sender-side history copy, never spendable
     if (tokenNotes.length === 0) {
       notify("Withdraw", `No shielded ${tk.sym} note found. Shield ${tk.sym} first.`, "error");
       setLoading(false); return;
@@ -6352,7 +6418,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
 
     // 2. Find shielded note for the selected token
     const notes      = getNotes(account?.address);
-    const tokenNotes = notes.filter(n => n.token?.toLowerCase() === tk.addr.toLowerCase() && n.status !== "locked");
+    const tokenNotes = notes.filter(n => n.token?.toLowerCase() === tk.addr.toLowerCase() && n.status !== "locked" && n.status !== "sent"); // BUG FIX 2026-08-26 — "sent" notes are the sender-side history copy, never spendable
     let note = tokenNotes.find(n => BigInt(Math.round(Number(n.amount)||0)) >= amountBig);
     if (!note && tokenNotes.length > 0) {
       // Fallback to largest note — clamp amountBig so we never request more
