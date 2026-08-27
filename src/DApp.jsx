@@ -3054,65 +3054,51 @@ async function fetchLogsViaBlockscout(contractAddress, topics, fromBlock) {
 // reconnects) accumulate steadily and visibly instead of one call spending
 // minutes retrying in silence, which looks indistinguishable from "stuck".
 async function fetchLogsPaginated(contractAddress, topics, fromBlock, keyPrefix, address, label) {
-  // BUG FIX (2026-08-26): `checkpointStart` used to only be computed inside
-  // the RPC-fallback branch below (§2) — the Blockscout branch (§1, tried
-  // FIRST and normally the one that actually runs, since it succeeds
-  // whenever Blockscout is up) ignored it entirely and queried from the
-  // raw, wide `fromBlock` the caller passed in (e.g. "current block minus
-  // 5,000,000") on EVERY call, checkpoint or not. saveScanProgress() below
-  // was still updating the checkpoint after each successful call, but
-  // nothing ever READ it back to narrow the Blockscout query — so it was
-  // pure unused bookkeeping on that path. Net effect: every periodic scan
-  // re-fetched and re-processed the ENTIRE ~5,000,000-block window from
-  // scratch, including notes discovered and already spent in a PRIOR scan.
-  // scanStealthNotes()/scanNoteRelay() only skip a decrypted note if its
-  // commitment is in the CALLER's *current* local notes — once a note is
-  // legitimately spent and removed, it no longer is, so the very next scan
-  // re-decrypted the same still-on-chain, immutable event and RE-ADDED the
-  // note as if it had just arrived. That's what made a withdrawn balance
-  // reappear (and, since a real third-party note carries a deterministic
-  // secret, made the resurrected note re-derive the SAME nullifier already
-  // marked spent on-chain — so a second withdraw attempt on it correctly,
-  // but confusingly, failed).
-  const checkpointStart = Math.max(fromBlock, getScanProgress(keyPrefix, topics, address, fromBlock));
-
-  // REGRESSION FIX (2026-08-26, same day): the fix above introduced a NEW
-  // bug of its own — advancing the checkpoint to `head + 1` (below) after
-  // every successful Blockscout call assumed Blockscout's indexer is
-  // caught up to the RPC node's reported head at that exact instant. If
-  // Blockscout's indexer LAGS the RPC node even briefly (common — they're
-  // two independent services), a log in that lag gap (e.g. a note relayed
-  // moments ago, not yet Blockscout-indexed) gets silently, PERMANENTLY
-  // skipped: the next scan starts from `checkpointStart` — now already
-  // past that block — and never looks there again. Before the earlier fix
-  // this didn't matter (every scan re-covered the full wide window
-  // regardless), which is exactly why this only surfaced once the
-  // checkpoint started being honored. Fixed by never trusting the RPC
-  // node's bare head as "safely indexed" — always keep re-scanning the
-  // last SCAN_LAG_BUFFER blocks on every pass, cheap at this window size,
-  // to absorb indexer lag instead of racing it.
-  const SCAN_LAG_BUFFER = 2000; // blocks — matches the RPC-fallback pagination window below
-
+  // DEFINITIVE FIX (2026-08-27): the two prior fixes here (2026-08-26,
+  // both superseded) tried to make the Blockscout path honor a narrowing
+  // scan checkpoint — first naively (regressed: silently, permanently
+  // skipped anything in an indexer-lag gap), then with a trailing
+  // SCAN_LAG_BUFFER safety margin (still regressed: confirmed directly
+  // against the very first v19.2.0 build, which used no checkpoint at all
+  // on this path — receiver balance updates and the "verifying" status
+  // were both reliably fast there, and got WORSE, not better, after these
+  // "optimizations"). Root-caused: Blockscout's API is a single indexed
+  // database query, not raw eth_getLogs chunking — the wide, unnarrowed
+  // `fromBlock` window this caller already passes in is NOT the expensive
+  // operation the checkpoint was trying to save; narrowing it only added
+  // ways to silently miss real, recent events. Reverted outright: this
+  // path always queries the full caller-supplied `fromBlock` window,
+  // every call, exactly like the original working version. Ghost-note
+  // resurrection (the ORIGINAL bug that motivated a checkpoint here in
+  // the first place) is now solved a different way — see
+  // markCommitmentsProcessed()/isCommitmentProcessed() below and their use
+  // in scanStealthNotes()/scanNoteRelay() — a permanent per-address record
+  // of "already handled" commitments that survives a note being spent and
+  // removed, so it no longer depends on narrowing what gets re-scanned at
+  // all. Do not reintroduce checkpoint-narrowing on this path without a
+  // way to verify Blockscout's indexed height directly (not the RPC
+  // node's `eth_blockNumber`, which is a DIFFERENT service and is exactly
+  // what made both prior attempts here unreliable).
+  //
   // 1) Try the Blockscout indexed API first — one request, no chunking,
   //    separate rate-limit budget from the RPC node.
   try {
-    const logs = await fetchLogsViaBlockscout(contractAddress, topics, checkpointStart);
-    console.info(`[${label}] scan(${topics[0]?.slice(2,10)}): ${logs.length} log(s) via Blockscout API (single request, no RPC pagination needed), from block ${checkpointStart}`);
-    try {
-      const headHex = await rpcCallWithBackoff("eth_blockNumber", []);
-      const head = Number(BigInt(headHex || "0x0"));
-      saveScanProgress(keyPrefix, topics, address, Math.max(checkpointStart, head - SCAN_LAG_BUFFER));
-    } catch {} // progress bookkeeping only — the logs were already fetched successfully either way
+    const logs = await fetchLogsViaBlockscout(contractAddress, topics, fromBlock);
+    console.info(`[${label}] scan(${topics[0]?.slice(2,10)}): ${logs.length} log(s) via Blockscout API (single request, no RPC pagination needed), from block ${fromBlock}`);
     return logs;
   } catch (e) {
     console.warn(`[${label}] scan(${topics[0]?.slice(2,10)}): Blockscout API unavailable (${e.message}), falling back to paginated RPC`);
   }
 
   // 2) Fallback: paginated, backoff-aware eth_getLogs against the RPC node.
+  // Checkpointed here — safe and genuinely useful in THIS path specifically,
+  // unlike above: `start`'s source (this same RPC node, via eth_blockNumber
+  // right below) and the range actually walked are the SAME service, so
+  // there's no second, independently-lagging indexer to silently race.
   const headHex = await rpcCallWithBackoff("eth_blockNumber", []);
   const head = Number(BigInt(headHex || "0x0"));
   const all = [];
-  let start = checkpointStart;
+  let start = Math.max(fromBlock, getScanProgress(keyPrefix, topics, address, fromBlock));
   let window = 2000;
   let rateLimitRetries = 0;
   let chunkCount = 0;
@@ -3378,7 +3364,12 @@ async function scanNoteRelay(address, recompute) {
     const existing = getNotes(address);
     const existingSet = new Set(existing.map(n => n.commitment).filter(Boolean));
     const quarantined = loadQuarantinedCommitments(address);
+    // Ghost-note-resurrection fix (2026-08-27) — see markCommitmentsProcessed's
+    // doc comment. `existingSet` alone can't distinguish "never seen" from
+    // "seen, then legitimately spent and removed" — this can.
+    const processed = loadProcessedCommitments(address);
     let added = 0;
+    const newlyProcessed = [];
 
     for (const log of logs) {
       try {
@@ -3412,6 +3403,7 @@ async function scanNoteRelay(address, recompute) {
         if (!note || !note.commitment) continue;
         if (existingSet.has(note.commitment)) continue;
         if (quarantined.has(note.commitment.toLowerCase())) continue;
+        if (processed.has(note.commitment.toLowerCase())) continue;
         // Same vault-scoping guard as scanStealthNotes() — see its comment.
         if (note.vault && note.vault.toLowerCase() !== CONTRACTS.PrivarShieldVault.toLowerCase()) continue;
 
@@ -3426,12 +3418,14 @@ async function scanNoteRelay(address, recompute) {
 
         existing.push({ ...note, ts: note.ts || Date.now(), source: "noterelay" });
         existingSet.add(note.commitment);
+        newlyProcessed.push(note.commitment);
         added++;
       } catch (e) { console.warn("[note relay scan] entry skipped:", e.message); }
     }
 
     if (added > 0) {
       saveNotes(address, existing);
+      markCommitmentsProcessed(address, newlyProcessed);
       recompute?.();
       console.info(`[Privar note-relay scan] +${added} note(s) discovered`);
     }
@@ -3477,7 +3471,11 @@ async function scanStealthNotes(address, recompute) {
     const existing  = getNotes(address);
     const existingSet = new Set(existing.map(n => n.commitment).filter(Boolean));
     const quarantined = loadQuarantinedCommitments(address);
+    // Ghost-note-resurrection fix (2026-08-27) — see markCommitmentsProcessed's
+    // doc comment.
+    const processed = loadProcessedCommitments(address);
     let added = 0;
+    const newlyProcessed = [];
 
     // §7.5/§8.4 point 4 — needed to complete notes that carry a transmitted
     // `blinding` (sent to us deterministically against OUR pubkeyOwner, see
@@ -3509,6 +3507,7 @@ async function scanStealthNotes(address, recompute) {
         if (!note || !note.commitment) continue;
         if (existingSet.has(note.commitment)) continue;
         if (quarantined.has(note.commitment.toLowerCase())) continue; // don't resurrect a deliberately-quarantined note
+        if (processed.has(note.commitment.toLowerCase())) continue; // don't resurrect an already-spent-and-removed note
         // FIX (v2.9): a note's commitment only exists in the Merkle tree of the
         // PrivarShieldVault it was created against. Without this check, a confidential
         // send or self-backup made before the latest PrivarShieldVault redeploy would
@@ -3534,12 +3533,14 @@ async function scanStealthNotes(address, recompute) {
 
         existing.push({ ...note, ts: ts*1000 || Date.now(), source:"stealth" });
         existingSet.add(note.commitment);
+        newlyProcessed.push(note.commitment);
         added++;
       } catch {}
     }
 
     if (added > 0) {
       saveNotes(address, existing);
+      markCommitmentsProcessed(address, newlyProcessed);
       recompute?.();
     }
   } catch(e) { console.warn("[Privar stealth scan]", e.message); }
@@ -4276,6 +4277,42 @@ function loadQuarantinedCommitments(address) {
     const bad = JSON.parse(localStorage.getItem(quarantineKey(address)) || "[]");
     return new Set(bad.map(n => n.commitment).filter(Boolean).map(c => c.toLowerCase()));
   } catch { return new Set(); }
+}
+
+// ── Permanent processed-commitment ledger (2026-08-27) ──────────────────
+// Fixes the ORIGINAL ghost-note-resurrection bug (a spent-and-removed note
+// reappearing on the next scan) WITHOUT narrowing what fetchLogsPaginated
+// re-scans — see that function's doc comment for why narrowing the scan
+// window turned out to be the wrong tool for this and got reverted.
+// scanStealthNotes()/scanNoteRelay() only ever checked "is this commitment
+// in my CURRENTLY HELD notes" — indistinguishable from "never seen before"
+// once a note is legitimately spent and removed. This ledger is the
+// missing THIRD state: "seen and handled at some point", independent of
+// whether the note is still held. Unlike quarantineKey above (notes
+// deliberately EXCLUDED as invalid), this tracks notes that WERE
+// successfully added at least once — append-only, never pruned, since a
+// commitment can only ever mean one thing once it exists on-chain.
+const processedKey = (addr) => notesKey(addr) + "_processed";
+
+function loadProcessedCommitments(address) {
+  try {
+    const arr = JSON.parse(localStorage.getItem(processedKey(address)) || "[]");
+    return new Set(arr.map(c => c.toLowerCase()));
+  } catch { return new Set(); }
+}
+
+function markCommitmentsProcessed(address, commitments) {
+  if (!commitments || commitments.length === 0) return;
+  try {
+    const existing = loadProcessedCommitments(address);
+    for (const c of commitments) if (c) existing.add(c.toLowerCase());
+    // Cap defensively (very old entries dropped first) so this can't grow
+    // unbounded over a long-lived account — same order of magnitude as
+    // realistic total lifetime note count, generous for testnet use.
+    const arr = Array.from(existing);
+    const capped = arr.length > 20_000 ? arr.slice(arr.length - 20_000) : arr;
+    localStorage.setItem(processedKey(address), JSON.stringify(capped));
+  } catch {}
 }
 
 // ── One-time retroactive recovery for the "unbacked" quarantine bug ────────

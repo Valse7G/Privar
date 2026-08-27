@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v19.2.4-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v19.2.6-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -29,6 +29,8 @@ Confidential on-chain capital management built on **Arc Testnet** (Circle L1, US
 - [Deployment](#deployment)
 - [GitHub / Release procedure](#github--release-procedure)
 - [Changelog](#changelog)
+  - [v19.2.6](#v1926--sync-contract-addresses-v530-redeploy-3-2026-08-27)
+  - [v19.2.5](#v1925--fix-definitive-receiver-balance-not-updating-verifying-slow--revert-scan-checkpoint-narrowing-2026-08-27)
   - [v19.2.4](#v1924--fix-misleading-verified-badge-discovery-scans-not-re-run-on-tab-focus-self-send-balance-regression-2026-08-26)
   - [v19.2.3](#v1923--fix-receiver-balance-not-updating-regression-from-v1921s-scan-checkpoint-fix-2026-08-26)
   - [v19.2.2](#v1922--sync-contract-addresses-v530-redeploy-2-2026-08-26)
@@ -58,29 +60,29 @@ Two structural pieces make the client side robust, both explained in full below:
 ## Deployed addresses
 
 Deployer / treasury: `0x1Dc72450B3e2782AcD669D7C27073f2C8F2c9894`
-Deployed: `2026-08-26T03:48:28.987Z` — full protocol redeployment (second run of the v5.3.0 suite). **Not a migration** — prior shielded balances stay in the previous `PrivarShieldVault` (`0xBcC87AE23759385ff232aE5f5a32B5BcCfa9e071`, deployed 2026-08-25) and must be withdrawn from there separately.
+Deployed: `2026-08-27T22:48:10.956Z` — full protocol redeployment (third run of the v5.3.0 suite). **Not a migration** — prior shielded balances stay in the previous `PrivarShieldVault` (`0xc05Ba9BF842635d7Bc55434529E0c0337cb72FCa`, deployed 2026-08-26) and must be withdrawn from there separately.
 
 | Contract | Address | Frontend key (`src/contracts.js`) |
 |---|---|---|
-| **PrivarShieldVault** ⁷ ⁹ | `0xc05Ba9BF842635d7Bc55434529E0c0337cb72FCa` | `PrivarShieldVault` |
-| PrivarMerkleTreeManager | `0xcEc7FE67734c35108152e82eA4b95b7618C089b2` | `PrivarMerkleTreeManager` |
-| PrivarNullifierRegistry | `0xfbAdD03182934177f74539bFf2460f9da7Fd3CdE` | `PrivarNullifierRegistry` |
-| PrivarVerifierZK (Mock¹) | `0x53279181E4430BC3D616C3E86F08ECC883F85Fb8` | *(called internally by the vault — no frontend key)* |
-| PrivarDepositManager | `0x000Fe68A5F32ff01b5d49fA6F0adAabcb9fbD9BB` | `PrivarDepositManager` |
-| PrivarWithdrawManager | `0x943E40370dFF915d267E02BA9174cDF182B0937e` | *(called internally by the vault — no frontend key)* |
-| **XyloNetPrivacyAdapter** ⁵ ⁸ (direct adapter, primary — always deployed) | `0x149761444E70664d77d7DD036947A80C45E5e303` | `XyloNetPrivacyAdapter` |
+| **PrivarShieldVault** ⁷ ⁹ | `0xB22c772B14aEeb1395Af98d97Fcc71852ccE8cB7` | `PrivarShieldVault` |
+| PrivarMerkleTreeManager | `0x8F59D28F2D2CE5B0E1f253BD1426857D99f7C1A3` | `PrivarMerkleTreeManager` |
+| PrivarNullifierRegistry | `0xF5c47eBce2421036c234D32244977C29c563716E` | `PrivarNullifierRegistry` |
+| PrivarVerifierZK (Mock¹) | `0xEbAE383aa9F554144691De5c9E3495B551506128` | *(called internally by the vault — no frontend key)* |
+| PrivarDepositManager | `0xc39f1ec6086c95B18BDd8b91ebC3C0230007c2cC` | `PrivarDepositManager` |
+| PrivarWithdrawManager | `0x7AB8784cf6aF836dd3d49B039a159ED891604C90` | *(called internally by the vault — no frontend key)* |
+| **XyloNetPrivacyAdapter** ⁵ ⁸ (direct adapter, primary — always deployed) | `0xF230606c15b30510cAd620c258c1131f563274f4` | `XyloNetPrivacyAdapter` |
 | UniswapPrivacyAdapter (direct adapter, independent — not deployed, `UNISWAP_ROUTER_ADDRESS` unset) | *(null)* | `UniswapPrivacyAdapter` |
-| LiFiPrivacyAdapter (reserve/aggregator, active, non-default) | `0x74cAB299D19d0dC23C3322448f88a84ae9C643E8` | `LiFiPrivacyAdapter` |
-| LiFiPrivacyBridge ³ | `0xC8433982e6704152f9f2d41960f8c377214755c1` | `LiFiPrivacyBridge` |
-| **LiFiBridgeAdapter** ⁹ (multi-adapter bridge, whitelisted) | `0x3C1CC99Ec096AC325e1deE573d29Eeaf55eb932e` | `LiFiBridgeAdapter` |
+| LiFiPrivacyAdapter (reserve/aggregator, active, non-default) | `0x04a9C586e5783d6888F6B24021428CA682904165` | `LiFiPrivacyAdapter` |
+| LiFiPrivacyBridge ³ | `0x22925B9263B6485bf207d26831603F8c0202D90A` | `LiFiPrivacyBridge` |
+| **LiFiBridgeAdapter** ⁹ (multi-adapter bridge, whitelisted) | `0x672e094dc0679772B6f82D9F9FF26751d2b4b37D` | `LiFiBridgeAdapter` |
 | LiFiDiamond (unchanged) | `0xFf70F4A1d11995621854F3692acF286d8aCd04b2` | `LiFiDiamond` |
 | XyloRouter (raw DEX router, quoting only — see below) | `0x73742278c31a76dBb0D2587d03ef92E6E2141023` | `XyloRouter` |
-| CurvePrivacyAdapter (reserve, active, empty pool whitelist — see below) | `0x2D87c6029a401172Df615373E0B93d3D0D480bEc` | `CurvePrivacyAdapter` |
-| PrivarStaking (public, no notes — see below) | `0xAD2F6cF775526F406e11FE3D02Cef5f1c7bafe7d` | `PrivarStaking` |
-| **PrivarCloudVault** ² | `0x96d73D155288FdE17EaA164Baf7bf7686c8daa49` | `PrivarCloudVault` |
+| CurvePrivacyAdapter (reserve, active, empty pool whitelist — see below) | `0x240DB978D4867666D716BC3C76d11eD2D10A387f` | `CurvePrivacyAdapter` |
+| PrivarStaking (public, no notes — see below) | `0x3BD8150Ee0781E38204341808bB61eD79CC91E38` | `PrivarStaking` |
+| **PrivarCloudVault** ² | `0xa348136903081d81F39720940370E15dcA9b4dE1` | `PrivarCloudVault` |
 | ViewKeyRegistry (unchanged since v1.0.0) | `0x590D1FDC3FbD4CAb151cb7E1557D9C4ecEa2C24b` | `ViewKeyRegistry` |
-| **PrivarSpendKeyRegistry** ⁹ (Note Engine spend-identity keys) | `0x7b0A32adb0093771B084C9712992F935356C39e8` | `PrivarSpendKeyRegistry` |
-| **PrivarNoteRelay** ⁹ (address-free encrypted-note relay) | `0x5Dc9bb4FC1604f315d638EEb7447BF640CfdfCfF` | `PrivarNoteRelay` |
+| **PrivarSpendKeyRegistry** ⁹ (Note Engine spend-identity keys) | `0xA4F280b49416AEA73A9A86f76a9F688C94C15703` | `PrivarSpendKeyRegistry` |
+| **PrivarNoteRelay** ⁹ (address-free encrypted-note relay) | `0x75B35f547c7D9bC0AdB765A79520B7E2e1Bc1304` | `PrivarNoteRelay` |
 | USDC (native gas token) | `0x3600000000000000000000000000000000000000` | `NATIVE_USDC` |
 | EURC | `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a` | `EURC` |
 | cirBTC | `0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF` | `cirBTC` |
@@ -274,6 +276,16 @@ git push origin main --tags
 Open a PR against `main`, and before merging a contract-address sync specifically: confirm the Shield panel's TVL/version stats reflect the new vault, and — since a full-suite redeploy is never a migration — communicate to users that any balance on the previous `PrivarShieldVault` address must be withdrawn from there before switching over.
 
 ## Changelog
+
+### v19.2.6 — sync contract addresses (v5.3.0 redeploy #3, 2026-08-27)
+- Third full-suite redeploy of the same v5.3.0 contract suite (no code/feature change) — sync against `deployments/latest.json` (deployed `2026-08-27T22:48:10.956Z`). Every address refreshed. `PROTOCOL_VERSION` unchanged (`"5.3.0"`).
+- Not a migration — prior shielded balances stay in the previous `PrivarShieldVault` (`0xc05Ba9BF842635d7Bc55434529E0c0337cb72FCa`, 2026-08-26) and must be withdrawn from there separately.
+
+### v19.2.5 — fix (definitive): receiver balance not updating, "verifying" slow — revert scan-checkpoint narrowing (2026-08-27)
+- v19.2.1 and v19.2.3 both tried to make `fetchLogsPaginated()`'s Blockscout path honor a narrowing scan checkpoint (first naively, then with a lag-safety buffer). Directly confirmed against the very first v19.2.0 build (no checkpoint on this path at all) that BOTH attempts made receiver-side discovery worse, not better — balances stopped appearing, and the "verifying" status stopped updating promptly. Root cause: Blockscout's API is a single indexed database query, not raw `eth_getLogs` chunking — narrowing the query window was solving a cost problem that didn't actually exist on this path, while adding real ways to silently miss recent events (an RPC-node-reported "head" is not the same thing as "Blockscout has indexed up to here", and the two services can disagree by more than any fixed buffer, depending on load).
+- **Reverted outright**: the Blockscout path is back to always querying the same wide window the caller passes in, exactly like the original v19.2.0 — restores the confirmed-fast, confirmed-reliable discovery behavior. The RPC-fallback path (used only when Blockscout itself is unreachable) keeps its own checkpoint, which was never the problem — it walks the same RPC node it checkpoints against, no second lagging service involved.
+- The ORIGINAL bug that motivated adding a checkpoint here in the first place — a spent-and-removed note reappearing on the next scan — is now fixed a different way that doesn't require narrowing anything: a new permanent, append-only, per-address "processed commitments" ledger (`markCommitmentsProcessed`/`loadProcessedCommitments`) records every commitment `scanStealthNotes()`/`scanNoteRelay()` ever successfully added, independent of whether it's still held. A commitment that's been spent and removed is still in this ledger, so it's correctly skipped on the next scan — solving the resurrection bug without needing to skip re-scanning any blocks at all.
+- Self-healing: no manual action needed for any account affected by the v19.2.1–v19.2.4 regression window — the underlying on-chain events were never lost, just temporarily unreachable by the narrowed query; this restores full visibility on the next scan.
 
 ### v19.2.4 — fix: misleading "verified" badge, discovery scans not re-run on tab focus, self-send balance regression (2026-08-26)
 - The "verified Xs ago" badge was driven ENTIRELY by `reconcileAndVerifyNotes()` — which only re-checks EXISTING local notes against on-chain spent/unbacked state. It had nothing to do with `scanStealthNotes()`/`scanNoteRelay()`/CloudVault/journal resync — the calls that actually DISCOVER new incoming notes. A user could see "verified Xs ago" (reasonably read as "my balance is now correct") while an incoming payment was still unscanned — exactly the pattern in the reported screenshots (swap panel stuck at $0.00 shielded, badge flips to "verified" anyway). Fixed: the badge now takes the OLDER of the two completion timestamps and only shows anything but "verifying…" once BOTH have run at least once — so it only ever claims what's actually been checked.
