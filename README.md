@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v19.2.6-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v19.2.7-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -29,6 +29,7 @@ Confidential on-chain capital management built on **Arc Testnet** (Circle L1, US
 - [Deployment](#deployment)
 - [GitHub / Release procedure](#github--release-procedure)
 - [Changelog](#changelog)
+  - [v19.2.7](#v1927--fix-private-send-silently-succeeded-to-an-undiscoverable-recipient-2026-08-27)
   - [v19.2.6](#v1926--sync-contract-addresses-v530-redeploy-3-2026-08-27)
   - [v19.2.5](#v1925--fix-definitive-receiver-balance-not-updating-verifying-slow--revert-scan-checkpoint-narrowing-2026-08-27)
   - [v19.2.4](#v1924--fix-misleading-verified-badge-discovery-scans-not-re-run-on-tab-focus-self-send-balance-regression-2026-08-26)
@@ -276,6 +277,11 @@ git push origin main --tags
 Open a PR against `main`, and before merging a contract-address sync specifically: confirm the Shield panel's TVL/version stats reflect the new vault, and — since a full-suite redeploy is never a migration — communicate to users that any balance on the previous `PrivarShieldVault` address must be withdrawn from there before switching over.
 
 ## Changelog
+
+### v19.2.7 — fix: private send silently succeeded to an undiscoverable recipient (2026-08-27)
+- Reported symptom: a private send transaction succeeds, but the recipient's shielded balance shows nothing at all (not a discovery-timing issue — genuinely zero notes, "verified" badge fine). Root cause: `sendShielded()` only ever *warned* in the confirm dialog when the recipient had registered neither a `PrivarSpendKeyRegistry` spend key nor a `ViewKeyRegistry` view key (e.g. an address that has simply never opened Privar before) — it never actually blocked the send. In that state, funds move on-chain to a random, non-deterministic commitment with no relayed note anywhere — permanently undiscoverable and unspendable by anyone, sender included. The identical situation in `ShieldPanel`'s third-party `deposit()` was already hard-blocked for exactly this reason (§8.4 point 4) — this brings `sendShielded()` in line with that same guard.
+- Fixed: `sendShielded()` now hard-blocks (before building or sending any transaction) when neither discovery path is available, with a clear, actionable message — same "warning is not enough when the failure mode is permanent, silent fund loss" reasoning as the deposit-side guard.
+- Not retroactive: a send that already went through under the old warn-only behavior is unrecoverable for the reason above — there is no discovery path to add after the fact for a fully random, un-related commitment. The fix only prevents this from happening again.
 
 ### v19.2.6 — sync contract addresses (v5.3.0 redeploy #3, 2026-08-27)
 - Third full-suite redeploy of the same v5.3.0 contract suite (no code/feature change) — sync against `deployments/latest.json` (deployed `2026-08-27T22:48:10.956Z`). Every address refreshed. `PROTOCOL_VERSION` unchanged (`"5.3.0"`).

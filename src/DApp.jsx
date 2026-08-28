@@ -5933,6 +5933,25 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
           // Fallback: recipient note stays local-only (existing manual-share behavior)
         }
       }
+
+      // BUG FIX (2026-08-27): until now, if NEITHER discovery path above
+      // worked (recipient has registered neither a PrivarSpendKeyRegistry
+      // spend key NOR a ViewKeyRegistry view key — e.g. an address that has
+      // simply never connected to Privar before), this function still let
+      // the send proceed: funds move on-chain to a random, non-deterministic
+      // commitment with NO relayed note anywhere — genuinely undiscoverable
+      // and unspendable by anyone, sender included, ever again. The confirm
+      // modal below DID show a warning ("recipient hasn't enabled
+      // confidential receiving yet") but never blocked on it — easy to miss
+      // or underestimate the consequence of, unlike the identical situation
+      // in ShieldPanel's third-party deposit(), which was already hard-
+      // blocked for exactly this reason (see its own comment). Made
+      // consistent here: same hard block, same reasoning — a warning is not
+      // enough when the failure mode is permanent, silent fund loss.
+      if (!noteRelayCalldata && !encryptedNote) {
+        notify("Send", "Recipient hasn't enabled Private Send yet (no spend key or view key registered) — sending now would create funds nobody could ever discover or spend, including you. Ask them to open Privar and connect their wallet at least once first.", "error");
+        setLoading(false); return;
+      }
     }
 
     // ── Flat protocol fee (PrivarShieldVault v2.4+ — flatFeeUsdc, native USDC msg.value) ──
@@ -5954,7 +5973,10 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
         ? "Recipient has confidential receiving enabled — an address-free encrypted note will be relayed on-chain (no recipient address in the relay call) so their wallet auto-discovers these funds. 2 transactions: shielded transfer, then note relay."
         : encryptedNote
         ? "Recipient has confidential receiving enabled — an encrypted note will be relayed on-chain so their wallet auto-discovers these funds. 2 transactions: shielded transfer, then note relay."
-        : "Private send — recipient hasn't enabled confidential receiving yet, so no auto-discovery note will be sent. 1 transaction.")
+        // Only reachable for isSelfSend now — the third-party case with
+        // neither discovery path available is hard-blocked above (see its
+        // comment) rather than warned-and-allowed.
+        : "Sending to your own shielded balance. 1 transaction.")
         + (sendFee > 0n ? ` Flat protocol fee: ${formatToken(sendFee, 6)} USDC (paid separately, not from your shielded balance).` : ""),
     });
     if (!confirmed) { setLoading(false); return; }
