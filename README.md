@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v19.2.7-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v19.2.8-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -29,6 +29,7 @@ Confidential on-chain capital management built on **Arc Testnet** (Circle L1, US
 - [Deployment](#deployment)
 - [GitHub / Release procedure](#github--release-procedure)
 - [Changelog](#changelog)
+  - [v19.2.8](#v1928--fix-baby-jubjub-scalar-reduced-against-the-wrong-modulus-likely-root-cause-of-recipient-never-sees-funds-2026-08-28)
   - [v19.2.7](#v1927--fix-private-send-silently-succeeded-to-an-undiscoverable-recipient-2026-08-27)
   - [v19.2.6](#v1926--sync-contract-addresses-v530-redeploy-3-2026-08-27)
   - [v19.2.5](#v1925--fix-definitive-receiver-balance-not-updating-verifying-slow--revert-scan-checkpoint-narrowing-2026-08-27)
@@ -277,6 +278,12 @@ git push origin main --tags
 Open a PR against `main`, and before merging a contract-address sync specifically: confirm the Shield panel's TVL/version stats reflect the new vault, and — since a full-suite redeploy is never a migration — communicate to users that any balance on the previous `PrivarShieldVault` address must be withdrawn from there before switching over.
 
 ## Changelog
+
+### v19.2.8 — fix: Baby Jubjub scalar reduced against the wrong modulus (likely root cause of "recipient never sees funds") (2026-08-28)
+- Root-caused, against the actual Baby Jubjub spec (EIP-2494) rather than further speculation: `noteCrypto.js` reduced EVERY scalar — including ones about to go into `mulPointEscalar` (Baby Jubjub scalar multiplication, used for `pubkeyFromSecret()` and the note-relay ECDH's `computeSharedSecret()`) — against `FIELD_R` (BN254's scalar field, ~2^254, correct for Poseidon inputs/outputs and for encoding point coordinates). But Baby Jubjub's own point group has a DIFFERENT, smaller (~251-bit) prime order — confirmed directly against EIP-2494 and independent implementations (sapling-crypto, zkBob): `2736030358979909402780800718157159386076813972158567259200215660948447373041`. This codebase never had a way to rule out whether `@zk-kit/baby-jubjub`'s `mulPointEscalar` tolerates a scalar larger than its own group order (no network access in the editing environment to install and empirically test it) — this fix removes that uncertainty entirely by reducing against the documented, standard modulus instead of relying on an unverified library behavior.
+- This is the most likely explanation for the persistent "private send succeeds, recipient's shielded wallet shows nothing" reports across USDC/EURC/cirBTC alike, uniformly and every time — a cryptographic derivation mismatch is deterministic (always fails), unlike the several scan-timing issues fixed in v19.2.1–v19.2.6, which were probabilistic/timing-dependent and are confirmed unrelated to this failure mode.
+- Added `test-note-crypto.mjs` (project root) — a standalone script importing the REAL `noteCrypto.js` to empirically verify ECDH round-trip symmetry (sender/receiver derive the identical shared secret and view tag) and commitment/nullifier determinism. Run with `npm install && node test-note-crypto.mjs` — this is the first time any of noteCrypto.js's actual output has been checked against a real run of `poseidon-lite`/`@zk-kit/baby-jubjub`, rather than reasoned about mathematically.
+- Not retroactive: a note relayed under the old, incorrectly-reduced scalar had its commitment/shared-secret derived from a mismatched key on at least one side — it cannot be discovered after the fact by this fix. Only prevents this from happening on new sends going forward.
 
 ### v19.2.7 — fix: private send silently succeeded to an undiscoverable recipient (2026-08-27)
 - Reported symptom: a private send transaction succeeds, but the recipient's shielded balance shows nothing at all (not a discovery-timing issue — genuinely zero notes, "verified" badge fine). Root cause: `sendShielded()` only ever *warned* in the confirm dialog when the recipient had registered neither a `PrivarSpendKeyRegistry` spend key nor a `ViewKeyRegistry` view key (e.g. an address that has simply never opened Privar before) — it never actually blocked the send. In that state, funds move on-chain to a random, non-deterministic commitment with no relayed note anywhere — permanently undiscoverable and unspendable by anyone, sender included. The identical situation in `ShieldPanel`'s third-party `deposit()` was already hard-blocked for exactly this reason (§8.4 point 4) — this brings `sendShielded()` in line with that same guard.

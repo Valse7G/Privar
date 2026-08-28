@@ -51,6 +51,35 @@ import { Base8, mulPointEscalar } from "@zk-kit/baby-jubjub";
 // vivent dans un espace cohérent pour un futur circuit.
 export const FIELD_R = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 
+// BUG FIX (2026-08-28) — the scalar-multiplication subgroup order for Baby
+// Jubjub is NOT the same number as FIELD_R above, despite both floating
+// around this codebase as "the Baby Jubjub modulus". FIELD_R is BN254's
+// scalar field (Fr) — the BASE field Baby Jubjub's own x/y COORDINATES live
+// in (correct for Poseidon inputs/outputs and for encoding point
+// coordinates as bytes32). But Baby Jubjub's own point group has a
+// DIFFERENT, smaller (~251-bit) prime order — this is what a SCALAR must
+// be reduced against before scalar multiplication (`mulPointEscalar`),
+// confirmed directly against EIP-2494 (the Baby Jubjub spec) and multiple
+// independent implementations (sapling-crypto, zkBob): "Baby Jubjub has
+// s = 2736030358979909402780800718157159386076813972158567259200215660948447373041
+// as the prime subgroup order, with cofactor 8" — a different, smaller
+// number than FIELD_R (~2^251 vs ~2^254).
+//
+// Mathematically, k·P = (k mod BABYJUBJUB_SUBGROUP_ORDER)·P is always true
+// in a group of that order regardless of which modulus (if any) a caller
+// pre-reduces k against — a correct double-and-add implementation handles
+// ANY integer scalar correctly on its own. This fix closes a real
+// correctness risk this codebase had NO way to rule out otherwise (no
+// network access here to install and empirically test
+// @zk-kit/baby-jubjub's actual tolerance for a scalar larger than its own
+// group order), by aligning with the documented, standard modulus instead
+// of relying on a specific library implementation detail. Used ONLY where
+// a scalar feeds into mulPointEscalar (pubkeyFromSecret,
+// computeSharedSecret below) — every other use of FIELD_R in this file
+// (Poseidon inputs/outputs, encoded point coordinates) is correctly
+// FIELD_R and unchanged.
+export const BABYJUBJUB_SUBGROUP_ORDER = 2736030358979909402780800718157159386076813972158567259200215660948447373041n;
+
 // ── Helpers hex/bytes (module autonome, pas d'import croisé avec DApp.jsx) ──
 function hexToBytes(hex) {
   const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
@@ -97,7 +126,10 @@ export function randomBlinding() {
 
 // ── pubkeyOwner = secret · G (Baby Jubjub) ──────────────────────────────
 export function pubkeyFromSecret(secret) {
-  const [x, y] = mulPointEscalar(Base8, secret % FIELD_R);
+  // BUG FIX (2026-08-28) — reduce mod the curve's own subgroup order for
+  // the scalar multiplication, NOT FIELD_R. See BABYJUBJUB_SUBGROUP_ORDER's
+  // doc comment above.
+  const [x, y] = mulPointEscalar(Base8, secret % BABYJUBJUB_SUBGROUP_ORDER);
   return [x, y];
 }
 
@@ -206,8 +238,9 @@ export function generateEphemeralKeyPair() {
 // (ephemeralScalar, pubkeyOwnerDestinataire), destinataire avec
 // (spendingKey, ephemeralPubkey) — donnent le même point par commutativité
 // de la multiplication scalaire.
+// BUG FIX (2026-08-28) — same subgroup-order fix as pubkeyFromSecret above.
 export function computeSharedSecret(scalar, otherPubkey) {
-  const [x, y] = mulPointEscalar(otherPubkey, scalar % FIELD_R);
+  const [x, y] = mulPointEscalar(otherPubkey, scalar % BABYJUBJUB_SUBGROUP_ORDER);
   return [x, y];
 }
 
