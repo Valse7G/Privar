@@ -74,13 +74,13 @@ export const PROTOCOL_VERSION = "5.3.0"; // latest.json _version — synced 2026
 
 // ── Contract addresses ────────────────────────────────────────────────────────
 const _c = {
-  PrivarShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0xB22c772B14aEeb1395Af98d97Fcc71852ccE8cB7",
+  PrivarShieldVault:         import.meta.env.VITE_SHIELD_VAULT         ?? "0xBcC87AE23759385ff232aE5f5a32B5BcCfa9e071",
   Timelock:            import.meta.env.VITE_TIMELOCK              ?? "0x8DF7C02012EBec968bdEc100F4fEAF772AcAab99",
   Governance:          import.meta.env.VITE_GOVERNANCE            ?? "0x89F08E2BBc963e48986D8A0FfA23858bA643C78A",
-  PrivarStaking:             import.meta.env.VITE_STAKING               ?? "0x3BD8150Ee0781E38204341808bB61eD79CC91E38",
-  PrivarNullifierRegistry:   import.meta.env.VITE_NULLIFIER_REGISTRY    ?? "0xF5c47eBce2421036c234D32244977C29c563716E",
-  PrivarMerkleTreeManager:   import.meta.env.VITE_MERKLE_TREE_MANAGER   ?? "0x8F59D28F2D2CE5B0E1f253BD1426857D99f7C1A3",
-  PrivarDepositManager:      import.meta.env.VITE_DEPOSIT_MANAGER       ?? "0xc39f1ec6086c95B18BDd8b91ebC3C0230007c2cC",
+  PrivarStaking:             import.meta.env.VITE_STAKING               ?? "0xa87A2cb3D7A4a334B3605AB4Be4A6F70160E0809",
+  PrivarNullifierRegistry:   import.meta.env.VITE_NULLIFIER_REGISTRY    ?? "0x4F613d60e6d0E9E1Fc0062EbefA9eBa292FD9aD3",
+  PrivarMerkleTreeManager:   import.meta.env.VITE_MERKLE_TREE_MANAGER   ?? "0x0059fA8930724F42Cb0FFEa15B85591B6E5bfc24",
+  PrivarDepositManager:      import.meta.env.VITE_DEPOSIT_MANAGER       ?? "0xCF43B5136b3D4aA5cc77A1E6ed4dB551D7eD5D03",
   // ViewKeyRegistry v1.0.0 — deployed 2026-06-20. Confidential-send auto-discovery
   // (real ECDH stealth notes) is feature-gated on this being non-null — see
   // DApp.jsx ensureViewKeyRegistered()/scanStealthNotes(). NOT part of the
@@ -88,12 +88,12 @@ const _c = {
   ViewKeyRegistry:     import.meta.env.VITE_VIEW_KEY_REGISTRY     ?? "0x590D1FDC3FbD4CAb151cb7E1557D9C4ecEa2C24b",
   // PrivarSpendKeyRegistry — §7.5/§8.4 point 4. Deployed 2026-08-25 as part
   // of the v5.3.0 Note Engine suite.
-  PrivarSpendKeyRegistry: import.meta.env.VITE_SPEND_KEY_REGISTRY ?? "0xA4F280b49416AEA73A9A86f76a9F688C94C15703",
+  PrivarSpendKeyRegistry: import.meta.env.VITE_SPEND_KEY_REGISTRY ?? "0x76B1Ac51c25500A8E90Cb43C99B6053d0B1dC433",
   // v5.3.0 — §9.4. Deployed and whitelisted (setBridgeAdapterWhitelist) as
   // part of the same run.
-  LiFiBridgeAdapter: import.meta.env.VITE_LIFI_BRIDGE_ADAPTER ?? "0x672e094dc0679772B6f82D9F9FF26751d2b4b37D",
+  LiFiBridgeAdapter: import.meta.env.VITE_LIFI_BRIDGE_ADAPTER ?? "0x395d601286dbff99e38006D865E0B4185a19f6c4",
   // §7.5. Deployed 2026-08-25 as part of the v5.3.0 Note Engine suite.
-  PrivarNoteRelay: import.meta.env.VITE_NOTE_RELAY ?? "0x75B35f547c7D9bC0AdB765A79520B7E2e1Bc1304",
+  PrivarNoteRelay: import.meta.env.VITE_NOTE_RELAY ?? "0xd3aC219D3F73fa2dDE71470E6a99E1760fff5b2B",
   // PrivarCloudVault — standalone, additive (no constructor args, no link to
   // ShieldVault). Decentralized events-only backup registry for the shielded
   // note journal. Since v3.4, ShieldVault's own NoteJournal event is the
@@ -101,10 +101,10 @@ const _c = {
   // in DApp.jsx) — this stays deployed for backward compatibility with
   // journal entries pushed before the v3.4 upgrade, and as the manual
   // "Sync Notes to Cloud" backfill path in Settings.
-  PrivarCloudVault:    import.meta.env.VITE_CLOUD_VAULT           ?? "0xa348136903081d81F39720940370E15dcA9b4dE1",
+  PrivarCloudVault:    import.meta.env.VITE_CLOUD_VAULT           ?? "0xEb67E6d78C9EE3f10B8A22C018BA11b35830732C",
   // LI.FI privacy adapters — redeployed 2026-08-25 as part of the v5.3.0 Note Engine suite.
-  LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0x04a9C586e5783d6888F6B24021428CA682904165",
-  LiFiPrivacyBridge:   import.meta.env.VITE_LIFI_BRIDGE           ?? "0x22925B9263B6485bf207d26831603F8c0202D90A",
+  LiFiPrivacyAdapter:  import.meta.env.VITE_LIFI_ADAPTER          ?? "0xdE87bBB30d704caCC1791deE5103C26bfb70Df19",
+  LiFiPrivacyBridge:   import.meta.env.VITE_LIFI_BRIDGE           ?? "0x9bB897B490E5979a9e885632AF3FE9714Ee4B0f8",
   LiFiDiamond:         import.meta.env.VITE_LIFI_DIAMOND          ?? "0xFf70F4A1d11995621854F3692acF286d8aCd04b2",
   // v5.0.0 — "0x000...0" (zero address) means "not deployed / not verified
   // yet" and the frontend MUST treat that as "skip this router" — never
@@ -113,7 +113,7 @@ const _c = {
   // Fully independent from UniswapPrivacyAdapter below (own contract, own
   // whitelist entry — see contracts repo's XyloNetPrivacyAdapter.sol doc
   // comment). Deployed via scripts/deploy-xylonet-adapter.js.
-  XyloNetPrivacyAdapter: import.meta.env.VITE_XYLONET_ADAPTER ?? "0xF230606c15b30510cAd620c258c1131f563274f4",
+  XyloNetPrivacyAdapter: import.meta.env.VITE_XYLONET_ADAPTER ?? "0xb5C65A894124FA0037AfE52d0aC5D9F682339ccf",
   // UniswapPrivacyAdapter — DIRECT adapter, independent, reserved for a
   // real Uniswap deployment. null in latest.json: no UNISWAP_ROUTER_ADDRESS
   // was supplied at deploy time (see contracts repo's deploy-v5.2.0-full.js
@@ -128,7 +128,7 @@ const _c = {
   // doesn't route through it yet (see DApp.jsx swap()'s comment on why
   // attemptCurve() isn't wired up: needs a per-pair (pool, i, j) config
   // this repo doesn't have yet).
-  CurvePrivacyAdapter:   import.meta.env.VITE_CURVE_ADAPTER   ?? "0x240DB978D4867666D716BC3C76d11eD2D10A387f",
+  CurvePrivacyAdapter:   import.meta.env.VITE_CURVE_ADAPTER   ?? "0x9A781E4BbD2E22BaCEEDB77c3a6D0DE5dBf11742",
   // Raw DEX router addresses (NOT the Privar adapter addresses above) — used
   // only for read-only getAmountsOut() eth_call quoting before a XyloNet/
   // Uniswap swap is submitted, so minAmountOut reflects the pool's real

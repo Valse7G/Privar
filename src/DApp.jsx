@@ -1359,21 +1359,6 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
 
   const { bals: shieldedBals, recompute: recomputeShielded, lastVerified: shieldedLastVerified } = useShieldedBalances(prices, account?.address);
   const { sendRealTx: sendViewKeyTx } = useTxSend({ account, onArc, notify, refreshBalance });
-  // BUG FIX (2026-08-26) — companion state to shieldedLastVerified above,
-  // but for the note-DISCOVERY scans (scanStealthNotes/scanNoteRelay/
-  // resyncFromCloudVault/resyncFromShieldVaultJournal) rather than the
-  // reconcile-existing-notes pass. See the effect below and
-  // ShieldedBalanceReadout's verifiedLabel computation for how the two are
-  // combined into one honest "verified Xs ago" reading.
-  const [discoveryLastVerified, setDiscoveryLastVerified] = useState(null);
-  // Reset to "verifying…" on every address change (including switching
-  // FROM a previously-connected account) — same reasoning as
-  // useShieldedBalances resetting its own notion of state per-address:
-  // showing a stale "verified Ns ago" left over from a DIFFERENT wallet
-  // while this one's own first scan hasn't completed yet would be its own
-  // flavor of the exact bug being fixed here.
-  useEffect(() => { setDiscoveryLastVerified(null); }, [account?.address]);
-  useEffect(() => { window._privarDiscoveryLastVerified = discoveryLastVerified; }, [discoveryLastVerified]);
 
   // Scan chain for ECDH stealth notes addressed to this wallet on every connect,
   // and opportunistically register a view key (real ECDH P-256) if missing —
@@ -1389,26 +1374,10 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
       migrateCloudSyncKeyScheme(account.address);
       await ensureSelfBackupKeyReady(account.address).catch(() => {});
       if (cancelled) return;
-      // BUG FIX (2026-08-26): the "verified Xs ago" badge (see
-      // useShieldedBalances/ShieldedBalanceReadout) used to be driven
-      // ENTIRELY by reconcileAndVerifyNotes() completing — which only
-      // re-checks EXISTING local notes against on-chain spent/unbacked
-      // state. It has nothing to do with these four calls, which are what
-      // actually DISCOVER new incoming notes. Net effect: the badge could
-      // flip to "verified Xs ago" — reasonably read by a user as "my
-      // balance is now correct" — while a real incoming payment was still
-      // sitting unscanned (rate-limited, still within the 2-minute poll
-      // window, etc.), with no visible indication that discovery was
-      // still in flight. Promise.allSettled (not Promise.all) so one
-      // failing scan doesn't suppress the completion signal from the rest
-      // — same "never let one optional resync block the others" spirit as
-      // every individual .catch(() => {}) already here.
-      Promise.allSettled([
-        scanStealthNotes(account.address, recomputeShielded),
-        scanNoteRelay(account.address, recomputeShielded),
-        resyncFromCloudVault(account.address, recomputeShielded),
-        resyncFromShieldVaultJournal(account.address, recomputeShielded),
-      ]).then(() => { if (!cancelled) setDiscoveryLastVerified(Date.now()); });
+      scanStealthNotes(account.address, recomputeShielded).catch(() => {});
+      scanNoteRelay(account.address, recomputeShielded).catch(() => {}); // §7.5 — address-free counterpart
+      resyncFromCloudVault(account.address, recomputeShielded).catch(() => {});
+      resyncFromShieldVaultJournal(account.address, recomputeShielded).catch(() => {});
       // Retry any SPEND broadcasts that failed on a previous session (see
       // "Pending SPEND broadcast queue") — a no-op wallet-side if the queue
       // is empty, so safe to run on every connect without extra prompts.
@@ -1423,32 +1392,13 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
     // rejected view-key signature doesn't block this, and vice versa.
     ensureSpendKeyRegistered(account.address, sendViewKeyTx, notify).catch(() => {});
     // Rescan every 2 minutes in case new stealth notes / cloud journal entries arrive
-    const runDiscovery = () => {
-      Promise.allSettled([
-        scanStealthNotes(account.address, recomputeShielded),
-        scanNoteRelay(account.address, recomputeShielded),
-        resyncFromCloudVault(account.address, recomputeShielded),
-        resyncFromShieldVaultJournal(account.address, recomputeShielded),
-      ]).then(() => { if (!cancelled) setDiscoveryLastVerified(Date.now()); });
-    };
-    const id = setInterval(runDiscovery, 120_000);
-    // BUG FIX (2026-08-26) — mirrors useShieldedBalances' own
-    // visibilitychange handler (added for the SAME reason there): a user
-    // who tabbed away shouldn't have to wait up to 2 more minutes for
-    // fresh note DISCOVERY once they're actually looking at the screen
-    // again — reconcileAndVerifyNotes already got this treatment, but the
-    // scans that actually find NEW incoming notes hadn't, which was the
-    // more user-visible half of the "balance doesn't update" complaint
-    // this whole fix addresses. Same 15s guard against rapid tab-switching.
-    let lastVisRun = Date.now();
-    const onVisible = () => {
-      if (document.visibilityState !== "visible") return;
-      if (Date.now() - lastVisRun < 15_000) return;
-      lastVisRun = Date.now();
-      runDiscovery();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => { cancelled = true; clearInterval(id); document.removeEventListener("visibilitychange", onVisible); };
+    const id = setInterval(() => {
+      scanStealthNotes(account.address, recomputeShielded).catch(() => {});
+      scanNoteRelay(account.address, recomputeShielded).catch(() => {});
+      resyncFromCloudVault(account.address, recomputeShielded).catch(() => {});
+      resyncFromShieldVaultJournal(account.address, recomputeShielded).catch(() => {});
+    }, 120_000);
+    return () => { cancelled = true; clearInterval(id); };
   }, [account?.address, onArc, recomputeShielded, sendViewKeyTx, notify]);
 
   const panelProps = { account, balance, usdcBalance, onArc, notify, refreshBalance, txHistory, loadingBal, prices, changes, change24h, lastUpdate, priceError, setPanel, protocolStats, onChainActivity, shieldedBals, recomputeShielded, sendRealTx: sendViewKeyTx };
@@ -3054,51 +3004,47 @@ async function fetchLogsViaBlockscout(contractAddress, topics, fromBlock) {
 // reconnects) accumulate steadily and visibly instead of one call spending
 // minutes retrying in silence, which looks indistinguishable from "stuck".
 async function fetchLogsPaginated(contractAddress, topics, fromBlock, keyPrefix, address, label) {
-  // DEFINITIVE FIX (2026-08-27): the two prior fixes here (2026-08-26,
-  // both superseded) tried to make the Blockscout path honor a narrowing
-  // scan checkpoint — first naively (regressed: silently, permanently
-  // skipped anything in an indexer-lag gap), then with a trailing
-  // SCAN_LAG_BUFFER safety margin (still regressed: confirmed directly
-  // against the very first v19.2.0 build, which used no checkpoint at all
-  // on this path — receiver balance updates and the "verifying" status
-  // were both reliably fast there, and got WORSE, not better, after these
-  // "optimizations"). Root-caused: Blockscout's API is a single indexed
-  // database query, not raw eth_getLogs chunking — the wide, unnarrowed
-  // `fromBlock` window this caller already passes in is NOT the expensive
-  // operation the checkpoint was trying to save; narrowing it only added
-  // ways to silently miss real, recent events. Reverted outright: this
-  // path always queries the full caller-supplied `fromBlock` window,
-  // every call, exactly like the original working version. Ghost-note
-  // resurrection (the ORIGINAL bug that motivated a checkpoint here in
-  // the first place) is now solved a different way — see
-  // markCommitmentsProcessed()/isCommitmentProcessed() below and their use
-  // in scanStealthNotes()/scanNoteRelay() — a permanent per-address record
-  // of "already handled" commitments that survives a note being spent and
-  // removed, so it no longer depends on narrowing what gets re-scanned at
-  // all. Do not reintroduce checkpoint-narrowing on this path without a
-  // way to verify Blockscout's indexed height directly (not the RPC
-  // node's `eth_blockNumber`, which is a DIFFERENT service and is exactly
-  // what made both prior attempts here unreliable).
-  //
+  // BUG FIX (2026-08-26): `checkpointStart` used to only be computed inside
+  // the RPC-fallback branch below (§2) — the Blockscout branch (§1, tried
+  // FIRST and normally the one that actually runs, since it succeeds
+  // whenever Blockscout is up) ignored it entirely and queried from the
+  // raw, wide `fromBlock` the caller passed in (e.g. "current block minus
+  // 5,000,000") on EVERY call, checkpoint or not. saveScanProgress() below
+  // was still updating the checkpoint after each successful call, but
+  // nothing ever READ it back to narrow the Blockscout query — so it was
+  // pure unused bookkeeping on that path. Net effect: every periodic scan
+  // re-fetched and re-processed the ENTIRE ~5,000,000-block window from
+  // scratch, including notes discovered and already spent in a PRIOR scan.
+  // scanStealthNotes()/scanNoteRelay() only skip a decrypted note if its
+  // commitment is in the CALLER's *current* local notes — once a note is
+  // legitimately spent and removed, it no longer is, so the very next scan
+  // re-decrypted the same still-on-chain, immutable event and RE-ADDED the
+  // note as if it had just arrived. That's what made a withdrawn balance
+  // reappear (and, since a real third-party note carries a deterministic
+  // secret, made the resurrected note re-derive the SAME nullifier already
+  // marked spent on-chain — so a second withdraw attempt on it correctly,
+  // but confusingly, failed).
+  const checkpointStart = Math.max(fromBlock, getScanProgress(keyPrefix, topics, address, fromBlock));
+
   // 1) Try the Blockscout indexed API first — one request, no chunking,
   //    separate rate-limit budget from the RPC node.
   try {
-    const logs = await fetchLogsViaBlockscout(contractAddress, topics, fromBlock);
-    console.info(`[${label}] scan(${topics[0]?.slice(2,10)}): ${logs.length} log(s) via Blockscout API (single request, no RPC pagination needed), from block ${fromBlock}`);
+    const logs = await fetchLogsViaBlockscout(contractAddress, topics, checkpointStart);
+    console.info(`[${label}] scan(${topics[0]?.slice(2,10)}): ${logs.length} log(s) via Blockscout API (single request, no RPC pagination needed), from block ${checkpointStart}`);
+    try {
+      const headHex = await rpcCallWithBackoff("eth_blockNumber", []);
+      saveScanProgress(keyPrefix, topics, address, Number(BigInt(headHex || "0x0")) + 1);
+    } catch {} // progress bookkeeping only — the logs were already fetched successfully either way
     return logs;
   } catch (e) {
     console.warn(`[${label}] scan(${topics[0]?.slice(2,10)}): Blockscout API unavailable (${e.message}), falling back to paginated RPC`);
   }
 
   // 2) Fallback: paginated, backoff-aware eth_getLogs against the RPC node.
-  // Checkpointed here — safe and genuinely useful in THIS path specifically,
-  // unlike above: `start`'s source (this same RPC node, via eth_blockNumber
-  // right below) and the range actually walked are the SAME service, so
-  // there's no second, independently-lagging indexer to silently race.
   const headHex = await rpcCallWithBackoff("eth_blockNumber", []);
   const head = Number(BigInt(headHex || "0x0"));
   const all = [];
-  let start = Math.max(fromBlock, getScanProgress(keyPrefix, topics, address, fromBlock));
+  let start = checkpointStart;
   let window = 2000;
   let rateLimitRetries = 0;
   let chunkCount = 0;
@@ -3364,12 +3310,7 @@ async function scanNoteRelay(address, recompute) {
     const existing = getNotes(address);
     const existingSet = new Set(existing.map(n => n.commitment).filter(Boolean));
     const quarantined = loadQuarantinedCommitments(address);
-    // Ghost-note-resurrection fix (2026-08-27) — see markCommitmentsProcessed's
-    // doc comment. `existingSet` alone can't distinguish "never seen" from
-    // "seen, then legitimately spent and removed" — this can.
-    const processed = loadProcessedCommitments(address);
     let added = 0;
-    const newlyProcessed = [];
 
     for (const log of logs) {
       try {
@@ -3403,7 +3344,6 @@ async function scanNoteRelay(address, recompute) {
         if (!note || !note.commitment) continue;
         if (existingSet.has(note.commitment)) continue;
         if (quarantined.has(note.commitment.toLowerCase())) continue;
-        if (processed.has(note.commitment.toLowerCase())) continue;
         // Same vault-scoping guard as scanStealthNotes() — see its comment.
         if (note.vault && note.vault.toLowerCase() !== CONTRACTS.PrivarShieldVault.toLowerCase()) continue;
 
@@ -3418,14 +3358,12 @@ async function scanNoteRelay(address, recompute) {
 
         existing.push({ ...note, ts: note.ts || Date.now(), source: "noterelay" });
         existingSet.add(note.commitment);
-        newlyProcessed.push(note.commitment);
         added++;
       } catch (e) { console.warn("[note relay scan] entry skipped:", e.message); }
     }
 
     if (added > 0) {
       saveNotes(address, existing);
-      markCommitmentsProcessed(address, newlyProcessed);
       recompute?.();
       console.info(`[Privar note-relay scan] +${added} note(s) discovered`);
     }
@@ -3471,11 +3409,7 @@ async function scanStealthNotes(address, recompute) {
     const existing  = getNotes(address);
     const existingSet = new Set(existing.map(n => n.commitment).filter(Boolean));
     const quarantined = loadQuarantinedCommitments(address);
-    // Ghost-note-resurrection fix (2026-08-27) — see markCommitmentsProcessed's
-    // doc comment.
-    const processed = loadProcessedCommitments(address);
     let added = 0;
-    const newlyProcessed = [];
 
     // §7.5/§8.4 point 4 — needed to complete notes that carry a transmitted
     // `blinding` (sent to us deterministically against OUR pubkeyOwner, see
@@ -3507,7 +3441,6 @@ async function scanStealthNotes(address, recompute) {
         if (!note || !note.commitment) continue;
         if (existingSet.has(note.commitment)) continue;
         if (quarantined.has(note.commitment.toLowerCase())) continue; // don't resurrect a deliberately-quarantined note
-        if (processed.has(note.commitment.toLowerCase())) continue; // don't resurrect an already-spent-and-removed note
         // FIX (v2.9): a note's commitment only exists in the Merkle tree of the
         // PrivarShieldVault it was created against. Without this check, a confidential
         // send or self-backup made before the latest PrivarShieldVault redeploy would
@@ -3533,14 +3466,12 @@ async function scanStealthNotes(address, recompute) {
 
         existing.push({ ...note, ts: ts*1000 || Date.now(), source:"stealth" });
         existingSet.add(note.commitment);
-        newlyProcessed.push(note.commitment);
         added++;
       } catch {}
     }
 
     if (added > 0) {
       saveNotes(address, existing);
-      markCommitmentsProcessed(address, newlyProcessed);
       recompute?.();
     }
   } catch(e) { console.warn("[Privar stealth scan]", e.message); }
@@ -3840,17 +3771,36 @@ async function resyncLocalNotesToCloud(account, sendRealTx, onProgress) {
 }
 
 
-// Event topic0 hashes (keccak256 of event signature)
+// Event topic0 hashes (keccak256 of event signature).
+// AUDIT FINDING (2026-09): SwapExecuted/BridgeInitiated/ShieldedTransferProcessed
+// and the three PrivarStaking hashes below were WRONG — they don't match any
+// event actually emitted by the contracts in this archive (recomputed here with
+// a pure-Python Keccak-256 implementation, verified against the well-known
+// ERC20 `transfer(address,uint256)` selector 0xa9059cbb before use, then
+// checked byte-for-byte against every `event` declaration in
+// PrivarShieldVault.sol / LiFiPrivacyBridge.sol / PrivarStaking.sol). The
+// correct PrivateSwap hash independently matches the constant already used in
+// EV2 above for protocol-wide stats — that constant was right all along; this
+// table had silently drifted from it. Net effect of the wrong hashes: every
+// eth_getLogs call below for these 6 event types matched ZERO logs, ever, on
+// any network — Swap/Bridge/Send/Stake/Unstake/Claim entries could never
+// appear in tx history no matter how much activity occurred. Renamed to the
+// contracts' real event names so a future drift like this is caught by
+// inspection instead of silently matching nothing.
 const EV = {
-  Deposited:                "0xe758dd586554a30e85101e8e9ab611091d9230b7233f0f6a9736488e55d9d9e7",
-  Withdrawn:                "0xa6786aab7dbbc48b4b0387488b407bd81448030ab207b50bea7dbb5fbc1cd9eb",
-  SwapExecuted:             "0x2f4c76c8d18f45069b0941499205a7fceaaa3caf9e2e6328f6a544cd339120f3",
-  BridgeInitiated:          "0xaba39d71efa30c57b34ac80bfd1c5a6ad2a46bb6887c1bdb8d8500410c59b5ab",
-  ShieldedTransferProcessed:"0x6a0c61ef664f8d0c17a5bee04becc9ed40374fc0f473a7bf7f3cce66d1bd2b7d",
-  // PrivarStaking contract events — keccak256("Staked(address,uint256,uint256,uint256,uint256,uint256)") etc.
-  Staked:           "0x1449c6dd7851abc30abf37f57715f492010519147cc2652fbc38202c18a6ee90",
-  Unstaked:         "0x0f5bb82176feb1b5e747e28471aa92156a04d9f3ab9f45f28e2d704232b93f75",
-  RewardsClaimed:   "0x106f923f993c2149d49b4255ff723acafa1f2d94393f561d3eda32ae348f7241",
+  Deposited:      "0xe758dd586554a30e85101e8e9ab611091d9230b7233f0f6a9736488e55d9d9e7",
+  Withdrawn:      "0xa6786aab7dbbc48b4b0387488b407bd81448030ab207b50bea7dbb5fbc1cd9eb",
+  PrivateSwap:    "0x74f456940527970034820942ae07de9832d81b3e080c4ae3883cc944038d179a", // == EV2.PrivateSwap
+  ShieldedSent:   "0x2a8a0042e99c81eb12cfe56b2e487da84ba997fbd786b4f828289d4cb7455025",
+  PrivateBridged: "0xaddba84d7061d692c386610978290fcbcaa1fc8272b3fd03661bf5f8b7cbc989", // ShieldVault, new adapter path
+  Bridged:        "0x9296d8b3ce6d404fe18caf7f508c7f9acd23ccf5a567d69ecd01b339acbd80ba", // LiFiPrivacyBridge, legacy path
+  // PrivarStaking contract events — keccak256("Staked(address,uint256,uint256,uint256,uint256)") etc.
+  // (the old comment here claimed a 6-param Staked signature; the contract's
+  // real signature has 5 params — see PrivarStaking.sol — which is also why
+  // the previously hardcoded hash below could never have been right).
+  Staked:           "0x9cfd25589d1eb8ad71e342a86a8524e83522e3936c0803048c08f6d9ad974f40",
+  Unstaked:         "0x204fccf0d92ed8d48f204adb39b2e81e92bad0dedb93f5716ca9478cfb57de00",
+  RewardsClaimed:   "0xdacbdde355ba930696a362ea6738feb9f8bd52dfb3d81947558fd3217e23e325",
 };
 
 // ── Token decimals/symbol — single source of truth for tx-history formatting ──
@@ -3893,6 +3843,43 @@ function symbolForToken(tokenAddr) {
 // ── Cross-device tx history: rebuild from on-chain events ─────────────────────
 // Called on wallet connect. Fetches PrivarShieldVault + PrivarStaking events for this address,
 // merges with localStorage cache, deduplicates by tx hash, returns sorted array.
+// ── Swap/Send/Bridge tx-history entries — sourced from the LOCAL pending-ops
+// ledger (lockNotesForOp/finalizeOp, defined above getNotes/saveNotes), NOT
+// from an on-chain scan. See the AUDIT FINDING inside buildTxHistoryFromChain
+// (just below) for why: PrivateSwap/ShieldedSent/PrivateBridged don't index
+// the sender's address on-chain (by design, for privacy), so there is no
+// way to filter these events to "this wallet's" activity from logs alone —
+// only this device's own record of ops it actually submitted can do that
+// without leaking every other user's activity into this wallet's history.
+// Only finalized, successful ops are included (mirrors what the old
+// on-chain scan would have shown: confirmed transactions only, never a
+// pending/reverted attempt).
+function buildLocalOpTxEntries(address) {
+  if (!address) return [];
+  const ops = getPendingOps(address);
+  const labelFor = { swap: "Swap", send: "Send", bridge: "Bridge" };
+  const tc = (tsMs) => tsMs ? new Date(tsMs).toLocaleString("fr-FR", { dateStyle:"short", timeStyle:"short" }) : "—";
+  return ops
+    .filter(o => o.finalized && o.status === "success" && labelFor[o.kind] && o.txHash)
+    .map(o => ({
+      hash: o.txHash,
+      // Prefer the op's own descriptive label (e.g. "Swap USDC→EURC",
+      // "Bridge → Arbitrum") over the generic kind name when available.
+      label: o.label || labelFor[o.kind],
+      ts: tc(o.createdAt),
+      tsRaw: o.createdAt || null,
+      status: "success",
+      // Honest "—": the op only records its CHANGE-note output locally (the
+      // amount that left the shielded pool for a swap/send/bridge is not
+      // reconstructable from this ledger alone) — showing a real number
+      // here would mean inventing one. Same convention already used for
+      // Swap/Send before this fix; extended to Bridge for consistency
+      // rather than guessing at its gross amount.
+      amount: "—",
+      blockHex: null,
+    }));
+}
+
 async function buildTxHistoryFromChain(address) {
   if (!address) return [];
   const MAX_BLOCKS = 5_000_000;
@@ -3914,9 +3901,25 @@ async function buildTxHistoryFromChain(address) {
     const sv = CONTRACTS.PrivarShieldVault, st = CONTRACTS.PrivarStaking;
     const depLogs      = await fetchLogsPaginated(sv, [EV.Deposited, null, addrTopic], from, "privar_txhist_dep", address, "Privar tx-history");
     const wdLogs        = await fetchLogsPaginated(sv, [EV.Withdrawn, null, null, addrTopic], from, "privar_txhist_wd", address, "Privar tx-history");
-    const swLogs         = await fetchLogsPaginated(sv, [EV.SwapExecuted], from, "privar_txhist_sw", address, "Privar tx-history");
-    const bridgeLogs   = await fetchLogsPaginated(sv, [EV.BridgeInitiated], from, "privar_txhist_br", address, "Privar tx-history");
-    const sendLogs     = await fetchLogsPaginated(sv, [EV.ShieldedTransferProcessed], from, "privar_txhist_st", address, "Privar tx-history");
+    // AUDIT FINDING (2026-09): Swap/Bridge/Send used to be fetched here via
+    // eth_getLogs with NO address filter at all — PrivateSwap/ShieldedSent/
+    // PrivateBridged don't index the sender's address (that's the whole
+    // point of a shielded protocol: only the nullifier/commitment are
+    // public). With the topic hashes fixed (see the EV object's own AUDIT
+    // FINDING), simply removing the wrong hash would have started matching
+    // EVERY user's swap/send/bridge on the network into EVERY OTHER user's
+    // own tx history — a privacy regression, not a fix. There is no way to
+    // filter these three event types by address from on-chain logs alone.
+    // The correct, privacy-safe source for them is this device's own
+    // pending-ops ledger (lockNotesForOp/finalizeOp, above) — it already
+    // records exactly which swap/send/bridge ops THIS wallet performed,
+    // with a real txHash and a real local timestamp, the moment each one is
+    // confirmed. Trade-off (documented, not hidden): unlike Shield/Withdraw/
+    // Stake/Unstake/Claim, these entries are per-device — a swap done on
+    // phone won't show in desktop's history — same fundamental limitation
+    // already accepted elsewhere in this file for the note-relay's O(n)
+    // scan cost, not a new one introduced here.
+    const swapSendBridgeEntries = buildLocalOpTxEntries(address);
     const stakeLogs     = st ? await fetchLogsPaginated(st, [EV.Staked, addrTopic], from, "privar_txhist_stk", address, "Privar tx-history") : [];
     const unstakeLogs   = st ? await fetchLogsPaginated(st, [EV.Unstaked, addrTopic], from, "privar_txhist_unstk", address, "Privar tx-history") : [];
     const claimLogs     = st ? await fetchLogsPaginated(st, [EV.RewardsClaimed, addrTopic], from, "privar_txhist_clm", address, "Privar tx-history") : [];
@@ -3931,7 +3934,7 @@ async function buildTxHistoryFromChain(address) {
     // every DISTINCT block referenced across all 8 event types (small
     // concurrency to stay RPC-friendly, matches this function's existing
     // "fire-and-forget, not time-critical" posture).
-    const allLogs = [...depLogs, ...wdLogs, ...swLogs, ...bridgeLogs, ...sendLogs, ...stakeLogs, ...unstakeLogs, ...claimLogs];
+    const allLogs = [...depLogs, ...wdLogs, ...stakeLogs, ...unstakeLogs, ...claimLogs];
     const uniqueBlocks = [...new Set(allLogs.map(l => l.blockNumber).filter(Boolean))];
     const blockTsMap = new Map();
     const BLOCK_TS_CONCURRENCY = 5;
@@ -3970,21 +3973,10 @@ async function buildTxHistoryFromChain(address) {
       const sym = symbolForToken(tok);
       entries.push({ hash:log.transactionHash, label:"Withdraw", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:formatToken(amount, decimalsForToken(tok), 2)+" "+sym, blockHex:log.blockNumber });
     }
-    for (const log of swLogs) {
-      entries.push({ hash:log.transactionHash, label:"Swap", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:"—", blockHex:log.blockNumber });
-    }
-    for (const log of bridgeLogs) {
-      const data = (log.data||"0x").replace("0x","");
-      const amount = data.length >= 64 ? u256(data,0) : 0n;
-      // FIX: this used to hardcode " EURC" regardless of the actual bridged
-      // token (and, like depLogs, divide by 1e6 even for native USDC).
-      const tok = log.topics?.[2] ? "0x"+log.topics[2].slice(26) : "";
-      const sym = symbolForToken(tok);
-      entries.push({ hash:log.transactionHash, label:"Bridge", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:formatToken(amount, decimalsForToken(tok), 2)+" "+sym, blockHex:log.blockNumber });
-    }
-    for (const log of sendLogs) {
-      entries.push({ hash:log.transactionHash, label:"Send", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:"—", blockHex:log.blockNumber });
-    }
+    // Swap/Send/Bridge: sourced from the local pending-ops ledger, not an
+    // on-chain scan — see the AUDIT FINDING where swapSendBridgeEntries was
+    // built, above. Already fully shaped (hash/label/ts/tsRaw/status/amount).
+    entries.push(...swapSendBridgeEntries);
     for (const log of stakeLogs) {
       const data = (log.data||"0x").replace("0x","");
       const amount = data.length >= 64 ? u256(data,0) : 0n;
@@ -4008,12 +4000,15 @@ async function buildTxHistoryFromChain(address) {
     const seen = new Set();
     const unique = entries.filter(e => { if (!e.hash || seen.has(e.hash)) return false; seen.add(e.hash); return true; });
 
-    // Sort by blockNumber descending (most recent first)
-    unique.sort((a,b) => {
-      const na = parseInt(a.blockHex||"0x0",16);
-      const nb = parseInt(b.blockHex||"0x0",16);
-      return nb - na;
-    });
+    // Sort by real timestamp descending (most recent first). Was previously
+    // blockNumber-based — works for on-chain-sourced entries (Shield/
+    // Withdraw/Stake/Unstake/Claim) but local pending-ops-sourced entries
+    // (Swap/Send/Bridge, see above) have no blockHex at all, which would
+    // have sorted them all to the very bottom regardless of actual recency.
+    // tsRaw is populated for every entry now (block timestamp for on-chain
+    // ones, op.createdAt — a real local timestamp — for pending-ops ones),
+    // so it's a single consistent sort key across both sources.
+    unique.sort((a,b) => (b.tsRaw||0) - (a.tsRaw||0));
 
     return unique.slice(0, 200); // cap at 200 entries
   } catch(e) {
@@ -4111,23 +4106,28 @@ const VERIFY_SKIP_WINDOW_MS = 10 * 60 * 1000; // 10 min grace period
 // number of "getNotes/saveNotes" round trips.
 //
 // A note is:
-//   SPENT    — its nullifier matches a real Withdrawn event    -> dropped (correct, not corrupt)
+//   SPENT    — its nullifier matches a real Withdrawn/PrivateSwap/
+//              ShieldedSent/PrivateBridged/Bridged event         -> dropped (correct, not corrupt)
 //   UNBACKED — its commitment has no matching Deposited event,
 //              AND it's older than the grace window            -> quarantined (see verifyNotesBackedOnChain's
 //                                                                   original doc comment for why this is safe
 //                                                                   and precise regardless of amount)
 //   VALID    — neither of the above                            -> kept
 //
-// AUDIT NOTE (2026-08): the SPENT check below (n.nullifier vs Withdrawn
-// events) can only ever match a note that has a `nullifier` field — but no
-// code path writes one onto a saved note (the nullifier used to spend a
-// note is generated fresh at spend time and never persisted back onto it).
-// In practice this branch never fires, for any operation. It's left as-is
-// here (harmless — just never true) rather than removed, to keep this
-// patch minimal; the actual mechanism that now detects a swap/send/
-// withdraw/bridge spend is the pending-ops ledger (lockNotesForOp /
-// finalizeOp / watchPendingOps, defined above getNotes/saveNotes) — see
-// its doc comment for the full reasoning.
+// AUDIT NOTE (2026-08), UPDATED (2026-09): the SPENT check below matches a
+// note's OWN recomputed deterministic nullifier (Poseidon(secret,
+// commitment) — never a stored `nullifier` field, which no note object has
+// ever carried) against the on-chain spent set. Originally that spent set
+// only came from Withdrawn, on the theory that the pending-ops ledger
+// (lockNotesForOp/finalizeOp/watchPendingOps, above getNotes/saveNotes)
+// fully covered swap/send/bridge spends instead. That's only true on the
+// SAME device that performed the spend — see the AUDIT FINDING further
+// below (just above this function's on-chain scans) for the cross-device
+// gap that left open. The spent set now also includes PrivateSwap,
+// ShieldedSent, PrivateBridged, and legacy Bridged nullifiers, so this
+// check is the one mechanism that self-heals a resurrected already-spent
+// note regardless of which device — or which of the four spend paths —
+// actually spent it.
 async function reconcileAndVerifyNotes(address) {
   if (!address) return { spent: 0, unbacked: 0 };
   const notes = getNotes(address);
@@ -4137,16 +4137,49 @@ async function reconcileAndVerifyNotes(address) {
     const current = Number(BigInt(await rpcCallWithBackoff("eth_blockNumber", [])));
     const fromBlock = Math.max(0, current - 5_000_000);
 
-    // Two independent scans (different event types, different progress
-    // checkpoints already persisted in users' browsers under these exact
-    // key prefixes — kept as-is so no one loses resume progress) but run
-    // together and classified together, so the local notes array is only
-    // ever read and written ONCE per reconciliation pass.
-    const [withdrawnLogs, depositedLogs] = await Promise.all([
+    // AUDIT FINDING (2026-09): the doc comment above (and the one on the
+    // pending-ops ledger, above getNotes/saveNotes) both claimed
+    // watchPendingOps() is "what actually covers swap/send/bridge" spends.
+    // True only for THIS device: watchPendingOps only resolves ops that
+    // THIS browser's localStorage created via lockNotesForOp. A note that
+    // was legitimately spent via swap/send/bridge on device A, then
+    // resurrected on device B (scanStealthNotes/scanNoteRelay/CloudVault
+    // resync re-decrypting the same still-on-chain relay entry, or a
+    // resyncFromCloudVault replay) has NO pending-op on device B — it was
+    // never created there — so watchPendingOps has nothing to resolve, and
+    // the SPENT check just below only ever looked at Withdrawn logs. Net
+    // effect: a note spent via swap/send/bridge on one device could sit
+    // forever as a phantom "available" balance on every OTHER device, only
+    // ever self-healing for plain withdraw() spends — exactly the
+    // local-balance-exceeds-TVL / disappearing-token symptom this file's
+    // changelogs describe, just not fully closed by the pending-ops ledger
+    // alone as previously believed. Fixed by scanning the other three
+    // note-spending events (PrivateSwap/ShieldedSent/PrivateBridged, plus
+    // the legacy standalone LiFiPrivacyBridge.Bridged) for their nullifier
+    // topic — same recomputed-nullifier-vs-on-chain-set technique already
+    // used for Withdrawn below, just extended to every spend path instead
+    // of only one of the four.
+    //
+    // Five independent scans (different event types/contracts, different
+    // progress checkpoints already persisted in users' browsers under these
+    // exact key prefixes — kept as-is so no one loses resume progress) but
+    // run together and classified together, so the local notes array is
+    // only ever read and written ONCE per reconciliation pass.
+    const [withdrawnLogs, depositedLogs, swapLogs, sentLogs, bridgedLogs, legacyBridgedLogs] = await Promise.all([
       fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.Withdrawn],
         fromBlock, "privar_reconcile_scanprogress", address, "Privar"),
       fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.Deposited],
         fromBlock, "privar_verify_scanprogress", address, "Privar"),
+      fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.PrivateSwap],
+        fromBlock, "privar_reconcile_scanprogress_swap", address, "Privar"),
+      fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.ShieldedSent],
+        fromBlock, "privar_reconcile_scanprogress_sent", address, "Privar"),
+      fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.PrivateBridged],
+        fromBlock, "privar_reconcile_scanprogress_bridged", address, "Privar"),
+      CONTRACTS.LiFiPrivacyBridge
+        ? fetchLogsPaginated(CONTRACTS.LiFiPrivacyBridge, [EV.Bridged],
+            fromBlock, "privar_reconcile_scanprogress_legacybridge", address, "Privar")
+        : Promise.resolve([]),
     ]);
 
     const spentNullifiers = new Set();
@@ -4155,6 +4188,27 @@ async function reconcileAndVerifyNotes(address) {
         const n = log.topics?.[1]; // Withdrawn: bytes32 indexed nullifier
         if (n) spentNullifiers.add(n.toLowerCase());
       }
+    }
+    // Same nullifier-topic position (topics[1]) on every other note-spending
+    // event: PrivateSwap(nullifierIn,...), ShieldedSent(nullifierIn,...),
+    // PrivateBridged(nullifier,...), and legacy Bridged(nullifier,...) — see
+    // the AUDIT FINDING above this block for why these are needed in
+    // addition to Withdrawn.
+    for (const log of (Array.isArray(swapLogs) ? swapLogs : [])) {
+      const n = log.topics?.[1];
+      if (n) spentNullifiers.add(n.toLowerCase());
+    }
+    for (const log of (Array.isArray(sentLogs) ? sentLogs : [])) {
+      const n = log.topics?.[1];
+      if (n) spentNullifiers.add(n.toLowerCase());
+    }
+    for (const log of (Array.isArray(bridgedLogs) ? bridgedLogs : [])) {
+      const n = log.topics?.[1];
+      if (n) spentNullifiers.add(n.toLowerCase());
+    }
+    for (const log of (Array.isArray(legacyBridgedLogs) ? legacyBridgedLogs : [])) {
+      const n = log.topics?.[1];
+      if (n) spentNullifiers.add(n.toLowerCase());
     }
     const depositedCommitments = new Set();
     let depositedScanOk = false;
@@ -4279,42 +4333,6 @@ function loadQuarantinedCommitments(address) {
   } catch { return new Set(); }
 }
 
-// ── Permanent processed-commitment ledger (2026-08-27) ──────────────────
-// Fixes the ORIGINAL ghost-note-resurrection bug (a spent-and-removed note
-// reappearing on the next scan) WITHOUT narrowing what fetchLogsPaginated
-// re-scans — see that function's doc comment for why narrowing the scan
-// window turned out to be the wrong tool for this and got reverted.
-// scanStealthNotes()/scanNoteRelay() only ever checked "is this commitment
-// in my CURRENTLY HELD notes" — indistinguishable from "never seen before"
-// once a note is legitimately spent and removed. This ledger is the
-// missing THIRD state: "seen and handled at some point", independent of
-// whether the note is still held. Unlike quarantineKey above (notes
-// deliberately EXCLUDED as invalid), this tracks notes that WERE
-// successfully added at least once — append-only, never pruned, since a
-// commitment can only ever mean one thing once it exists on-chain.
-const processedKey = (addr) => notesKey(addr) + "_processed";
-
-function loadProcessedCommitments(address) {
-  try {
-    const arr = JSON.parse(localStorage.getItem(processedKey(address)) || "[]");
-    return new Set(arr.map(c => c.toLowerCase()));
-  } catch { return new Set(); }
-}
-
-function markCommitmentsProcessed(address, commitments) {
-  if (!commitments || commitments.length === 0) return;
-  try {
-    const existing = loadProcessedCommitments(address);
-    for (const c of commitments) if (c) existing.add(c.toLowerCase());
-    // Cap defensively (very old entries dropped first) so this can't grow
-    // unbounded over a long-lived account — same order of magnitude as
-    // realistic total lifetime note count, generous for testnet use.
-    const arr = Array.from(existing);
-    const capped = arr.length > 20_000 ? arr.slice(arr.length - 20_000) : arr;
-    localStorage.setItem(processedKey(address), JSON.stringify(capped));
-  } catch {}
-}
-
 // ── One-time retroactive recovery for the "unbacked" quarantine bug ────────
 // Before the `origin` field existed, reconcileAndVerifyNotes() required
 // EVERY local note — including perfectly legitimate swap/send/bridge/
@@ -4419,13 +4437,6 @@ function useShieldedBalances(prices, address) {
   // can see, not just an invisible background promise. null = not yet
   // verified this session (e.g. still loading, or offline).
   const [lastVerified, setLastVerified] = useState(null);
-  // BUG FIX (2026-08-26) — reset to "verifying…" on address change, same
-  // reasoning as discoveryLastVerified's matching reset in the connect
-  // effect above: without this, switching wallets could briefly show a
-  // "verified Ns ago" timestamp left over from the PREVIOUS account before
-  // this one's own reconcile pass (re-triggered by the `[compute, address]`
-  // effect dependency below) has actually run.
-  useEffect(() => { setLastVerified(null); }, [address]);
   // Cumulative count of notes removed THIS SESSION by the async on-chain
   // existence check (verifyNotesBackedOnChain) — separate from the sync
   // amount-ceiling check because it resolves later (after an RPC round
@@ -4520,9 +4531,10 @@ function useShieldedBalances(prices, address) {
     const runChecks = () => {
       // Resolve any swap/send/withdraw/bridge left dangling by a closed
       // tab, a timeout, or a dropped connection — see watchPendingOps()'s
-      // doc comment. Independent of reconcileAndVerifyNotes below (which
-      // only ever catches explicit withdraw() — see its own doc comment)
-      // — this is what actually covers swap/send/bridge.
+      // doc comment. This only ever resolves ops THIS device created.
+      // reconcileAndVerifyNotes below is the complementary, device-agnostic
+      // check: it now catches a note spent via withdraw/swap/send/bridge on
+      // ANY device (see its own doc comment for the 2026-09 fix).
       watchPendingOps(address).catch(() => {});
       reconcileAndVerifyNotes(address).then(({ unbacked }) => {
         // OVERWRITE, not accumulate: this ref should reflect "how many were
@@ -4586,20 +4598,7 @@ function ShieldedWallet({ bals, onMax, tokenFilter, actionableFilter, compact = 
 
   if (!bals) return null;
 
-  // BUG FIX (2026-08-26): this used to read ONLY
-  // window._privarShieldedLastVerified — the reconcile-EXISTING-notes pass
-  // (reconcileAndVerifyNotes). It said nothing about whether the separate
-  // note-DISCOVERY scans (scanStealthNotes/scanNoteRelay/CloudVault/journal
-  // resync — see the connect effect's window._privarDiscoveryLastVerified)
-  // had found everything there was to find yet. A user could see "verified
-  // Xs ago" — reasonably read as "my balance is now correct" — while an
-  // incoming payment was still sitting unscanned. Fixed: take the OLDER
-  // (more conservative) of the two timestamps, and require BOTH to be
-  // non-null before showing anything but "verifying…" — so the label only
-  // ever claims what's actually been checked.
-  const reconcileAt = window._privarShieldedLastVerified;
-  const discoveryAt = window._privarDiscoveryLastVerified;
-  const verifiedAt = (reconcileAt && discoveryAt) ? Math.min(reconcileAt, discoveryAt) : null;
+  const verifiedAt = window._privarShieldedLastVerified;
   const verifiedAgoS = verifiedAt ? Math.max(0, Math.floor((Date.now() - verifiedAt) / 1000)) : null;
   const verifiedLabel = verifiedAgoS == null ? "verifying…"
     : verifiedAgoS < 5   ? "verified just now"
@@ -5933,25 +5932,6 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
           // Fallback: recipient note stays local-only (existing manual-share behavior)
         }
       }
-
-      // BUG FIX (2026-08-27): until now, if NEITHER discovery path above
-      // worked (recipient has registered neither a PrivarSpendKeyRegistry
-      // spend key NOR a ViewKeyRegistry view key — e.g. an address that has
-      // simply never connected to Privar before), this function still let
-      // the send proceed: funds move on-chain to a random, non-deterministic
-      // commitment with NO relayed note anywhere — genuinely undiscoverable
-      // and unspendable by anyone, sender included, ever again. The confirm
-      // modal below DID show a warning ("recipient hasn't enabled
-      // confidential receiving yet") but never blocked on it — easy to miss
-      // or underestimate the consequence of, unlike the identical situation
-      // in ShieldPanel's third-party deposit(), which was already hard-
-      // blocked for exactly this reason (see its own comment). Made
-      // consistent here: same hard block, same reasoning — a warning is not
-      // enough when the failure mode is permanent, silent fund loss.
-      if (!noteRelayCalldata && !encryptedNote) {
-        notify("Send", "Recipient hasn't enabled Private Send yet (no spend key or view key registered) — sending now would create funds nobody could ever discover or spend, including you. Ask them to open Privar and connect their wallet at least once first.", "error");
-        setLoading(false); return;
-      }
     }
 
     // ── Flat protocol fee (PrivarShieldVault v2.4+ — flatFeeUsdc, native USDC msg.value) ──
@@ -5973,10 +5953,7 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
         ? "Recipient has confidential receiving enabled — an address-free encrypted note will be relayed on-chain (no recipient address in the relay call) so their wallet auto-discovers these funds. 2 transactions: shielded transfer, then note relay."
         : encryptedNote
         ? "Recipient has confidential receiving enabled — an encrypted note will be relayed on-chain so their wallet auto-discovers these funds. 2 transactions: shielded transfer, then note relay."
-        // Only reachable for isSelfSend now — the third-party case with
-        // neither discovery path available is hard-blocked above (see its
-        // comment) rather than warned-and-allowed.
-        : "Sending to your own shielded balance. 1 transaction.")
+        : "Private send — recipient hasn't enabled confidential receiving yet, so no auto-discovery note will be sent. 1 transaction.")
         + (sendFee > 0n ? ` Flat protocol fee: ${formatToken(sendFee, 6)} USDC (paid separately, not from your shielded balance).` : ""),
     });
     if (!confirmed) { setLoading(false); return; }
@@ -6016,20 +5993,8 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     // "sent"`, not "available") — ownership transferred to the recipient,
     // so it must never re-enter the sender's spendable set even on
     // finalizeOp's SUCCESS path.
-    // BUG FIX (2026-08-26): the line below used to set `status: "sent"`
-    // UNCONDITIONALLY — including for isSelfSend, where "the recipient" IS
-    // the sender and ownership never actually left. Harmless before the
-    // balance-sum fix earlier this session (which didn't filter by status
-    // at all, so a self-send's output counted either way) — but once that
-    // fix correctly started excluding "sent" notes from the balance (the
-    // real 3rd-party-send case this comment describes), it also started
-    // wrongly hiding a self-send's own output, understating the balance
-    // right after a self-send. Fixed: only "sent" for a REAL third party;
-    // a self-send's output is genuinely spendable, so it's "available",
-    // same as any other owned note.
     const sendOutputs = [{
-      commitment: commitmentOut, amount: amountBig.toString(), token: tkSend.addr, sentTo: dest,
-      status: isSelfSend ? "available" : "sent",
+      commitment: commitmentOut, amount: amountBig.toString(), token: tkSend.addr, sentTo: dest, status: "sent",
       ...(outSecret ? { secret: outSecret, blinding: outBlinding, pubkeyOwner: outPubkeyOwner } : {}),
     }];
     if (changeCommitment) {

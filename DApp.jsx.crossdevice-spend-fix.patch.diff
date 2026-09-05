@@ -1,0 +1,317 @@
+--- /tmp/orig_DApp.jsx	2026-09-05 15:59:45.098029873 +0000
++++ frontend/src/DApp.jsx	2026-09-05 15:59:02.014027312 +0000
+@@ -3771,17 +3771,36 @@
+ }
+ 
+ 
+-// Event topic0 hashes (keccak256 of event signature)
++// Event topic0 hashes (keccak256 of event signature).
++// AUDIT FINDING (2026-09): SwapExecuted/BridgeInitiated/ShieldedTransferProcessed
++// and the three PrivarStaking hashes below were WRONG — they don't match any
++// event actually emitted by the contracts in this archive (recomputed here with
++// a pure-Python Keccak-256 implementation, verified against the well-known
++// ERC20 `transfer(address,uint256)` selector 0xa9059cbb before use, then
++// checked byte-for-byte against every `event` declaration in
++// PrivarShieldVault.sol / LiFiPrivacyBridge.sol / PrivarStaking.sol). The
++// correct PrivateSwap hash independently matches the constant already used in
++// EV2 above for protocol-wide stats — that constant was right all along; this
++// table had silently drifted from it. Net effect of the wrong hashes: every
++// eth_getLogs call below for these 6 event types matched ZERO logs, ever, on
++// any network — Swap/Bridge/Send/Stake/Unstake/Claim entries could never
++// appear in tx history no matter how much activity occurred. Renamed to the
++// contracts' real event names so a future drift like this is caught by
++// inspection instead of silently matching nothing.
+ const EV = {
+-  Deposited:                "0xe758dd586554a30e85101e8e9ab611091d9230b7233f0f6a9736488e55d9d9e7",
+-  Withdrawn:                "0xa6786aab7dbbc48b4b0387488b407bd81448030ab207b50bea7dbb5fbc1cd9eb",
+-  SwapExecuted:             "0x2f4c76c8d18f45069b0941499205a7fceaaa3caf9e2e6328f6a544cd339120f3",
+-  BridgeInitiated:          "0xaba39d71efa30c57b34ac80bfd1c5a6ad2a46bb6887c1bdb8d8500410c59b5ab",
+-  ShieldedTransferProcessed:"0x6a0c61ef664f8d0c17a5bee04becc9ed40374fc0f473a7bf7f3cce66d1bd2b7d",
+-  // PrivarStaking contract events — keccak256("Staked(address,uint256,uint256,uint256,uint256,uint256)") etc.
+-  Staked:           "0x1449c6dd7851abc30abf37f57715f492010519147cc2652fbc38202c18a6ee90",
+-  Unstaked:         "0x0f5bb82176feb1b5e747e28471aa92156a04d9f3ab9f45f28e2d704232b93f75",
+-  RewardsClaimed:   "0x106f923f993c2149d49b4255ff723acafa1f2d94393f561d3eda32ae348f7241",
++  Deposited:      "0xe758dd586554a30e85101e8e9ab611091d9230b7233f0f6a9736488e55d9d9e7",
++  Withdrawn:      "0xa6786aab7dbbc48b4b0387488b407bd81448030ab207b50bea7dbb5fbc1cd9eb",
++  PrivateSwap:    "0x74f456940527970034820942ae07de9832d81b3e080c4ae3883cc944038d179a", // == EV2.PrivateSwap
++  ShieldedSent:   "0x2a8a0042e99c81eb12cfe56b2e487da84ba997fbd786b4f828289d4cb7455025",
++  PrivateBridged: "0xaddba84d7061d692c386610978290fcbcaa1fc8272b3fd03661bf5f8b7cbc989", // ShieldVault, new adapter path
++  Bridged:        "0x9296d8b3ce6d404fe18caf7f508c7f9acd23ccf5a567d69ecd01b339acbd80ba", // LiFiPrivacyBridge, legacy path
++  // PrivarStaking contract events — keccak256("Staked(address,uint256,uint256,uint256,uint256)") etc.
++  // (the old comment here claimed a 6-param Staked signature; the contract's
++  // real signature has 5 params — see PrivarStaking.sol — which is also why
++  // the previously hardcoded hash below could never have been right).
++  Staked:           "0x9cfd25589d1eb8ad71e342a86a8524e83522e3936c0803048c08f6d9ad974f40",
++  Unstaked:         "0x204fccf0d92ed8d48f204adb39b2e81e92bad0dedb93f5716ca9478cfb57de00",
++  RewardsClaimed:   "0xdacbdde355ba930696a362ea6738feb9f8bd52dfb3d81947558fd3217e23e325",
+ };
+ 
+ // ── Token decimals/symbol — single source of truth for tx-history formatting ──
+@@ -3824,6 +3843,43 @@
+ // ── Cross-device tx history: rebuild from on-chain events ─────────────────────
+ // Called on wallet connect. Fetches PrivarShieldVault + PrivarStaking events for this address,
+ // merges with localStorage cache, deduplicates by tx hash, returns sorted array.
++// ── Swap/Send/Bridge tx-history entries — sourced from the LOCAL pending-ops
++// ledger (lockNotesForOp/finalizeOp, defined above getNotes/saveNotes), NOT
++// from an on-chain scan. See the AUDIT FINDING inside buildTxHistoryFromChain
++// (just below) for why: PrivateSwap/ShieldedSent/PrivateBridged don't index
++// the sender's address on-chain (by design, for privacy), so there is no
++// way to filter these events to "this wallet's" activity from logs alone —
++// only this device's own record of ops it actually submitted can do that
++// without leaking every other user's activity into this wallet's history.
++// Only finalized, successful ops are included (mirrors what the old
++// on-chain scan would have shown: confirmed transactions only, never a
++// pending/reverted attempt).
++function buildLocalOpTxEntries(address) {
++  if (!address) return [];
++  const ops = getPendingOps(address);
++  const labelFor = { swap: "Swap", send: "Send", bridge: "Bridge" };
++  const tc = (tsMs) => tsMs ? new Date(tsMs).toLocaleString("fr-FR", { dateStyle:"short", timeStyle:"short" }) : "—";
++  return ops
++    .filter(o => o.finalized && o.status === "success" && labelFor[o.kind] && o.txHash)
++    .map(o => ({
++      hash: o.txHash,
++      // Prefer the op's own descriptive label (e.g. "Swap USDC→EURC",
++      // "Bridge → Arbitrum") over the generic kind name when available.
++      label: o.label || labelFor[o.kind],
++      ts: tc(o.createdAt),
++      tsRaw: o.createdAt || null,
++      status: "success",
++      // Honest "—": the op only records its CHANGE-note output locally (the
++      // amount that left the shielded pool for a swap/send/bridge is not
++      // reconstructable from this ledger alone) — showing a real number
++      // here would mean inventing one. Same convention already used for
++      // Swap/Send before this fix; extended to Bridge for consistency
++      // rather than guessing at its gross amount.
++      amount: "—",
++      blockHex: null,
++    }));
++}
++
+ async function buildTxHistoryFromChain(address) {
+   if (!address) return [];
+   const MAX_BLOCKS = 5_000_000;
+@@ -3845,9 +3901,25 @@
+     const sv = CONTRACTS.PrivarShieldVault, st = CONTRACTS.PrivarStaking;
+     const depLogs      = await fetchLogsPaginated(sv, [EV.Deposited, null, addrTopic], from, "privar_txhist_dep", address, "Privar tx-history");
+     const wdLogs        = await fetchLogsPaginated(sv, [EV.Withdrawn, null, null, addrTopic], from, "privar_txhist_wd", address, "Privar tx-history");
+-    const swLogs         = await fetchLogsPaginated(sv, [EV.SwapExecuted], from, "privar_txhist_sw", address, "Privar tx-history");
+-    const bridgeLogs   = await fetchLogsPaginated(sv, [EV.BridgeInitiated], from, "privar_txhist_br", address, "Privar tx-history");
+-    const sendLogs     = await fetchLogsPaginated(sv, [EV.ShieldedTransferProcessed], from, "privar_txhist_st", address, "Privar tx-history");
++    // AUDIT FINDING (2026-09): Swap/Bridge/Send used to be fetched here via
++    // eth_getLogs with NO address filter at all — PrivateSwap/ShieldedSent/
++    // PrivateBridged don't index the sender's address (that's the whole
++    // point of a shielded protocol: only the nullifier/commitment are
++    // public). With the topic hashes fixed (see the EV object's own AUDIT
++    // FINDING), simply removing the wrong hash would have started matching
++    // EVERY user's swap/send/bridge on the network into EVERY OTHER user's
++    // own tx history — a privacy regression, not a fix. There is no way to
++    // filter these three event types by address from on-chain logs alone.
++    // The correct, privacy-safe source for them is this device's own
++    // pending-ops ledger (lockNotesForOp/finalizeOp, above) — it already
++    // records exactly which swap/send/bridge ops THIS wallet performed,
++    // with a real txHash and a real local timestamp, the moment each one is
++    // confirmed. Trade-off (documented, not hidden): unlike Shield/Withdraw/
++    // Stake/Unstake/Claim, these entries are per-device — a swap done on
++    // phone won't show in desktop's history — same fundamental limitation
++    // already accepted elsewhere in this file for the note-relay's O(n)
++    // scan cost, not a new one introduced here.
++    const swapSendBridgeEntries = buildLocalOpTxEntries(address);
+     const stakeLogs     = st ? await fetchLogsPaginated(st, [EV.Staked, addrTopic], from, "privar_txhist_stk", address, "Privar tx-history") : [];
+     const unstakeLogs   = st ? await fetchLogsPaginated(st, [EV.Unstaked, addrTopic], from, "privar_txhist_unstk", address, "Privar tx-history") : [];
+     const claimLogs     = st ? await fetchLogsPaginated(st, [EV.RewardsClaimed, addrTopic], from, "privar_txhist_clm", address, "Privar tx-history") : [];
+@@ -3862,7 +3934,7 @@
+     // every DISTINCT block referenced across all 8 event types (small
+     // concurrency to stay RPC-friendly, matches this function's existing
+     // "fire-and-forget, not time-critical" posture).
+-    const allLogs = [...depLogs, ...wdLogs, ...swLogs, ...bridgeLogs, ...sendLogs, ...stakeLogs, ...unstakeLogs, ...claimLogs];
++    const allLogs = [...depLogs, ...wdLogs, ...stakeLogs, ...unstakeLogs, ...claimLogs];
+     const uniqueBlocks = [...new Set(allLogs.map(l => l.blockNumber).filter(Boolean))];
+     const blockTsMap = new Map();
+     const BLOCK_TS_CONCURRENCY = 5;
+@@ -3901,21 +3973,10 @@
+       const sym = symbolForToken(tok);
+       entries.push({ hash:log.transactionHash, label:"Withdraw", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:formatToken(amount, decimalsForToken(tok), 2)+" "+sym, blockHex:log.blockNumber });
+     }
+-    for (const log of swLogs) {
+-      entries.push({ hash:log.transactionHash, label:"Swap", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:"—", blockHex:log.blockNumber });
+-    }
+-    for (const log of bridgeLogs) {
+-      const data = (log.data||"0x").replace("0x","");
+-      const amount = data.length >= 64 ? u256(data,0) : 0n;
+-      // FIX: this used to hardcode " EURC" regardless of the actual bridged
+-      // token (and, like depLogs, divide by 1e6 even for native USDC).
+-      const tok = log.topics?.[2] ? "0x"+log.topics[2].slice(26) : "";
+-      const sym = symbolForToken(tok);
+-      entries.push({ hash:log.transactionHash, label:"Bridge", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:formatToken(amount, decimalsForToken(tok), 2)+" "+sym, blockHex:log.blockNumber });
+-    }
+-    for (const log of sendLogs) {
+-      entries.push({ hash:log.transactionHash, label:"Send", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:"—", blockHex:log.blockNumber });
+-    }
++    // Swap/Send/Bridge: sourced from the local pending-ops ledger, not an
++    // on-chain scan — see the AUDIT FINDING where swapSendBridgeEntries was
++    // built, above. Already fully shaped (hash/label/ts/tsRaw/status/amount).
++    entries.push(...swapSendBridgeEntries);
+     for (const log of stakeLogs) {
+       const data = (log.data||"0x").replace("0x","");
+       const amount = data.length >= 64 ? u256(data,0) : 0n;
+@@ -3939,12 +4000,15 @@
+     const seen = new Set();
+     const unique = entries.filter(e => { if (!e.hash || seen.has(e.hash)) return false; seen.add(e.hash); return true; });
+ 
+-    // Sort by blockNumber descending (most recent first)
+-    unique.sort((a,b) => {
+-      const na = parseInt(a.blockHex||"0x0",16);
+-      const nb = parseInt(b.blockHex||"0x0",16);
+-      return nb - na;
+-    });
++    // Sort by real timestamp descending (most recent first). Was previously
++    // blockNumber-based — works for on-chain-sourced entries (Shield/
++    // Withdraw/Stake/Unstake/Claim) but local pending-ops-sourced entries
++    // (Swap/Send/Bridge, see above) have no blockHex at all, which would
++    // have sorted them all to the very bottom regardless of actual recency.
++    // tsRaw is populated for every entry now (block timestamp for on-chain
++    // ones, op.createdAt — a real local timestamp — for pending-ops ones),
++    // so it's a single consistent sort key across both sources.
++    unique.sort((a,b) => (b.tsRaw||0) - (a.tsRaw||0));
+ 
+     return unique.slice(0, 200); // cap at 200 entries
+   } catch(e) {
+@@ -4042,23 +4106,28 @@
+ // number of "getNotes/saveNotes" round trips.
+ //
+ // A note is:
+-//   SPENT    — its nullifier matches a real Withdrawn event    -> dropped (correct, not corrupt)
++//   SPENT    — its nullifier matches a real Withdrawn/PrivateSwap/
++//              ShieldedSent/PrivateBridged/Bridged event         -> dropped (correct, not corrupt)
+ //   UNBACKED — its commitment has no matching Deposited event,
+ //              AND it's older than the grace window            -> quarantined (see verifyNotesBackedOnChain's
+ //                                                                   original doc comment for why this is safe
+ //                                                                   and precise regardless of amount)
+ //   VALID    — neither of the above                            -> kept
+ //
+-// AUDIT NOTE (2026-08): the SPENT check below (n.nullifier vs Withdrawn
+-// events) can only ever match a note that has a `nullifier` field — but no
+-// code path writes one onto a saved note (the nullifier used to spend a
+-// note is generated fresh at spend time and never persisted back onto it).
+-// In practice this branch never fires, for any operation. It's left as-is
+-// here (harmless — just never true) rather than removed, to keep this
+-// patch minimal; the actual mechanism that now detects a swap/send/
+-// withdraw/bridge spend is the pending-ops ledger (lockNotesForOp /
+-// finalizeOp / watchPendingOps, defined above getNotes/saveNotes) — see
+-// its doc comment for the full reasoning.
++// AUDIT NOTE (2026-08), UPDATED (2026-09): the SPENT check below matches a
++// note's OWN recomputed deterministic nullifier (Poseidon(secret,
++// commitment) — never a stored `nullifier` field, which no note object has
++// ever carried) against the on-chain spent set. Originally that spent set
++// only came from Withdrawn, on the theory that the pending-ops ledger
++// (lockNotesForOp/finalizeOp/watchPendingOps, above getNotes/saveNotes)
++// fully covered swap/send/bridge spends instead. That's only true on the
++// SAME device that performed the spend — see the AUDIT FINDING further
++// below (just above this function's on-chain scans) for the cross-device
++// gap that left open. The spent set now also includes PrivateSwap,
++// ShieldedSent, PrivateBridged, and legacy Bridged nullifiers, so this
++// check is the one mechanism that self-heals a resurrected already-spent
++// note regardless of which device — or which of the four spend paths —
++// actually spent it.
+ async function reconcileAndVerifyNotes(address) {
+   if (!address) return { spent: 0, unbacked: 0 };
+   const notes = getNotes(address);
+@@ -4068,16 +4137,49 @@
+     const current = Number(BigInt(await rpcCallWithBackoff("eth_blockNumber", [])));
+     const fromBlock = Math.max(0, current - 5_000_000);
+ 
+-    // Two independent scans (different event types, different progress
+-    // checkpoints already persisted in users' browsers under these exact
+-    // key prefixes — kept as-is so no one loses resume progress) but run
+-    // together and classified together, so the local notes array is only
+-    // ever read and written ONCE per reconciliation pass.
+-    const [withdrawnLogs, depositedLogs] = await Promise.all([
++    // AUDIT FINDING (2026-09): the doc comment above (and the one on the
++    // pending-ops ledger, above getNotes/saveNotes) both claimed
++    // watchPendingOps() is "what actually covers swap/send/bridge" spends.
++    // True only for THIS device: watchPendingOps only resolves ops that
++    // THIS browser's localStorage created via lockNotesForOp. A note that
++    // was legitimately spent via swap/send/bridge on device A, then
++    // resurrected on device B (scanStealthNotes/scanNoteRelay/CloudVault
++    // resync re-decrypting the same still-on-chain relay entry, or a
++    // resyncFromCloudVault replay) has NO pending-op on device B — it was
++    // never created there — so watchPendingOps has nothing to resolve, and
++    // the SPENT check just below only ever looked at Withdrawn logs. Net
++    // effect: a note spent via swap/send/bridge on one device could sit
++    // forever as a phantom "available" balance on every OTHER device, only
++    // ever self-healing for plain withdraw() spends — exactly the
++    // local-balance-exceeds-TVL / disappearing-token symptom this file's
++    // changelogs describe, just not fully closed by the pending-ops ledger
++    // alone as previously believed. Fixed by scanning the other three
++    // note-spending events (PrivateSwap/ShieldedSent/PrivateBridged, plus
++    // the legacy standalone LiFiPrivacyBridge.Bridged) for their nullifier
++    // topic — same recomputed-nullifier-vs-on-chain-set technique already
++    // used for Withdrawn below, just extended to every spend path instead
++    // of only one of the four.
++    //
++    // Five independent scans (different event types/contracts, different
++    // progress checkpoints already persisted in users' browsers under these
++    // exact key prefixes — kept as-is so no one loses resume progress) but
++    // run together and classified together, so the local notes array is
++    // only ever read and written ONCE per reconciliation pass.
++    const [withdrawnLogs, depositedLogs, swapLogs, sentLogs, bridgedLogs, legacyBridgedLogs] = await Promise.all([
+       fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.Withdrawn],
+         fromBlock, "privar_reconcile_scanprogress", address, "Privar"),
+       fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.Deposited],
+         fromBlock, "privar_verify_scanprogress", address, "Privar"),
++      fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.PrivateSwap],
++        fromBlock, "privar_reconcile_scanprogress_swap", address, "Privar"),
++      fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.ShieldedSent],
++        fromBlock, "privar_reconcile_scanprogress_sent", address, "Privar"),
++      fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.PrivateBridged],
++        fromBlock, "privar_reconcile_scanprogress_bridged", address, "Privar"),
++      CONTRACTS.LiFiPrivacyBridge
++        ? fetchLogsPaginated(CONTRACTS.LiFiPrivacyBridge, [EV.Bridged],
++            fromBlock, "privar_reconcile_scanprogress_legacybridge", address, "Privar")
++        : Promise.resolve([]),
+     ]);
+ 
+     const spentNullifiers = new Set();
+@@ -4087,6 +4189,27 @@
+         if (n) spentNullifiers.add(n.toLowerCase());
+       }
+     }
++    // Same nullifier-topic position (topics[1]) on every other note-spending
++    // event: PrivateSwap(nullifierIn,...), ShieldedSent(nullifierIn,...),
++    // PrivateBridged(nullifier,...), and legacy Bridged(nullifier,...) — see
++    // the AUDIT FINDING above this block for why these are needed in
++    // addition to Withdrawn.
++    for (const log of (Array.isArray(swapLogs) ? swapLogs : [])) {
++      const n = log.topics?.[1];
++      if (n) spentNullifiers.add(n.toLowerCase());
++    }
++    for (const log of (Array.isArray(sentLogs) ? sentLogs : [])) {
++      const n = log.topics?.[1];
++      if (n) spentNullifiers.add(n.toLowerCase());
++    }
++    for (const log of (Array.isArray(bridgedLogs) ? bridgedLogs : [])) {
++      const n = log.topics?.[1];
++      if (n) spentNullifiers.add(n.toLowerCase());
++    }
++    for (const log of (Array.isArray(legacyBridgedLogs) ? legacyBridgedLogs : [])) {
++      const n = log.topics?.[1];
++      if (n) spentNullifiers.add(n.toLowerCase());
++    }
+     const depositedCommitments = new Set();
+     let depositedScanOk = false;
+     if (Array.isArray(depositedLogs)) {
+@@ -4408,9 +4531,10 @@
+     const runChecks = () => {
+       // Resolve any swap/send/withdraw/bridge left dangling by a closed
+       // tab, a timeout, or a dropped connection — see watchPendingOps()'s
+-      // doc comment. Independent of reconcileAndVerifyNotes below (which
+-      // only ever catches explicit withdraw() — see its own doc comment)
+-      // — this is what actually covers swap/send/bridge.
++      // doc comment. This only ever resolves ops THIS device created.
++      // reconcileAndVerifyNotes below is the complementary, device-agnostic
++      // check: it now catches a note spent via withdraw/swap/send/bridge on
++      // ANY device (see its own doc comment for the 2026-09 fix).
+       watchPendingOps(address).catch(() => {});
+       reconcileAndVerifyNotes(address).then(({ unbacked }) => {
+         // OVERWRITE, not accumulate: this ref should reflect "how many were
