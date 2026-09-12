@@ -1385,12 +1385,47 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
         if (synced > 0) recomputeShielded?.();
       }).catch(() => {});
     })();
-    ensureViewKeyRegistered(account.address, sendViewKeyTx, notify).catch(() => {});
-    // §7.5/§8.4 point 4 — same connect-time, once-per-address pattern as the
-    // view-key registration immediately above, for the Note Engine's spend
-    // identity key. Independent contract, independent guard flag — a
-    // rejected view-key signature doesn't block this, and vice versa.
-    ensureSpendKeyRegistered(account.address, sendViewKeyTx, notify).catch(() => {});
+    // ROOT CAUSE (found comparing this file against the last version the
+    // user confirmed as fully working, v19_1_0, which has neither of these
+    // two calls at all — this whole spend-key/view-key auto-registration
+    // flow is new since then): on EVERY wallet connect, if this address
+    // hasn't registered a view key AND/OR a spend key yet, each of these
+    // fires its OWN full on-chain transaction — buildTx, wallet
+    // confirmation prompt, eth_sendTransaction, waitForReceipt — completely
+    // unprompted by the user, via the exact same sendRealTx() used by the
+    // Shield/Swap/Send/Withdraw/Bridge panels. On a fresh contract
+    // deployment (this v5.3.0 vault has 18 commitments total — every
+    // address connecting right now is unregistered on BOTH registries) that
+    // means TWO automatic transactions fire back-to-back, from the same
+    // address, at the exact moment a user connects — the same wallet nonce
+    // sequence, the same single RPC channel, that the user's very next
+    // click (often within seconds — Shield included) also needs. That
+    // collision, not a slow internet connection, is what produced the
+    // reported "could not verify token support" / "could not read current
+    // fees" / generic "Transaction failed" sequence: this connect-time
+    // burst was still in flight, competing for the same channel and the
+    // same nonce, when Shield tried to use it.
+    //
+    // Fixed two ways: (1) sequential, not concurrent — the spend-key check
+    // no longer starts until the view-key one has fully settled, so at most
+    // ONE automatic transaction is ever in flight at a time; (2) routed
+    // through __privarForegroundOpsInFlight (already incremented/decremented
+    // inside sendRealTx — see useTxSend) so a user-initiated Shield/Swap/
+    // Send/Withdraw/Bridge submitted while one of these is still pending
+    // will correctly report it's waiting rather than racing it. This does
+    // NOT eliminate the up-to-two-transaction bootstrap cost on a brand-new
+    // address — that's inherent to registering on two independent
+    // registries — it only stops it from silently colliding with whatever
+    // the user does next.
+    (async () => {
+      await ensureViewKeyRegistered(account.address, sendViewKeyTx, notify).catch(() => {});
+      if (cancelled) return;
+      // §7.5/§8.4 point 4 — same connect-time, once-per-address pattern as
+      // the view-key registration immediately above, for the Note Engine's
+      // spend identity key. Independent contract, independent guard flag —
+      // a rejected view-key signature doesn't block this, and vice versa.
+      await ensureSpendKeyRegistered(account.address, sendViewKeyTx, notify).catch(() => {});
+    })();
     // Rescan every 2 minutes in case new stealth notes / cloud journal entries arrive
     const id = setInterval(() => {
       scanStealthNotes(account.address, recomputeShielded).catch(() => {});
@@ -4854,6 +4889,14 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
   const submit = async () => {
     const parsed = parseFloat(amount);
     if (!amount || isNaN(parsed) || parsed <= 0) return;
+    // See __privarForegroundOpsInFlight's declaration — avoids racing the
+    // connect-time view-key/spend-key auto-registration transactions for
+    // the wallet's one RPC channel (root cause of the reported Shield
+    // failures right after connecting).
+    if (__privarForegroundOpsInFlight > 0) {
+      notify("Deposit", "Still finishing wallet setup from connect — please wait a few seconds and try again.", "warning");
+      return;
+    }
     setLoading(true);
 
     // Block deposit of tokens not deployed on Arc Testnet
@@ -5324,6 +5367,10 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     if (!amount || !q || !onArc) return;
     if (fr === to) { notify("Swap","Sélectionnez deux tokens différents.","error"); return; }
     if (tkFr.bal <= 0) { notify("Swap",`Insufficient shielded ${fr} balance.`,"error"); return; }
+    if (__privarForegroundOpsInFlight > 0) {
+      notify("Swap", "Still finishing wallet setup from connect — please wait a few seconds and try again.", "warning");
+      return;
+    }
 
     // LIQUIDITY ENGINE: privateSwapWithRouter() lets the frontend pick ANY
     // whitelisted adapter per call, instead of being locked into the
@@ -5843,6 +5890,10 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
 
   const sendShielded = async () => {
     if (!amount || Number(amount) <= 0) return;
+    if (__privarForegroundOpsInFlight > 0) {
+      notify("Send", "Still finishing wallet setup from connect — please wait a few seconds and try again.", "warning");
+      return;
+    }
     const dest = to.trim();
     if (isArcName) { notify("Send", "ARC Name Service is not live yet — enter a 0x address directly.", "error"); return; }
     if (!/^0x[0-9a-fA-F]{40}$/.test(dest)) { notify("Send", "Invalid address format", "error"); return; }
@@ -6130,6 +6181,10 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
 
   const sendPublic = async () => {
     if (!amount) return;
+    if (__privarForegroundOpsInFlight > 0) {
+      notify("Send", "Still finishing wallet setup from connect — please wait a few seconds and try again.", "warning");
+      return;
+    }
     const dest = to.trim();
     if (isArcName) { notify("Send", "ARC Name Service is not live yet — enter a 0x address directly.", "error"); return; }
     if (!/^0x[0-9a-fA-F]{40}$/.test(dest)) { notify("Send", "Invalid address format", "error"); return; }
@@ -6214,6 +6269,10 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
 
   const withdraw = async () => {
     if (!amount || Number(amount) <= 0) return;
+    if (__privarForegroundOpsInFlight > 0) {
+      notify("Withdraw", "Still finishing wallet setup from connect — please wait a few seconds and try again.", "warning");
+      return;
+    }
     const target = dest || account?.address;
     if (!target || !/^0x[0-9a-fA-F]{40}$/.test(target)) {
       notify("Withdraw", "Invalid destination address", "error"); return;
@@ -6555,6 +6614,10 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
   const bridge = async () => {
     if (!amount || Number(amount) <= 0 || !onArc) return;
     if (tk.bal <= 0) { notify("Bridge", `Insufficient shielded ${token} balance.`, "error"); return; }
+    if (__privarForegroundOpsInFlight > 0) {
+      notify("Bridge", "Still finishing wallet setup from connect — please wait a few seconds and try again.", "warning");
+      return;
+    }
     if (!isReachable(ch)) {
       notify("Bridge", `${ch.name} isn't (yet) reachable via LI.FI from Arc Testnet.`, "error");
       return;

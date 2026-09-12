@@ -1,6 +1,60 @@
 --- /tmp/orig_DApp.jsx	2026-09-05 15:59:45.098029873 +0000
-+++ frontend/src/DApp.jsx	2026-09-12 10:07:39.964922063 +0000
-@@ -3561,6 +3561,23 @@
++++ frontend/src/DApp.jsx	2026-09-12 10:29:31.721388533 +0000
+@@ -1385,12 +1385,47 @@
+         if (synced > 0) recomputeShielded?.();
+       }).catch(() => {});
+     })();
+-    ensureViewKeyRegistered(account.address, sendViewKeyTx, notify).catch(() => {});
+-    // §7.5/§8.4 point 4 — same connect-time, once-per-address pattern as the
+-    // view-key registration immediately above, for the Note Engine's spend
+-    // identity key. Independent contract, independent guard flag — a
+-    // rejected view-key signature doesn't block this, and vice versa.
+-    ensureSpendKeyRegistered(account.address, sendViewKeyTx, notify).catch(() => {});
++    // ROOT CAUSE (found comparing this file against the last version the
++    // user confirmed as fully working, v19_1_0, which has neither of these
++    // two calls at all — this whole spend-key/view-key auto-registration
++    // flow is new since then): on EVERY wallet connect, if this address
++    // hasn't registered a view key AND/OR a spend key yet, each of these
++    // fires its OWN full on-chain transaction — buildTx, wallet
++    // confirmation prompt, eth_sendTransaction, waitForReceipt — completely
++    // unprompted by the user, via the exact same sendRealTx() used by the
++    // Shield/Swap/Send/Withdraw/Bridge panels. On a fresh contract
++    // deployment (this v5.3.0 vault has 18 commitments total — every
++    // address connecting right now is unregistered on BOTH registries) that
++    // means TWO automatic transactions fire back-to-back, from the same
++    // address, at the exact moment a user connects — the same wallet nonce
++    // sequence, the same single RPC channel, that the user's very next
++    // click (often within seconds — Shield included) also needs. That
++    // collision, not a slow internet connection, is what produced the
++    // reported "could not verify token support" / "could not read current
++    // fees" / generic "Transaction failed" sequence: this connect-time
++    // burst was still in flight, competing for the same channel and the
++    // same nonce, when Shield tried to use it.
++    //
++    // Fixed two ways: (1) sequential, not concurrent — the spend-key check
++    // no longer starts until the view-key one has fully settled, so at most
++    // ONE automatic transaction is ever in flight at a time; (2) routed
++    // through __privarForegroundOpsInFlight (already incremented/decremented
++    // inside sendRealTx — see useTxSend) so a user-initiated Shield/Swap/
++    // Send/Withdraw/Bridge submitted while one of these is still pending
++    // will correctly report it's waiting rather than racing it. This does
++    // NOT eliminate the up-to-two-transaction bootstrap cost on a brand-new
++    // address — that's inherent to registering on two independent
++    // registries — it only stops it from silently colliding with whatever
++    // the user does next.
++    (async () => {
++      await ensureViewKeyRegistered(account.address, sendViewKeyTx, notify).catch(() => {});
++      if (cancelled) return;
++      // §7.5/§8.4 point 4 — same connect-time, once-per-address pattern as
++      // the view-key registration immediately above, for the Note Engine's
++      // spend identity key. Independent contract, independent guard flag —
++      // a rejected view-key signature doesn't block this, and vice versa.
++      await ensureSpendKeyRegistered(account.address, sendViewKeyTx, notify).catch(() => {});
++    })();
+     // Rescan every 2 minutes in case new stealth notes / cloud journal entries arrive
+     const id = setInterval(() => {
+       scanStealthNotes(account.address, recomputeShielded).catch(() => {});
+@@ -3561,6 +3596,23 @@
  // the mempool, never for one that's merely slow to confirm.
  const OP_ABANDON_MS = 3 * 60 * 1000; // 3 min
  
@@ -24,7 +78,7 @@
  function newOpId() {
    return "op_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 10);
  }
-@@ -3771,17 +3788,36 @@
+@@ -3771,17 +3823,36 @@
  }
  
  
@@ -71,7 +125,7 @@
  };
  
  // ── Token decimals/symbol — single source of truth for tx-history formatting ──
-@@ -3824,6 +3860,43 @@
+@@ -3824,6 +3895,43 @@
  // ── Cross-device tx history: rebuild from on-chain events ─────────────────────
  // Called on wallet connect. Fetches PrivarShieldVault + PrivarStaking events for this address,
  // merges with localStorage cache, deduplicates by tx hash, returns sorted array.
@@ -115,7 +169,7 @@
  async function buildTxHistoryFromChain(address) {
    if (!address) return [];
    const MAX_BLOCKS = 5_000_000;
-@@ -3845,9 +3918,25 @@
+@@ -3845,9 +3953,25 @@
      const sv = CONTRACTS.PrivarShieldVault, st = CONTRACTS.PrivarStaking;
      const depLogs      = await fetchLogsPaginated(sv, [EV.Deposited, null, addrTopic], from, "privar_txhist_dep", address, "Privar tx-history");
      const wdLogs        = await fetchLogsPaginated(sv, [EV.Withdrawn, null, null, addrTopic], from, "privar_txhist_wd", address, "Privar tx-history");
@@ -144,7 +198,7 @@
      const stakeLogs     = st ? await fetchLogsPaginated(st, [EV.Staked, addrTopic], from, "privar_txhist_stk", address, "Privar tx-history") : [];
      const unstakeLogs   = st ? await fetchLogsPaginated(st, [EV.Unstaked, addrTopic], from, "privar_txhist_unstk", address, "Privar tx-history") : [];
      const claimLogs     = st ? await fetchLogsPaginated(st, [EV.RewardsClaimed, addrTopic], from, "privar_txhist_clm", address, "Privar tx-history") : [];
-@@ -3862,7 +3951,7 @@
+@@ -3862,7 +3986,7 @@
      // every DISTINCT block referenced across all 8 event types (small
      // concurrency to stay RPC-friendly, matches this function's existing
      // "fire-and-forget, not time-critical" posture).
@@ -153,7 +207,7 @@
      const uniqueBlocks = [...new Set(allLogs.map(l => l.blockNumber).filter(Boolean))];
      const blockTsMap = new Map();
      const BLOCK_TS_CONCURRENCY = 5;
-@@ -3901,21 +3990,10 @@
+@@ -3901,21 +4025,10 @@
        const sym = symbolForToken(tok);
        entries.push({ hash:log.transactionHash, label:"Withdraw", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:formatToken(amount, decimalsForToken(tok), 2)+" "+sym, blockHex:log.blockNumber });
      }
@@ -179,7 +233,7 @@
      for (const log of stakeLogs) {
        const data = (log.data||"0x").replace("0x","");
        const amount = data.length >= 64 ? u256(data,0) : 0n;
-@@ -3939,12 +4017,15 @@
+@@ -3939,12 +4052,15 @@
      const seen = new Set();
      const unique = entries.filter(e => { if (!e.hash || seen.has(e.hash)) return false; seen.add(e.hash); return true; });
  
@@ -201,7 +255,7 @@
  
      return unique.slice(0, 200); // cap at 200 entries
    } catch(e) {
-@@ -4042,23 +4123,28 @@
+@@ -4042,23 +4158,28 @@
  // number of "getNotes/saveNotes" round trips.
  //
  // A note is:
@@ -241,7 +295,7 @@
  async function reconcileAndVerifyNotes(address) {
    if (!address) return { spent: 0, unbacked: 0 };
    const notes = getNotes(address);
-@@ -4068,17 +4154,73 @@
+@@ -4068,17 +4189,73 @@
      const current = Number(BigInt(await rpcCallWithBackoff("eth_blockNumber", [])));
      const fromBlock = Math.max(0, current - 5_000_000);
  
@@ -326,7 +380,7 @@
  
      const spentNullifiers = new Set();
      if (Array.isArray(withdrawnLogs)) {
-@@ -4087,6 +4229,27 @@
+@@ -4087,6 +4264,27 @@
          if (n) spentNullifiers.add(n.toLowerCase());
        }
      }
@@ -354,7 +408,7 @@
      const depositedCommitments = new Set();
      let depositedScanOk = false;
      if (Array.isArray(depositedLogs)) {
-@@ -4408,9 +4571,17 @@
+@@ -4408,9 +4606,17 @@
      const runChecks = () => {
        // Resolve any swap/send/withdraw/bridge left dangling by a closed
        // tab, a timeout, or a dropped connection — see watchPendingOps()'s
@@ -375,7 +429,7 @@
        watchPendingOps(address).catch(() => {});
        reconcileAndVerifyNotes(address).then(({ unbacked }) => {
          // OVERWRITE, not accumulate: this ref should reflect "how many were
-@@ -4611,6 +4782,7 @@
+@@ -4611,6 +4817,7 @@
      if (!onArc) { notify(label, "Switch to Arc Testnet first", "error"); return false; }
      if (!account?.address) { notify(label, "Wallet not connected", "error"); return false; }
      notify(label, description + " — confirm in wallet...", "pending");
@@ -383,7 +437,7 @@
      try {
        const tx = await buildTx(account.address);
        const hash = await sendTransaction(account.address, tx.to, tx.value || "0x0", tx.data || "0x");
-@@ -4649,6 +4821,8 @@
+@@ -4649,6 +4856,8 @@
        const msg = e.code === 4001 ? "Rejected by user" : e.message || "Transaction failed";
        notify(`${label} Failed`, msg, "error");
        return false;
@@ -392,3 +446,73 @@
      }
    }, [account, onArc, notify, refreshBalance, onSuccess]);
  
+@@ -4680,6 +4889,14 @@
+   const submit = async () => {
+     const parsed = parseFloat(amount);
+     if (!amount || isNaN(parsed) || parsed <= 0) return;
++    // See __privarForegroundOpsInFlight's declaration — avoids racing the
++    // connect-time view-key/spend-key auto-registration transactions for
++    // the wallet's one RPC channel (root cause of the reported Shield
++    // failures right after connecting).
++    if (__privarForegroundOpsInFlight > 0) {
++      notify("Deposit", "Still finishing wallet setup from connect — please wait a few seconds and try again.", "warning");
++      return;
++    }
+     setLoading(true);
+ 
+     // Block deposit of tokens not deployed on Arc Testnet
+@@ -5150,6 +5367,10 @@
+     if (!amount || !q || !onArc) return;
+     if (fr === to) { notify("Swap","Sélectionnez deux tokens différents.","error"); return; }
+     if (tkFr.bal <= 0) { notify("Swap",`Insufficient shielded ${fr} balance.`,"error"); return; }
++    if (__privarForegroundOpsInFlight > 0) {
++      notify("Swap", "Still finishing wallet setup from connect — please wait a few seconds and try again.", "warning");
++      return;
++    }
+ 
+     // LIQUIDITY ENGINE: privateSwapWithRouter() lets the frontend pick ANY
+     // whitelisted adapter per call, instead of being locked into the
+@@ -5669,6 +5890,10 @@
+ 
+   const sendShielded = async () => {
+     if (!amount || Number(amount) <= 0) return;
++    if (__privarForegroundOpsInFlight > 0) {
++      notify("Send", "Still finishing wallet setup from connect — please wait a few seconds and try again.", "warning");
++      return;
++    }
+     const dest = to.trim();
+     if (isArcName) { notify("Send", "ARC Name Service is not live yet — enter a 0x address directly.", "error"); return; }
+     if (!/^0x[0-9a-fA-F]{40}$/.test(dest)) { notify("Send", "Invalid address format", "error"); return; }
+@@ -5956,6 +6181,10 @@
+ 
+   const sendPublic = async () => {
+     if (!amount) return;
++    if (__privarForegroundOpsInFlight > 0) {
++      notify("Send", "Still finishing wallet setup from connect — please wait a few seconds and try again.", "warning");
++      return;
++    }
+     const dest = to.trim();
+     if (isArcName) { notify("Send", "ARC Name Service is not live yet — enter a 0x address directly.", "error"); return; }
+     if (!/^0x[0-9a-fA-F]{40}$/.test(dest)) { notify("Send", "Invalid address format", "error"); return; }
+@@ -6040,6 +6269,10 @@
+ 
+   const withdraw = async () => {
+     if (!amount || Number(amount) <= 0) return;
++    if (__privarForegroundOpsInFlight > 0) {
++      notify("Withdraw", "Still finishing wallet setup from connect — please wait a few seconds and try again.", "warning");
++      return;
++    }
+     const target = dest || account?.address;
+     if (!target || !/^0x[0-9a-fA-F]{40}$/.test(target)) {
+       notify("Withdraw", "Invalid destination address", "error"); return;
+@@ -6381,6 +6614,10 @@
+   const bridge = async () => {
+     if (!amount || Number(amount) <= 0 || !onArc) return;
+     if (tk.bal <= 0) { notify("Bridge", `Insufficient shielded ${token} balance.`, "error"); return; }
++    if (__privarForegroundOpsInFlight > 0) {
++      notify("Bridge", "Still finishing wallet setup from connect — please wait a few seconds and try again.", "warning");
++      return;
++    }
+     if (!isReachable(ch)) {
+       notify("Bridge", `${ch.name} isn't (yet) reachable via LI.FI from Arc Testnet.`, "error");
+       return;
