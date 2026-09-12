@@ -3561,6 +3561,23 @@ const savePendingOps = (addr, ops) => { try { localStorage.setItem(pendingOpsKey
 // the mempool, never for one that's merely slow to confirm.
 const OP_ABANDON_MS = 3 * 60 * 1000; // 3 min
 
+// ── Foreground-operation guard ───────────────────────────────────────────
+// Simple counter, incremented/decremented around sendRealTx's buildTx →
+// eth_sendTransaction → waitForReceipt sequence (see useTxSend below).
+// Background RPC consumers (the periodic reconciliation/resync pass, see
+// runChecks() near useShieldedBalances) check this before starting a new
+// pass and defer to the next tick if it's non-zero. window.ethereum.request
+// has no separate lane for "background" vs. "user is waiting on this right
+// now" calls — they all go down the same single channel the wallet's
+// injected provider exposes — so a burst of background eth_getLogs/eth_call
+// traffic firing at the exact moment a user submits Shield/Swap/Send/
+// Withdraw/Bridge can starve that foreground call, surfacing as "could not
+// read fees" / "transaction failed" even though nothing is actually wrong
+// with the user's network. This does not make background scans instant or
+// free — it just stops them from being IN FLIGHT at the one moment it
+// matters most.
+let __privarForegroundOpsInFlight = 0;
+
 function newOpId() {
   return "op_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 10);
 }
@@ -4160,27 +4177,50 @@ async function reconcileAndVerifyNotes(address) {
     // used for Withdrawn below, just extended to every spend path instead
     // of only one of the four.
     //
-    // Five independent scans (different event types/contracts, different
-    // progress checkpoints already persisted in users' browsers under these
-    // exact key prefixes — kept as-is so no one loses resume progress) but
-    // run together and classified together, so the local notes array is
-    // only ever read and written ONCE per reconciliation pass.
-    const [withdrawnLogs, depositedLogs, swapLogs, sentLogs, bridgedLogs, legacyBridgedLogs] = await Promise.all([
-      fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.Withdrawn],
-        fromBlock, "privar_reconcile_scanprogress", address, "Privar"),
-      fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.Deposited],
-        fromBlock, "privar_verify_scanprogress", address, "Privar"),
-      fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.PrivateSwap],
-        fromBlock, "privar_reconcile_scanprogress_swap", address, "Privar"),
-      fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.ShieldedSent],
-        fromBlock, "privar_reconcile_scanprogress_sent", address, "Privar"),
-      fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.PrivateBridged],
-        fromBlock, "privar_reconcile_scanprogress_bridged", address, "Privar"),
-      CONTRACTS.LiFiPrivacyBridge
-        ? fetchLogsPaginated(CONTRACTS.LiFiPrivacyBridge, [EV.Bridged],
-            fromBlock, "privar_reconcile_scanprogress_legacybridge", address, "Privar")
-        : Promise.resolve([]),
-    ]);
+    // ROOT CAUSE OF THE SHIELD FAILURES REPORTED AFTER THIS FIX SHIPPED:
+    // the 4 new scans below (PrivateSwap/ShieldedSent/PrivateBridged/legacy
+    // Bridged) use checkpoint keys that NEVER existed before this patch
+    // (see getScanProgress()/scanProgressKey() above — a never-seen
+    // localStorage key falls back to `fromBlock`, i.e. genesis). Every
+    // OTHER scan in this file (Withdrawn, Deposited, staking events, tx
+    // history) already has months of saved checkpoint progress sitting
+    // near the chain tip, so it's cheap. These 4 do not: on first run after
+    // deploy they replay the vault's ENTIRE history, for every one of them.
+    // Firing all 6 of these (2 warm + 4 cold) at once via Promise.all —
+    // right on mount, and again every 120s via runChecks() below — throws
+    // up to 6x the normal number of concurrent Blockscout/eth_getLogs
+    // requests down the SAME single channel the wallet's injected provider
+    // uses for every other call (window.ethereum.request has no separate
+    // lane for background vs. foreground requests). That's what starved the
+    // Shield panel's own supportedTokens/fee-preview eth_calls and the
+    // eth_sendTransaction firing right after — not the user's internet
+    // connection. Confirmed reproducible: the checkpoints for the 4 new
+    // scans are cold on literally every account's first load post-deploy,
+    // so this fires every single time, not intermittently — matching
+    // exactly what was reported.
+    //
+    // Fix: run them ONE AT A TIME (sequential awaits, not Promise.all).
+    // This restores the original 2-scan-at-a-time ceiling on shared-channel
+    // pressure regardless of how many event types this function scans, at
+    // the cost of this pass taking longer wall-clock time to finish — an
+    // acceptable trade since it runs in the background, not on a path the
+    // user is blocked waiting on. Once every account's 4 new checkpoints
+    // have caught up to the chain tip (one time only), each future pass is
+    // as cheap as the original 2-scan version was.
+    const withdrawnLogs      = await fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.Withdrawn],
+      fromBlock, "privar_reconcile_scanprogress", address, "Privar");
+    const depositedLogs      = await fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.Deposited],
+      fromBlock, "privar_verify_scanprogress", address, "Privar");
+    const swapLogs           = await fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.PrivateSwap],
+      fromBlock, "privar_reconcile_scanprogress_swap", address, "Privar");
+    const sentLogs           = await fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.ShieldedSent],
+      fromBlock, "privar_reconcile_scanprogress_sent", address, "Privar");
+    const bridgedLogs        = await fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.PrivateBridged],
+      fromBlock, "privar_reconcile_scanprogress_bridged", address, "Privar");
+    const legacyBridgedLogs  = CONTRACTS.LiFiPrivacyBridge
+      ? await fetchLogsPaginated(CONTRACTS.LiFiPrivacyBridge, [EV.Bridged],
+          fromBlock, "privar_reconcile_scanprogress_legacybridge", address, "Privar")
+      : [];
 
     const spentNullifiers = new Set();
     if (Array.isArray(withdrawnLogs)) {
@@ -4535,6 +4575,13 @@ function useShieldedBalances(prices, address) {
       // reconcileAndVerifyNotes below is the complementary, device-agnostic
       // check: it now catches a note spent via withdraw/swap/send/bridge on
       // ANY device (see its own doc comment for the 2026-09 fix).
+      //
+      // Skip entirely while a foreground Shield/Swap/Send/Withdraw/Bridge is
+      // actively sending/confirming (see __privarForegroundOpsInFlight's
+      // declaration) — don't compete with it for the wallet's one RPC
+      // channel. Simply deferred, not lost: the 120s interval and the
+      // visibility handler below will retry shortly after.
+      if (__privarForegroundOpsInFlight > 0) return;
       watchPendingOps(address).catch(() => {});
       reconcileAndVerifyNotes(address).then(({ unbacked }) => {
         // OVERWRITE, not accumulate: this ref should reflect "how many were
@@ -4735,6 +4782,7 @@ function useTxSend({ account, onArc, notify, refreshBalance, onSuccess }) {
     if (!onArc) { notify(label, "Switch to Arc Testnet first", "error"); return false; }
     if (!account?.address) { notify(label, "Wallet not connected", "error"); return false; }
     notify(label, description + " — confirm in wallet...", "pending");
+    __privarForegroundOpsInFlight++; // see declaration for why — keeps background reconciliation from competing with this call for the wallet's single RPC channel
     try {
       const tx = await buildTx(account.address);
       const hash = await sendTransaction(account.address, tx.to, tx.value || "0x0", tx.data || "0x");
@@ -4773,6 +4821,8 @@ function useTxSend({ account, onArc, notify, refreshBalance, onSuccess }) {
       const msg = e.code === 4001 ? "Rejected by user" : e.message || "Transaction failed";
       notify(`${label} Failed`, msg, "error");
       return false;
+    } finally {
+      __privarForegroundOpsInFlight = Math.max(0, __privarForegroundOpsInFlight - 1);
     }
   }, [account, onArc, notify, refreshBalance, onSuccess]);
 
