@@ -1374,10 +1374,14 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
       migrateCloudSyncKeyScheme(account.address);
       await ensureSelfBackupKeyReady(account.address, notify).catch(() => {});
       if (cancelled) return;
-      scanStealthNotes(account.address, recomputeShielded).catch(() => {});
-      scanNoteRelay(account.address, recomputeShielded).catch(() => {}); // §7.5 — address-free counterpart
-      resyncFromCloudVault(account.address, recomputeShielded).catch(() => {});
-      resyncFromShieldVaultJournal(account.address, recomputeShielded).catch(() => {});
+      // Throttled: see runPrivarThrottled's doc comment — these 4 used to
+      // fire fully concurrently with each other AND with the 2-minute poll
+      // below, confirmed as a major contributor to a sustained rate-limit
+      // storm (400+ backoffs in one user session).
+      runPrivarThrottled(() => scanStealthNotes(account.address, recomputeShielded)).catch(() => {});
+      runPrivarThrottled(() => scanNoteRelay(account.address, recomputeShielded)).catch(() => {}); // §7.5 — address-free counterpart
+      runPrivarThrottled(() => resyncFromCloudVault(account.address, recomputeShielded)).catch(() => {});
+      runPrivarThrottled(() => resyncFromShieldVaultJournal(account.address, recomputeShielded)).catch(() => {});
       // Retry any SPEND broadcasts that failed on a previous session (see
       // "Pending SPEND broadcast queue") — a no-op wallet-side if the queue
       // is empty, so safe to run on every connect without extra prompts.
@@ -1428,10 +1432,10 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
     })();
     // Rescan every 2 minutes in case new stealth notes / cloud journal entries arrive
     const id = setInterval(() => {
-      scanStealthNotes(account.address, recomputeShielded).catch(() => {});
-      scanNoteRelay(account.address, recomputeShielded).catch(() => {});
-      resyncFromCloudVault(account.address, recomputeShielded).catch(() => {});
-      resyncFromShieldVaultJournal(account.address, recomputeShielded).catch(() => {});
+      runPrivarThrottled(() => scanStealthNotes(account.address, recomputeShielded)).catch(() => {});
+      runPrivarThrottled(() => scanNoteRelay(account.address, recomputeShielded)).catch(() => {});
+      runPrivarThrottled(() => resyncFromCloudVault(account.address, recomputeShielded)).catch(() => {});
+      runPrivarThrottled(() => resyncFromShieldVaultJournal(account.address, recomputeShielded)).catch(() => {});
     }, 120_000);
     return () => { cancelled = true; clearInterval(id); };
   }, [account?.address, onArc, recomputeShielded, sendViewKeyTx, notify]);
@@ -1812,9 +1816,12 @@ function useProtocolStats(onArc) {
         // Each entry wrapped individually too: a synchronous throw from any ONE
         // builder function (e.g. an undefined import) now only nulls that ONE call
         // instead of aborting calls.map() entirely and skipping every call after it.
-        const results = await Promise.allSettled(
+        // Throttled: see runPrivarThrottled's doc comment — this 21-call burst,
+        // firing every 30s independent of every log-scanner also running, was a
+        // major contributor to the confirmed rate-limit storm (fixed 2026-09).
+        const results = await runPrivarThrottled(() => Promise.allSettled(
           calls.map(fn => { try { return fn(); } catch (e) { return Promise.reject(e); } })
-        );
+        ));
       const v = (i) => results[i].status === "fulfilled" ? results[i].value : null;
       const [
         su, se, sb, leaf, vaultPaused, tUsdc, tEurc, tBtc,
@@ -3013,6 +3020,55 @@ function normalizeBlockscoutLog(l) {
   };
 }
 
+// ── Shared RPC/Blockscout rate-limit coordinator ─────────────────────────
+// CONFIRMED (2026-09) via a user-supplied console log: up to 9 independent
+// background scanners (protocol-stats poll, stealth-note scan, note-relay
+// scan, shield-vault journal resync, cloud-vault resync,
+// reconcileAndVerifyNotes's 6 event scans, tx-history's event scans) were
+// all funneling through this SAME function with zero awareness of each
+// other — each running its own local 3-retry backoff on a 429, all firing
+// and all retrying at roughly the same moment. Measured result from that
+// log: 400 "rate limited, backing off" events, 89 HTTP 429s, and "stats
+// fetch: 21/21 calls failed" recurring over and over rather than ever
+// clearing — a self-sustaining thundering herd, not a transient blip. That
+// starvation is what forced ~20 retries to land a single Shield/Swap and
+// what left the shielded balance flapping between real and stale/error
+// states mid-swap.
+//
+// Fix: every call through this function is serialized through ONE shared
+// queue, and the instant ANY of them sees a rate-limit response, ALL of
+// them wait out the SAME cooldown window before their next attempt —
+// turning 9 independent retry storms into one orderly line. This can't
+// make a scarce public rate limit larger, but it stops the app itself from
+// being the reason that limit never gets a chance to reset.
+let __privarBgQueue = Promise.resolve();
+let __privarBgCooldownUntil = 0;
+
+function isPrivarRateLimitError(e) {
+  const msg = ((e && e.message) || String(e || "")).toLowerCase();
+  return msg.includes("rate limit") || msg.includes("too many requests")
+      || msg.includes("request limit") || msg.includes("429")
+      || msg.includes("exceeds defined limit");
+}
+
+function markPrivarRateLimited(cooldownMs = 4000) {
+  __privarBgCooldownUntil = Math.max(__privarBgCooldownUntil, Date.now() + cooldownMs);
+}
+
+// Runs `fn` once this device's shared background queue is free AND any
+// active shared cooldown has elapsed. Chains regardless of outcome (a
+// rejection must never wedge every future background scan behind it).
+function runPrivarThrottled(fn) {
+  const run = async () => {
+    const wait = __privarBgCooldownUntil - Date.now();
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    return fn();
+  };
+  const result = __privarBgQueue.then(run, run);
+  __privarBgQueue = result.then(() => {}, () => {});
+  return result;
+}
+
 async function fetchLogsViaBlockscout(contractAddress, topics, fromBlock) {
   const params = new URLSearchParams({
     module: "logs", action: "getLogs",
@@ -3059,6 +3115,10 @@ async function fetchLogsViaBlockscout(contractAddress, topics, fromBlock) {
 // reconnects) accumulate steadily and visibly instead of one call spending
 // minutes retrying in silence, which looks indistinguishable from "stuck".
 async function fetchLogsPaginated(contractAddress, topics, fromBlock, keyPrefix, address, label) {
+  return runPrivarThrottled(() => fetchLogsPaginatedInner(contractAddress, topics, fromBlock, keyPrefix, address, label));
+}
+
+async function fetchLogsPaginatedInner(contractAddress, topics, fromBlock, keyPrefix, address, label) {
   // BUG FIX (2026-08-26): `checkpointStart` used to only be computed inside
   // the RPC-fallback branch below (§2) — the Blockscout branch (§1, tried
   // FIRST and normally the one that actually runs, since it succeeds
@@ -3092,6 +3152,7 @@ async function fetchLogsPaginated(contractAddress, topics, fromBlock, keyPrefix,
     } catch {} // progress bookkeeping only — the logs were already fetched successfully either way
     return logs;
   } catch (e) {
+    if (isPrivarRateLimitError(e)) markPrivarRateLimited();
     console.warn(`[${label}] scan(${topics[0]?.slice(2,10)}): Blockscout API unavailable (${e.message}), falling back to paginated RPC`);
   }
 
@@ -3126,6 +3187,7 @@ async function fetchLogsPaginated(contractAddress, topics, fromBlock, keyPrefix,
       const isRateLimit = msg.includes("rate limit") || msg.includes("too many requests") || msg.includes("request limit");
       if (isRateLimit && rateLimitRetries < 3) {
         rateLimitRetries++;
+        markPrivarRateLimited();
         console.info(`[${label}] scan(${topics[0]?.slice(2,10)}): rate limited, backing off (retry ${rateLimitRetries}/3)`);
         await sleep(1200 * rateLimitRetries); // backoff, same window/range — shrinking wouldn't help a rate limit
         continue;
@@ -4525,7 +4587,7 @@ function quarantineCorruptNotes(address) {
 }
 
 function useShieldedBalances(prices, address) {
-  const SAFE_BALS = { usdc:0, eurc:0, cbtc:0, totalUsd:0, rawUsdc:0n, rawEurc:0n, rawCbtc:0n, noteCount:0, quarantined:0 };
+  const SAFE_BALS = { usdc:0, eurc:0, cbtc:0, totalUsd:0, rawUsdc:0n, rawEurc:0n, rawCbtc:0n, lockedUsdc:0n, lockedEurc:0n, lockedCbtc:0n, noteCount:0, quarantined:0 };
   const [bals, setBals] = useState(SAFE_BALS);
   // Timestamp of the last successful on-chain reconciliation pass — shown
   // in the UI so "this balance is precise" is a verifiable fact the user
@@ -4553,6 +4615,22 @@ function useShieldedBalances(prices, address) {
       [CONTRACTS.EURC]:     0n,
       [CONTRACTS.cirBTC]:   0n,
     };
+    // UX FIX (2026-09): a note being spent is correctly LOCKED (excluded
+    // from `acc` below) the instant an operation starts — see
+    // lockNotesForOp's doc comment; this is deliberate, not a bug, and
+    // prevents the same note from being double-spent by a second op
+    // started before the first one confirms. But excluding it with no
+    // visible trace meant the balance could silently drop to $0.00 the
+    // moment a user's ONLY note for a token got locked (e.g. mid-Swap,
+    // right as the wallet's own confirmation prompt appears) — reading as
+    // "my funds just disappeared" rather than "temporarily reserved for
+    // the operation you just started". Tracked separately here so the UI
+    // can show it as pending instead of just omitting it.
+    const lockedAcc = {
+      [NATIVE_USDC]:        0n,
+      [CONTRACTS.EURC]:     0n,
+      [CONTRACTS.cirBTC]:   0n,
+    };
     // BUG FIX (2026-08-26): this loop used to sum EVERY note regardless of
     // `status`, including "sent" — the sender-side HISTORY COPY of an
     // output note that finalizeOp() deliberately keeps in the sender's own
@@ -4570,19 +4648,19 @@ function useShieldedBalances(prices, address) {
     // making the balance look unchanged. "locked" is excluded too, for the
     // same reason (mid-flight notes shouldn't count as available funds).
     for (const n of notes) {
-      if (n.status === "sent" || n.status === "locked") continue;
+      if (n.status === "sent") continue;
       const k = n.token?.toLowerCase?.();
       const match = Object.keys(acc).find(a => a.toLowerCase() === k);
-      if (match) {
-        try {
-          // Guard: old notes may have float amounts ("10.5") or corrupt values
-          const raw = n.amount;
-          const safe = raw == null ? 0n
-            : typeof raw === "bigint" ? raw
-            : BigInt(Math.round(Number(raw)));   // handles "10.5", "10000000", 0, etc.
-          acc[match] += safe;
-        } catch { /* skip corrupt note */ }
-      }
+      if (!match) continue;
+      try {
+        // Guard: old notes may have float amounts ("10.5") or corrupt values
+        const raw = n.amount;
+        const safe = raw == null ? 0n
+          : typeof raw === "bigint" ? raw
+          : BigInt(Math.round(Number(raw)));   // handles "10.5", "10000000", 0, etc.
+        if (n.status === "locked") lockedAcc[match] += safe; // tracked, not spendable — see lockedAcc's comment above
+        else acc[match] += safe;
+      } catch { /* skip corrupt note */ }
     }
     // Convert to display values — guard against BigInt overflow or zero-address tokens
     const usdc  = isFinite(Number(acc[NATIVE_USDC]))      ? Number(acc[NATIVE_USDC])      / 1e6 : 0;
@@ -4601,6 +4679,12 @@ function useShieldedBalances(prices, address) {
       rawUsdc:  acc[NATIVE_USDC],
       rawEurc:  acc[CONTRACTS.EURC],
       rawCbtc:  acc[CONTRACTS.cirBTC],
+      // UX FIX (2026-09) — see lockedAcc's declaration above. Lets the UI
+      // show "$X pending in <operation>" instead of a bare $0.00 while a
+      // note is locked mid-swap/send/withdraw/bridge.
+      lockedUsdc: lockedAcc[NATIVE_USDC],
+      lockedEurc: lockedAcc[CONTRACTS.EURC],
+      lockedCbtc: lockedAcc[CONTRACTS.cirBTC],
       noteCount: notes.length,
       quarantined: quarantinedNow + unbackedRemovedRef.current,
     });
@@ -4741,11 +4825,19 @@ function ShieldedWallet({ bals, onMax, tokenFilter, actionableFilter, compact = 
   const rawUsdc = bals.rawUsdc  ?? 0n;
   const rawEurc = bals.rawEurc  ?? 0n;
   const rawCbtc = bals.rawCbtc  ?? 0n;
+  // UX FIX (2026-09) — see useShieldedBalances' lockedAcc comment. A note
+  // being locked mid-operation is correct, safe behavior (prevents a
+  // double-spend of the same note), but silently made the balance read as
+  // a bare $0.00 with no indication why — indistinguishable from funds
+  // actually being lost. Surfaced here instead of hidden.
+  const lockedUsdc = Number(bals.lockedUsdc ?? 0n) / 1e6;
+  const lockedEurc = Number(bals.lockedEurc ?? 0n) / 1e6;
+  const lockedCbtc = Number(bals.lockedCbtc ?? 0n) / 1e8;
 
   const allTokens = [
-    { sym:"USDC",   val:usdc, raw:rawUsdc, dec:6, fmt:v=>"$"+v.toFixed(2),  color:"#00FFB0", usdVal:usdc },
-    { sym:"EURC",   val:eurc, raw:rawEurc, dec:6, fmt:v=>"€"+v.toFixed(2),  color:"#60a5fa", usdVal:eurc * 1.08 },
-    { sym:"cirBTC", val:cbtc, raw:rawCbtc, dec:8, fmt:v=>"₿"+v.toFixed(5),  color:"#F7931A", usdVal:0 },
+    { sym:"USDC",   val:usdc, raw:rawUsdc, dec:6, fmt:v=>"$"+v.toFixed(2),  color:"#00FFB0", usdVal:usdc, locked:lockedUsdc },
+    { sym:"EURC",   val:eurc, raw:rawEurc, dec:6, fmt:v=>"€"+v.toFixed(2),  color:"#60a5fa", usdVal:eurc * 1.08, locked:lockedEurc },
+    { sym:"cirBTC", val:cbtc, raw:rawCbtc, dec:8, fmt:v=>"₿"+v.toFixed(5),  color:"#F7931A", usdVal:0, locked:lockedCbtc },
   ];
 
   // USD total: only from actionable tokens (what this panel can spend)
@@ -4817,6 +4909,7 @@ function ShieldedWallet({ bals, onMax, tokenFilter, actionableFilter, compact = 
               }}>
               <div style={{ fontSize:8, color: isActionable ? "#64748b" : "#334155", fontFamily:"monospace", marginBottom:3 }}>{t.sym}</div>
               <div style={{ fontSize:11, color: isClickable ? t.color : "#334155", fontFamily:"monospace", fontWeight:700 }}>{t.fmt(t.val)}</div>
+              {t.locked > 0 && <div style={{ fontSize:6, color:"#f59e0b", fontFamily:"monospace", marginTop:2 }}>+{t.fmt(t.locked)} pending…</div>}
               {isClickable  && <div style={{ fontSize:7, color:"#4a7c5f", fontFamily:"monospace", marginTop:2 }}>tap → MAX</div>}
               {!isActionable && <div style={{ fontSize:6, color:"#475569", fontFamily:"monospace", marginTop:2 }}>not used here</div>}
             </button>
