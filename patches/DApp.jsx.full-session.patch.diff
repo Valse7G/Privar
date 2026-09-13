@@ -1,5 +1,5 @@
 --- /tmp/orig_DApp.jsx	2026-09-05 15:59:45.098029873 +0000
-+++ frontend/src/DApp.jsx	2026-09-13 14:45:09.780524393 +0000
++++ frontend/src/DApp.jsx	2026-09-13 20:01:09.814321523 +0000
 @@ -155,8 +155,18 @@
  
  // Read native USDC balance (gas token, 18 dec)
@@ -107,7 +107,25 @@
      }, 120_000);
      return () => { cancelled = true; clearInterval(id); };
    }, [account?.address, onArc, recomputeShielded, sendViewKeyTx, notify]);
-@@ -1777,9 +1826,30 @@
+@@ -1709,6 +1758,17 @@
+     tx24h:null, volumeUsdc24h:null, volumeEurc24h:null, volumeBtc24h:null,
+     feesUsdc24h:null, feesEurc24h:null, feesBtc24h:null,
+     snapshotCoverage: null, // ms of history actually available (< 24h until the window fills up)
++    // UX FIX (2026-09): several fields (protocolFeeBps/flatFeeUsdc in
++    // particular — see the Shield panel's fee preview) rendered "loading…"
++    // whenever they were still null, with NO fallback once they'd actually
++    // been tried and failed — so on a poll cycle where the eth_call for
++    // that ONE field failed (confirmed happening: "stats fetch: 16/21
++    // calls failed" in a user-supplied log), the UI showed an infinite
++    // spinner with no way to tell "still loading" apart from "gave up".
++    // pollCount lets a display distinguish the two: still 0-1 → genuinely
++    // still loading; 2+ and still null → this field just isn't available
++    // right now, show that honestly instead of pretending it's coming.
++    pollCount: 0,
+   });
+   const fetch = useCallback(async () => {
+     if (!onArc) return;
+@@ -1777,9 +1837,30 @@
          // Each entry wrapped individually too: a synchronous throw from any ONE
          // builder function (e.g. an undefined import) now only nulls that ONE call
          // instead of aborting calls.map() entirely and skipping every call after it.
@@ -141,7 +159,15 @@
        const v = (i) => results[i].status === "fulfilled" ? results[i].value : null;
        const [
          su, se, sb, leaf, vaultPaused, tUsdc, tEurc, tBtc,
-@@ -2535,11 +2605,31 @@
+@@ -1832,6 +1913,7 @@
+           bridgeFeeBps:   bridgeFeeBpsRes  != null ? Number(decodeUint256(bridgeFeeBpsRes))  : prev.bridgeFeeBps,
+           flatFeeUsdc:    flatFeeUsdcRes   != null ? Number(decodeUint256(flatFeeUsdcRes))    : prev.flatFeeUsdc,
+           treasury:       treasuryRes      != null && treasuryRes !== "0x" ? "0x" + treasuryRes.slice(-40) : prev.treasury,
++          pollCount:      (prev.pollCount || 0) + 1,
+         };
+ 
+         // Record + compute 24h deltas from local snapshots (see takeStatsSnapshot/
+@@ -2535,11 +2617,31 @@
  // method we can trust to behave the same on TokenPocket, Rabby, MetaMask,
  // or anything else — a single deterministic codepath, no branching, no
  // possibility of two devices silently taking different paths.
@@ -174,7 +200,7 @@
      const sig = await personalSign(address, BACKUP_SIG_MESSAGE(address));
      try { localStorage.setItem(backupSigStorageKey(address), sig); } catch {}
      return sig;
-@@ -2604,8 +2694,8 @@
+@@ -2604,8 +2706,8 @@
  // Ensures a spendingKey is derivable (i.e. the backup signature is cached),
  // prompting the SAME gasless personal_sign as CloudVault if not yet cached —
  // same signature, distinct derived key (separate HKDF info label above).
@@ -185,7 +211,7 @@
    return deriveSpendingKey(address);
  }
  
-@@ -2622,7 +2712,7 @@
+@@ -2622,7 +2724,7 @@
    if (!CONTRACTS.PrivarSpendKeyRegistry || CONTRACTS.PrivarSpendKeyRegistry === "0x0000000000000000000000000000000000000000") return;
    if (!address) return;
  
@@ -194,7 +220,7 @@
    if (secret == null) return; // signature not available/cached yet — retried next connect, same as view key
  
    let alreadyRegistered = false;
-@@ -2958,6 +3048,55 @@
+@@ -2958,6 +3060,55 @@
    };
  }
  
@@ -250,7 +276,7 @@
  async function fetchLogsViaBlockscout(contractAddress, topics, fromBlock) {
    const params = new URLSearchParams({
      module: "logs", action: "getLogs",
-@@ -3004,6 +3143,10 @@
+@@ -3004,6 +3155,10 @@
  // reconnects) accumulate steadily and visibly instead of one call spending
  // minutes retrying in silence, which looks indistinguishable from "stuck".
  async function fetchLogsPaginated(contractAddress, topics, fromBlock, keyPrefix, address, label) {
@@ -261,7 +287,7 @@
    // BUG FIX (2026-08-26): `checkpointStart` used to only be computed inside
    // the RPC-fallback branch below (§2) — the Blockscout branch (§1, tried
    // FIRST and normally the one that actually runs, since it succeeds
-@@ -3037,6 +3180,7 @@
+@@ -3037,6 +3192,7 @@
      } catch {} // progress bookkeeping only — the logs were already fetched successfully either way
      return logs;
    } catch (e) {
@@ -269,7 +295,7 @@
      console.warn(`[${label}] scan(${topics[0]?.slice(2,10)}): Blockscout API unavailable (${e.message}), falling back to paginated RPC`);
    }
  
-@@ -3071,6 +3215,7 @@
+@@ -3071,6 +3227,7 @@
        const isRateLimit = msg.includes("rate limit") || msg.includes("too many requests") || msg.includes("request limit");
        if (isRateLimit && rateLimitRetries < 3) {
          rateLimitRetries++;
@@ -277,7 +303,7 @@
          console.info(`[${label}] scan(${topics[0]?.slice(2,10)}): rate limited, backing off (retry ${rateLimitRetries}/3)`);
          await sleep(1200 * rateLimitRetries); // backoff, same window/range — shrinking wouldn't help a rate limit
          continue;
-@@ -3561,6 +3706,23 @@
+@@ -3561,6 +3718,23 @@
  // the mempool, never for one that's merely slow to confirm.
  const OP_ABANDON_MS = 3 * 60 * 1000; // 3 min
  
@@ -301,7 +327,7 @@
  function newOpId() {
    return "op_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 10);
  }
-@@ -3771,17 +3933,36 @@
+@@ -3771,17 +3945,36 @@
  }
  
  
@@ -348,7 +374,7 @@
  };
  
  // ── Token decimals/symbol — single source of truth for tx-history formatting ──
-@@ -3824,6 +4005,43 @@
+@@ -3824,6 +4017,43 @@
  // ── Cross-device tx history: rebuild from on-chain events ─────────────────────
  // Called on wallet connect. Fetches PrivarShieldVault + PrivarStaking events for this address,
  // merges with localStorage cache, deduplicates by tx hash, returns sorted array.
@@ -392,7 +418,7 @@
  async function buildTxHistoryFromChain(address) {
    if (!address) return [];
    const MAX_BLOCKS = 5_000_000;
-@@ -3845,9 +4063,25 @@
+@@ -3845,9 +4075,25 @@
      const sv = CONTRACTS.PrivarShieldVault, st = CONTRACTS.PrivarStaking;
      const depLogs      = await fetchLogsPaginated(sv, [EV.Deposited, null, addrTopic], from, "privar_txhist_dep", address, "Privar tx-history");
      const wdLogs        = await fetchLogsPaginated(sv, [EV.Withdrawn, null, null, addrTopic], from, "privar_txhist_wd", address, "Privar tx-history");
@@ -421,7 +447,7 @@
      const stakeLogs     = st ? await fetchLogsPaginated(st, [EV.Staked, addrTopic], from, "privar_txhist_stk", address, "Privar tx-history") : [];
      const unstakeLogs   = st ? await fetchLogsPaginated(st, [EV.Unstaked, addrTopic], from, "privar_txhist_unstk", address, "Privar tx-history") : [];
      const claimLogs     = st ? await fetchLogsPaginated(st, [EV.RewardsClaimed, addrTopic], from, "privar_txhist_clm", address, "Privar tx-history") : [];
-@@ -3862,7 +4096,7 @@
+@@ -3862,7 +4108,7 @@
      // every DISTINCT block referenced across all 8 event types (small
      // concurrency to stay RPC-friendly, matches this function's existing
      // "fire-and-forget, not time-critical" posture).
@@ -430,7 +456,7 @@
      const uniqueBlocks = [...new Set(allLogs.map(l => l.blockNumber).filter(Boolean))];
      const blockTsMap = new Map();
      const BLOCK_TS_CONCURRENCY = 5;
-@@ -3901,21 +4135,10 @@
+@@ -3901,21 +4147,10 @@
        const sym = symbolForToken(tok);
        entries.push({ hash:log.transactionHash, label:"Withdraw", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:formatToken(amount, decimalsForToken(tok), 2)+" "+sym, blockHex:log.blockNumber });
      }
@@ -456,7 +482,7 @@
      for (const log of stakeLogs) {
        const data = (log.data||"0x").replace("0x","");
        const amount = data.length >= 64 ? u256(data,0) : 0n;
-@@ -3939,12 +4162,15 @@
+@@ -3939,12 +4174,15 @@
      const seen = new Set();
      const unique = entries.filter(e => { if (!e.hash || seen.has(e.hash)) return false; seen.add(e.hash); return true; });
  
@@ -478,7 +504,7 @@
  
      return unique.slice(0, 200); // cap at 200 entries
    } catch(e) {
-@@ -4042,23 +4268,28 @@
+@@ -4042,23 +4280,28 @@
  // number of "getNotes/saveNotes" round trips.
  //
  // A note is:
@@ -518,7 +544,7 @@
  async function reconcileAndVerifyNotes(address) {
    if (!address) return { spent: 0, unbacked: 0 };
    const notes = getNotes(address);
-@@ -4068,17 +4299,73 @@
+@@ -4068,17 +4311,73 @@
      const current = Number(BigInt(await rpcCallWithBackoff("eth_blockNumber", [])));
      const fromBlock = Math.max(0, current - 5_000_000);
  
@@ -603,7 +629,7 @@
  
      const spentNullifiers = new Set();
      if (Array.isArray(withdrawnLogs)) {
-@@ -4087,6 +4374,27 @@
+@@ -4087,6 +4386,27 @@
          if (n) spentNullifiers.add(n.toLowerCase());
        }
      }
@@ -631,7 +657,7 @@
      const depositedCommitments = new Set();
      let depositedScanOk = false;
      if (Array.isArray(depositedLogs)) {
-@@ -4307,7 +4615,7 @@
+@@ -4307,7 +4627,7 @@
  }
  
  function useShieldedBalances(prices, address) {
@@ -640,7 +666,7 @@
    const [bals, setBals] = useState(SAFE_BALS);
    // Timestamp of the last successful on-chain reconciliation pass — shown
    // in the UI so "this balance is precise" is a verifiable fact the user
-@@ -4335,6 +4643,22 @@
+@@ -4335,6 +4655,22 @@
        [CONTRACTS.EURC]:     0n,
        [CONTRACTS.cirBTC]:   0n,
      };
@@ -663,7 +689,7 @@
      // BUG FIX (2026-08-26): this loop used to sum EVERY note regardless of
      // `status`, including "sent" — the sender-side HISTORY COPY of an
      // output note that finalizeOp() deliberately keeps in the sender's own
-@@ -4352,19 +4676,19 @@
+@@ -4352,19 +4688,19 @@
      // making the balance look unchanged. "locked" is excluded too, for the
      // same reason (mid-flight notes shouldn't count as available funds).
      for (const n of notes) {
@@ -694,7 +720,7 @@
      }
      // Convert to display values — guard against BigInt overflow or zero-address tokens
      const usdc  = isFinite(Number(acc[NATIVE_USDC]))      ? Number(acc[NATIVE_USDC])      / 1e6 : 0;
-@@ -4383,6 +4707,12 @@
+@@ -4383,6 +4719,12 @@
        rawUsdc:  acc[NATIVE_USDC],
        rawEurc:  acc[CONTRACTS.EURC],
        rawCbtc:  acc[CONTRACTS.cirBTC],
@@ -707,7 +733,7 @@
        noteCount: notes.length,
        quarantined: quarantinedNow + unbackedRemovedRef.current,
      });
-@@ -4408,9 +4738,17 @@
+@@ -4408,9 +4750,17 @@
      const runChecks = () => {
        // Resolve any swap/send/withdraw/bridge left dangling by a closed
        // tab, a timeout, or a dropped connection — see watchPendingOps()'s
@@ -728,7 +754,7 @@
        watchPendingOps(address).catch(() => {});
        reconcileAndVerifyNotes(address).then(({ unbacked }) => {
          // OVERWRITE, not accumulate: this ref should reflect "how many were
-@@ -4515,11 +4853,19 @@
+@@ -4515,11 +4865,19 @@
    const rawUsdc = bals.rawUsdc  ?? 0n;
    const rawEurc = bals.rawEurc  ?? 0n;
    const rawCbtc = bals.rawCbtc  ?? 0n;
@@ -751,7 +777,7 @@
    ];
  
    // USD total: only from actionable tokens (what this panel can spend)
-@@ -4591,6 +4937,7 @@
+@@ -4591,6 +4949,7 @@
                }}>
                <div style={{ fontSize:8, color: isActionable ? "#64748b" : "#334155", fontFamily:"monospace", marginBottom:3 }}>{t.sym}</div>
                <div style={{ fontSize:11, color: isClickable ? t.color : "#334155", fontFamily:"monospace", fontWeight:700 }}>{t.fmt(t.val)}</div>
@@ -759,7 +785,7 @@
                {isClickable  && <div style={{ fontSize:7, color:"#4a7c5f", fontFamily:"monospace", marginTop:2 }}>tap → MAX</div>}
                {!isActionable && <div style={{ fontSize:6, color:"#475569", fontFamily:"monospace", marginTop:2 }}>not used here</div>}
              </button>
-@@ -4611,6 +4958,7 @@
+@@ -4611,6 +4970,7 @@
      if (!onArc) { notify(label, "Switch to Arc Testnet first", "error"); return false; }
      if (!account?.address) { notify(label, "Wallet not connected", "error"); return false; }
      notify(label, description + " — confirm in wallet...", "pending");
@@ -767,7 +793,7 @@
      try {
        const tx = await buildTx(account.address);
        const hash = await sendTransaction(account.address, tx.to, tx.value || "0x0", tx.data || "0x");
-@@ -4623,7 +4971,21 @@
+@@ -4623,7 +4983,21 @@
        const receipt = await waitForReceipt(hash);
        if (Number(receipt.status) === 1) {  // FIX F-11: handles both "0x1" (string) and 1 (int) from different RPC implementations
          notify(`${label} ✓`, "Transaction confirmed on Arc Testnet", "success", hash);
@@ -790,7 +816,7 @@
          // Optional hook — lets a caller reconcile a pre-tx-predicted note
          // (e.g. swap()'s noteAmountOut, computed from an off-chain quote +
          // client-mirrored fee math) against the AUTHORITATIVE value the
-@@ -4649,6 +5011,8 @@
+@@ -4649,6 +5023,8 @@
        const msg = e.code === 4001 ? "Rejected by user" : e.message || "Transaction failed";
        notify(`${label} Failed`, msg, "error");
        return false;
@@ -799,7 +825,7 @@
      }
    }, [account, onArc, notify, refreshBalance, onSuccess]);
  
-@@ -4680,6 +5044,14 @@
+@@ -4680,6 +5056,14 @@
    const submit = async () => {
      const parsed = parseFloat(amount);
      if (!amount || isNaN(parsed) || parsed <= 0) return;
@@ -814,7 +840,7 @@
      setLoading(true);
  
      // Block deposit of tokens not deployed on Arc Testnet
-@@ -4788,7 +5160,7 @@
+@@ -4788,7 +5172,7 @@
      // blinding) must embed the actual on-chain-credited amount.
      // spendingKey is deterministically re-derivable from the same cached
      // wallet signature already used for CloudVault — see ensureSpendKeyReady.
@@ -823,7 +849,7 @@
      let commitment, noteSecret, noteBlinding, notePubkeyOwner, thirdPartyBlinding;
      if (isThirdPartyDeposit) {
        // §8.4 point 4 — commitment built against the RECIPIENT's own
-@@ -4830,7 +5202,7 @@
+@@ -4830,7 +5214,7 @@
      // in that case; the recipient gets their own encrypted note payload
      // separately, relayed via ViewKeyRegistry AFTER the deposit succeeds
      // (see below), same transport sendShielded() already uses.
@@ -832,7 +858,38 @@
      const journalEntry = isThirdPartyDeposit
        ? null
        : await encryptJournalBlob(account?.address, { ts: Date.now(), ops: [{ t: 0, commitment, amount: netAmount.toString(), token: token.address }] });
-@@ -5150,6 +5522,10 @@
+@@ -5050,23 +5434,27 @@
+             ? "Recipient must have opened Privar at least once (registered spend key) — otherwise these funds can't be spent by anyone."
+             : null}/>
+         {(() => {
++          // See pollCount's declaration — distinguishes "still loading"
++          // from "tried, currently unavailable" instead of showing an
++          // infinite spinner for a field that simply failed this poll.
++          const stillLoading = (ps?.pollCount || 0) < 2;
+           if (token.isNative) {
+             // Native USDC: % fee, naturally USDC-denominated
+             const bps = ps?.protocolFeeBps;
+-            const rateLabel = bps == null ? "loading…" : bps === 0 ? "0.00%" : `${(bps/100).toFixed(2)}%`;
++            const rateLabel = bps != null ? (bps === 0 ? "0.00%" : `${(bps/100).toFixed(2)}%`) : stillLoading ? "loading…" : "—";
+             let feeAmountLabel = rateLabel;
+             if (bps != null && amount && !isNaN(parseFloat(amount))) {
+               const amountUnits = BigInt(Math.round(parseFloat(amount) * 1e6));
+               const { fee } = previewDepositFee(amountUnits, bps, true, 0n);
+               feeAmountLabel = fee > 0n ? `${formatToken(fee, token.decimals)} ${token.symbol}` : "Free";
+             }
+-            return <IG items={[["Protocol Fee", feeAmountLabel, bps==null ? "loading…" : `${rateLabel} rate`], ["Gas","USDC","Arc Testnet"], ["Privacy","ZK proof","On-chain"]]}/>;
++            return <IG items={[["Protocol Fee", feeAmountLabel, bps==null ? rateLabel : `${rateLabel} rate`], ["Gas","USDC","Arc Testnet"], ["Privacy","ZK proof","On-chain"]]}/>;
+           }
+           // EURC/cirBTC (v2.8): flat fee, paid SEPARATELY in USDC — never a % of the
+           // deposited token, since there's no on-chain price feed to convert one to
+           // the other. The deposited amount itself is always credited in full.
+           const flat = ps?.flatFeeUsdc;
+-          const feeLabel = flat == null ? "loading…" : Number(flat) === 0 ? "Free" : `${formatToken(flat, 6)} USDC`;
++          const feeLabel = flat != null ? (Number(flat) === 0 ? "Free" : `${formatToken(flat, 6)} USDC`) : stillLoading ? "loading…" : "—";
+           return <IG items={[["Protocol Fee", feeLabel, "paid in USDC, separate"], ["Gas","USDC","Arc Testnet"], ["Privacy","ZK proof","On-chain"]]}/>;
+         })()}
+       </div>
+@@ -5150,6 +5538,10 @@
      if (!amount || !q || !onArc) return;
      if (fr === to) { notify("Swap","Sélectionnez deux tokens différents.","error"); return; }
      if (tkFr.bal <= 0) { notify("Swap",`Insufficient shielded ${fr} balance.`,"error"); return; }
@@ -843,7 +900,7 @@
  
      // LIQUIDITY ENGINE: privateSwapWithRouter() lets the frontend pick ANY
      // whitelisted adapter per call, instead of being locked into the
-@@ -5434,7 +5810,7 @@
+@@ -5434,7 +5826,7 @@
      // noteAmountOut (fee-adjusted), NOT outAmountBig — must embed the exact
      // amount actually credited on-chain, same reasoning as deposit()'s
      // commitment being computed after netAmount, not before.
@@ -852,7 +909,7 @@
      let commitmentOut, outNoteSecret, outNoteBlinding, outNotePubkeyOwner;
      if (swapSpendingKey != null) {
        const built = createOwnedNote({ spendingKey: swapSpendingKey, amount: noteAmountOut, token: tkTo.addr });
-@@ -5447,7 +5823,7 @@
+@@ -5447,7 +5839,7 @@
      // v3.4 — embed the SPEND + ADD(s) journal ops directly in this SAME swap
      // transaction instead of 2-3 separate follow-up calls. See
      // PrivarShieldVault.sol's NoteJournal doc comment.
@@ -861,7 +918,7 @@
      // The change note's base MUST be the smaller of (a) what the local note
      // claims and (b) the real on-chain balance just read above (`realBal`,
      // when available) — never note.amount alone. If the clamp above fired
-@@ -5669,6 +6045,10 @@
+@@ -5669,6 +6061,10 @@
  
    const sendShielded = async () => {
      if (!amount || Number(amount) <= 0) return;
@@ -872,7 +929,7 @@
      const dest = to.trim();
      if (isArcName) { notify("Send", "ARC Name Service is not live yet — enter a 0x address directly.", "error"); return; }
      if (!/^0x[0-9a-fA-F]{40}$/.test(dest)) { notify("Send", "Invalid address format", "error"); return; }
-@@ -5718,7 +6098,7 @@
+@@ -5718,7 +6114,7 @@
      // retroactively — they remain spendable exactly as before, just without
      // the new guarantee.
      const isSelfSend = dest.toLowerCase() === account?.address?.toLowerCase?.();
@@ -881,7 +938,7 @@
  
      const nullifierIn = note.secret
        ? deriveNullifierForSpend(note.secret, note.commitment)
-@@ -5840,7 +6220,7 @@
+@@ -5840,7 +6236,7 @@
      // and relayed via ViewKeyRegistry in a second tx below — unrelated
      // transport, unrelated key). See PrivarShieldVault.sol's NoteJournal
      // doc comment for why embedding beats a follow-up broadcast.
@@ -890,7 +947,7 @@
      const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
      // Change always stays with the sender — always self-owned, so always
      // deterministically derivable when spendingKey is available (§7.6).
-@@ -5956,6 +6336,10 @@
+@@ -5956,6 +6352,10 @@
  
    const sendPublic = async () => {
      if (!amount) return;
@@ -901,7 +958,7 @@
      const dest = to.trim();
      if (isArcName) { notify("Send", "ARC Name Service is not live yet — enter a 0x address directly.", "error"); return; }
      if (!/^0x[0-9a-fA-F]{40}$/.test(dest)) { notify("Send", "Invalid address format", "error"); return; }
-@@ -6040,6 +6424,10 @@
+@@ -6040,6 +6440,10 @@
  
    const withdraw = async () => {
      if (!amount || Number(amount) <= 0) return;
@@ -912,7 +969,7 @@
      const target = dest || account?.address;
      if (!target || !/^0x[0-9a-fA-F]{40}$/.test(target)) {
        notify("Withdraw", "Invalid destination address", "error"); return;
-@@ -6131,7 +6519,7 @@
+@@ -6131,7 +6535,7 @@
      // §7.6 — change stays with the sender regardless of `target` (withdraw
      // can pay out to any recipient), so it's always self-owned/deterministic
      // when spendingKey is available.
@@ -921,7 +978,7 @@
  
      const feeDesc = withdrawFee > 0n
        ? ` (protocol fee: ${formatToken(withdrawFee, 6)} USDC)`
-@@ -6310,11 +6698,23 @@
+@@ -6310,11 +6714,23 @@
            ⚠ No shielded notes found. Use the Shield panel to deposit first.
          </div>
        )}
@@ -950,7 +1007,7 @@
  
        <ArcBtn
          label={!onArc?"⚠ SWITCH TO ARC TESTNET":`⟶ WITHDRAW ${tk.sym} FROM SHIELD`}
-@@ -6381,6 +6781,10 @@
+@@ -6381,6 +6797,10 @@
    const bridge = async () => {
      if (!amount || Number(amount) <= 0 || !onArc) return;
      if (tk.bal <= 0) { notify("Bridge", `Insufficient shielded ${token} balance.`, "error"); return; }
@@ -961,7 +1018,7 @@
      if (!isReachable(ch)) {
        notify("Bridge", `${ch.name} isn't (yet) reachable via LI.FI from Arc Testnet.`, "error");
        return;
-@@ -6472,7 +6876,7 @@
+@@ -6472,7 +6892,7 @@
      // SAME bridge transaction, forwarded through LiFiPrivacyBridge to
      // ShieldVault.withdraw() and emitted there. See PrivarShieldVault.sol's
      // NoteJournal doc comment.
@@ -970,7 +1027,7 @@
      const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
      // §7.6 — bridge nullifier + change note, same pattern as withdraw()/swap():
      // nullifier deterministic from the spent note when it carries a secret;
-@@ -6481,7 +6885,7 @@
+@@ -6481,7 +6901,7 @@
      const bridgeNullifier = note.secret
        ? deriveNullifierForSpend(note.secret, note.commitment)
        : randomBytes32();

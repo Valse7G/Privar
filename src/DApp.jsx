@@ -1758,6 +1758,17 @@ function useProtocolStats(onArc) {
     tx24h:null, volumeUsdc24h:null, volumeEurc24h:null, volumeBtc24h:null,
     feesUsdc24h:null, feesEurc24h:null, feesBtc24h:null,
     snapshotCoverage: null, // ms of history actually available (< 24h until the window fills up)
+    // UX FIX (2026-09): several fields (protocolFeeBps/flatFeeUsdc in
+    // particular — see the Shield panel's fee preview) rendered "loading…"
+    // whenever they were still null, with NO fallback once they'd actually
+    // been tried and failed — so on a poll cycle where the eth_call for
+    // that ONE field failed (confirmed happening: "stats fetch: 16/21
+    // calls failed" in a user-supplied log), the UI showed an infinite
+    // spinner with no way to tell "still loading" apart from "gave up".
+    // pollCount lets a display distinguish the two: still 0-1 → genuinely
+    // still loading; 2+ and still null → this field just isn't available
+    // right now, show that honestly instead of pretending it's coming.
+    pollCount: 0,
   });
   const fetch = useCallback(async () => {
     if (!onArc) return;
@@ -1902,6 +1913,7 @@ function useProtocolStats(onArc) {
           bridgeFeeBps:   bridgeFeeBpsRes  != null ? Number(decodeUint256(bridgeFeeBpsRes))  : prev.bridgeFeeBps,
           flatFeeUsdc:    flatFeeUsdcRes   != null ? Number(decodeUint256(flatFeeUsdcRes))    : prev.flatFeeUsdc,
           treasury:       treasuryRes      != null && treasuryRes !== "0x" ? "0x" + treasuryRes.slice(-40) : prev.treasury,
+          pollCount:      (prev.pollCount || 0) + 1,
         };
 
         // Record + compute 24h deltas from local snapshots (see takeStatsSnapshot/
@@ -5422,23 +5434,27 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
             ? "Recipient must have opened Privar at least once (registered spend key) — otherwise these funds can't be spent by anyone."
             : null}/>
         {(() => {
+          // See pollCount's declaration — distinguishes "still loading"
+          // from "tried, currently unavailable" instead of showing an
+          // infinite spinner for a field that simply failed this poll.
+          const stillLoading = (ps?.pollCount || 0) < 2;
           if (token.isNative) {
             // Native USDC: % fee, naturally USDC-denominated
             const bps = ps?.protocolFeeBps;
-            const rateLabel = bps == null ? "loading…" : bps === 0 ? "0.00%" : `${(bps/100).toFixed(2)}%`;
+            const rateLabel = bps != null ? (bps === 0 ? "0.00%" : `${(bps/100).toFixed(2)}%`) : stillLoading ? "loading…" : "—";
             let feeAmountLabel = rateLabel;
             if (bps != null && amount && !isNaN(parseFloat(amount))) {
               const amountUnits = BigInt(Math.round(parseFloat(amount) * 1e6));
               const { fee } = previewDepositFee(amountUnits, bps, true, 0n);
               feeAmountLabel = fee > 0n ? `${formatToken(fee, token.decimals)} ${token.symbol}` : "Free";
             }
-            return <IG items={[["Protocol Fee", feeAmountLabel, bps==null ? "loading…" : `${rateLabel} rate`], ["Gas","USDC","Arc Testnet"], ["Privacy","ZK proof","On-chain"]]}/>;
+            return <IG items={[["Protocol Fee", feeAmountLabel, bps==null ? rateLabel : `${rateLabel} rate`], ["Gas","USDC","Arc Testnet"], ["Privacy","ZK proof","On-chain"]]}/>;
           }
           // EURC/cirBTC (v2.8): flat fee, paid SEPARATELY in USDC — never a % of the
           // deposited token, since there's no on-chain price feed to convert one to
           // the other. The deposited amount itself is always credited in full.
           const flat = ps?.flatFeeUsdc;
-          const feeLabel = flat == null ? "loading…" : Number(flat) === 0 ? "Free" : `${formatToken(flat, 6)} USDC`;
+          const feeLabel = flat != null ? (Number(flat) === 0 ? "Free" : `${formatToken(flat, 6)} USDC`) : stillLoading ? "loading…" : "—";
           return <IG items={[["Protocol Fee", feeLabel, "paid in USDC, separate"], ["Gas","USDC","Arc Testnet"], ["Privacy","ZK proof","On-chain"]]}/>;
         })()}
       </div>
