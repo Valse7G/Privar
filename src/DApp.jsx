@@ -1372,7 +1372,7 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
     let cancelled = false;
     (async () => {
       migrateCloudSyncKeyScheme(account.address);
-      await ensureSelfBackupKeyReady(account.address).catch(() => {});
+      await ensureSelfBackupKeyReady(account.address, notify).catch(() => {});
       if (cancelled) return;
       scanStealthNotes(account.address, recomputeShielded).catch(() => {});
       scanNoteRelay(account.address, recomputeShielded).catch(() => {}); // §7.5 — address-free counterpart
@@ -2570,11 +2570,31 @@ function getCachedBackupSignature(address) {
 // method we can trust to behave the same on TokenPocket, Rabby, MetaMask,
 // or anything else — a single deterministic codepath, no branching, no
 // possibility of two devices silently taking different paths.
-async function ensureSelfBackupKeyReady(address) {
+// CONCRETE FIX (2026-09): confirmed with the user that Shield sometimes
+// shows a wallet confirmation, gets approved, and then "nothing happens" —
+// no on-chain transaction. Root cause: this function's own personal_sign
+// prompt can fire IN THE MIDDLE of Shield/Swap/Send/Withdraw/Bridge's
+// submit() (via ensureSpendKeyReady, called after the fee preview but
+// BEFORE the deposit's own confirmation), whenever the connect-time
+// attempt (see the useEffect keyed on account?.address) hasn't finished
+// caching a signature yet. That personal_sign prompt looks, on most
+// mobile wallets, like just another generic "confirm" notification —
+// visually indistinguishable from the REAL transaction-confirmation
+// prompt that still needs to appear right after it. A user who approves
+// the signature and assumes THAT was "the transaction" won't be watching
+// for the second, real prompt — and if they navigate away, or the
+// wallet's webview drops focus during the gap between the two, the actual
+// eth_sendTransaction never gets sent. Optional `notify` param lets every
+// caller that has one in scope (all 5 panels) surface an explicit,
+// distinct message before this fires, so the two prompts are never
+// mistaken for each other. Safe no-op for callers without a notify
+// (background resyncs) — they just don't show the message.
+async function ensureSelfBackupKeyReady(address, notify) {
   if (!address || !CONTRACTS.PrivarCloudVault) return null; // feature not deployed on this network — no-op
   const cached = getCachedBackupSignature(address);
   if (cached) return cached;
   try {
+    notify?.("Wallet Setup", "One-time signature request — this is NOT your transaction yet. Approve it, then a separate confirmation for your actual transaction will follow.", "pending");
     const sig = await personalSign(address, BACKUP_SIG_MESSAGE(address));
     try { localStorage.setItem(backupSigStorageKey(address), sig); } catch {}
     return sig;
@@ -2639,8 +2659,8 @@ async function deriveSpendingKey(address) {
 // Ensures a spendingKey is derivable (i.e. the backup signature is cached),
 // prompting the SAME gasless personal_sign as CloudVault if not yet cached —
 // same signature, distinct derived key (separate HKDF info label above).
-async function ensureSpendKeyReady(address) {
-  await ensureSelfBackupKeyReady(address);
+async function ensureSpendKeyReady(address, notify) {
+  await ensureSelfBackupKeyReady(address, notify);
   return deriveSpendingKey(address);
 }
 
@@ -2657,7 +2677,7 @@ async function ensureSpendKeyRegistered(address, sendRealTx, notify) {
   if (!CONTRACTS.PrivarSpendKeyRegistry || CONTRACTS.PrivarSpendKeyRegistry === "0x0000000000000000000000000000000000000000") return;
   if (!address) return;
 
-  const secret = await ensureSpendKeyReady(address);
+  const secret = await ensureSpendKeyReady(address, notify);
   if (secret == null) return; // signature not available/cached yet — retried next connect, same as view key
 
   let alreadyRegistered = false;
@@ -5005,7 +5025,7 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
     // blinding) must embed the actual on-chain-credited amount.
     // spendingKey is deterministically re-derivable from the same cached
     // wallet signature already used for CloudVault — see ensureSpendKeyReady.
-    const spendingKey = isThirdPartyDeposit ? null : await ensureSpendKeyReady(account?.address);
+    const spendingKey = isThirdPartyDeposit ? null : await ensureSpendKeyReady(account?.address, notify);
     let commitment, noteSecret, noteBlinding, notePubkeyOwner, thirdPartyBlinding;
     if (isThirdPartyDeposit) {
       // §8.4 point 4 — commitment built against the RECIPIENT's own
@@ -5047,7 +5067,7 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
     // in that case; the recipient gets their own encrypted note payload
     // separately, relayed via ViewKeyRegistry AFTER the deposit succeeds
     // (see below), same transport sendShielded() already uses.
-    await ensureSelfBackupKeyReady(account?.address);
+    await ensureSelfBackupKeyReady(account?.address, notify);
     const journalEntry = isThirdPartyDeposit
       ? null
       : await encryptJournalBlob(account?.address, { ts: Date.now(), ops: [{ t: 0, commitment, amount: netAmount.toString(), token: token.address }] });
@@ -5655,7 +5675,7 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     // noteAmountOut (fee-adjusted), NOT outAmountBig — must embed the exact
     // amount actually credited on-chain, same reasoning as deposit()'s
     // commitment being computed after netAmount, not before.
-    const swapSpendingKey = await ensureSpendKeyReady(account?.address);
+    const swapSpendingKey = await ensureSpendKeyReady(account?.address, notify);
     let commitmentOut, outNoteSecret, outNoteBlinding, outNotePubkeyOwner;
     if (swapSpendingKey != null) {
       const built = createOwnedNote({ spendingKey: swapSpendingKey, amount: noteAmountOut, token: tkTo.addr });
@@ -5668,7 +5688,7 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     // v3.4 — embed the SPEND + ADD(s) journal ops directly in this SAME swap
     // transaction instead of 2-3 separate follow-up calls. See
     // PrivarShieldVault.sol's NoteJournal doc comment.
-    await ensureSelfBackupKeyReady(account?.address);
+    await ensureSelfBackupKeyReady(account?.address, notify);
     // The change note's base MUST be the smaller of (a) what the local note
     // claims and (b) the real on-chain balance just read above (`realBal`,
     // when available) — never note.amount alone. If the clamp above fired
@@ -5943,7 +5963,7 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     // retroactively — they remain spendable exactly as before, just without
     // the new guarantee.
     const isSelfSend = dest.toLowerCase() === account?.address?.toLowerCase?.();
-    const spendingKey = await ensureSpendKeyReady(account?.address);
+    const spendingKey = await ensureSpendKeyReady(account?.address, notify);
 
     const nullifierIn = note.secret
       ? deriveNullifierForSpend(note.secret, note.commitment)
@@ -6065,7 +6085,7 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     // and relayed via ViewKeyRegistry in a second tx below — unrelated
     // transport, unrelated key). See PrivarShieldVault.sol's NoteJournal
     // doc comment for why embedding beats a follow-up broadcast.
-    await ensureSelfBackupKeyReady(account?.address);
+    await ensureSelfBackupKeyReady(account?.address, notify);
     const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
     // Change always stays with the sender — always self-owned, so always
     // deterministically derivable when spendingKey is available (§7.6).
@@ -6364,7 +6384,7 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
     // §7.6 — change stays with the sender regardless of `target` (withdraw
     // can pay out to any recipient), so it's always self-owned/deterministic
     // when spendingKey is available.
-    const withdrawSpendingKey = await ensureSpendKeyReady(account?.address);
+    const withdrawSpendingKey = await ensureSpendKeyReady(account?.address, notify);
 
     const feeDesc = withdrawFee > 0n
       ? ` (protocol fee: ${formatToken(withdrawFee, 6)} USDC)`
@@ -6709,7 +6729,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
     // SAME bridge transaction, forwarded through LiFiPrivacyBridge to
     // ShieldVault.withdraw() and emitted there. See PrivarShieldVault.sol's
     // NoteJournal doc comment.
-    await ensureSelfBackupKeyReady(account?.address);
+    await ensureSelfBackupKeyReady(account?.address, notify);
     const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
     // §7.6 — bridge nullifier + change note, same pattern as withdraw()/swap():
     // nullifier deterministic from the spent note when it carries a secret;
@@ -6718,7 +6738,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
     const bridgeNullifier = note.secret
       ? deriveNullifierForSpend(note.secret, note.commitment)
       : randomBytes32();
-    const bridgeSpendingKey = await ensureSpendKeyReady(account?.address);
+    const bridgeSpendingKey = await ensureSpendKeyReady(account?.address, notify);
     let changeCommitment = null, changeNoteSecret, changeNoteBlinding, changeNotePubkeyOwner;
     if (remaining > 0n) {
       if (bridgeSpendingKey != null) {
