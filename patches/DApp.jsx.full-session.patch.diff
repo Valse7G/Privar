@@ -1,5 +1,5 @@
 --- /tmp/orig_DApp.jsx	2026-09-05 15:59:45.098029873 +0000
-+++ frontend/src/DApp.jsx	2026-09-13 09:15:23.967788220 +0000
++++ frontend/src/DApp.jsx	2026-09-13 14:45:09.780524393 +0000
 @@ -155,8 +155,18 @@
  
  // Read native USDC balance (gas token, 18 dec)
@@ -767,7 +767,30 @@
      try {
        const tx = await buildTx(account.address);
        const hash = await sendTransaction(account.address, tx.to, tx.value || "0x0", tx.data || "0x");
-@@ -4649,6 +4997,8 @@
+@@ -4623,7 +4971,21 @@
+       const receipt = await waitForReceipt(hash);
+       if (Number(receipt.status) === 1) {  // FIX F-11: handles both "0x1" (string) and 1 (int) from different RPC implementations
+         notify(`${label} ✓`, "Transaction confirmed on Arc Testnet", "success", hash);
+-        await refreshBalance(account.address);
++        // AUDIT FINDING (2026-09): this used to `await` refreshBalance()
++        // directly here — meaning the panel's "Processing..." button (its
++        // `loading` state only clears once this whole function returns)
++        // stayed up until the NATIVE BALANCE re-read finished, even though
++        // the actual operation was already confirmed on-chain the line
++        // above. Harmless when getNativeBalance() was a fast, unthrottled
++        // single call, but this session's own rate-limit fix routed it
++        // through the shared background queue (runPrivarThrottled) for
++        // good reason (see that function's doc comment) — which means it
++        // can now sit queued behind an arbitrary number of OTHER
++        // background scans before it even starts. A confirmed, successful
++        // transaction has no business waiting on that queue to show as
++        // done. Fire-and-forget: the balance still refreshes, just without
++        // holding the button hostage to it.
++        refreshBalance(account.address).catch(() => {});
+         // Optional hook — lets a caller reconcile a pre-tx-predicted note
+         // (e.g. swap()'s noteAmountOut, computed from an off-chain quote +
+         // client-mirrored fee math) against the AUTHORITATIVE value the
+@@ -4649,6 +5011,8 @@
        const msg = e.code === 4001 ? "Rejected by user" : e.message || "Transaction failed";
        notify(`${label} Failed`, msg, "error");
        return false;
@@ -776,7 +799,7 @@
      }
    }, [account, onArc, notify, refreshBalance, onSuccess]);
  
-@@ -4680,6 +5030,14 @@
+@@ -4680,6 +5044,14 @@
    const submit = async () => {
      const parsed = parseFloat(amount);
      if (!amount || isNaN(parsed) || parsed <= 0) return;
@@ -791,7 +814,7 @@
      setLoading(true);
  
      // Block deposit of tokens not deployed on Arc Testnet
-@@ -4788,7 +5146,7 @@
+@@ -4788,7 +5160,7 @@
      // blinding) must embed the actual on-chain-credited amount.
      // spendingKey is deterministically re-derivable from the same cached
      // wallet signature already used for CloudVault — see ensureSpendKeyReady.
@@ -800,7 +823,7 @@
      let commitment, noteSecret, noteBlinding, notePubkeyOwner, thirdPartyBlinding;
      if (isThirdPartyDeposit) {
        // §8.4 point 4 — commitment built against the RECIPIENT's own
-@@ -4830,7 +5188,7 @@
+@@ -4830,7 +5202,7 @@
      // in that case; the recipient gets their own encrypted note payload
      // separately, relayed via ViewKeyRegistry AFTER the deposit succeeds
      // (see below), same transport sendShielded() already uses.
@@ -809,7 +832,7 @@
      const journalEntry = isThirdPartyDeposit
        ? null
        : await encryptJournalBlob(account?.address, { ts: Date.now(), ops: [{ t: 0, commitment, amount: netAmount.toString(), token: token.address }] });
-@@ -5150,6 +5508,10 @@
+@@ -5150,6 +5522,10 @@
      if (!amount || !q || !onArc) return;
      if (fr === to) { notify("Swap","Sélectionnez deux tokens différents.","error"); return; }
      if (tkFr.bal <= 0) { notify("Swap",`Insufficient shielded ${fr} balance.`,"error"); return; }
@@ -820,7 +843,7 @@
  
      // LIQUIDITY ENGINE: privateSwapWithRouter() lets the frontend pick ANY
      // whitelisted adapter per call, instead of being locked into the
-@@ -5434,7 +5796,7 @@
+@@ -5434,7 +5810,7 @@
      // noteAmountOut (fee-adjusted), NOT outAmountBig — must embed the exact
      // amount actually credited on-chain, same reasoning as deposit()'s
      // commitment being computed after netAmount, not before.
@@ -829,7 +852,7 @@
      let commitmentOut, outNoteSecret, outNoteBlinding, outNotePubkeyOwner;
      if (swapSpendingKey != null) {
        const built = createOwnedNote({ spendingKey: swapSpendingKey, amount: noteAmountOut, token: tkTo.addr });
-@@ -5447,7 +5809,7 @@
+@@ -5447,7 +5823,7 @@
      // v3.4 — embed the SPEND + ADD(s) journal ops directly in this SAME swap
      // transaction instead of 2-3 separate follow-up calls. See
      // PrivarShieldVault.sol's NoteJournal doc comment.
@@ -838,7 +861,7 @@
      // The change note's base MUST be the smaller of (a) what the local note
      // claims and (b) the real on-chain balance just read above (`realBal`,
      // when available) — never note.amount alone. If the clamp above fired
-@@ -5669,6 +6031,10 @@
+@@ -5669,6 +6045,10 @@
  
    const sendShielded = async () => {
      if (!amount || Number(amount) <= 0) return;
@@ -849,7 +872,7 @@
      const dest = to.trim();
      if (isArcName) { notify("Send", "ARC Name Service is not live yet — enter a 0x address directly.", "error"); return; }
      if (!/^0x[0-9a-fA-F]{40}$/.test(dest)) { notify("Send", "Invalid address format", "error"); return; }
-@@ -5718,7 +6084,7 @@
+@@ -5718,7 +6098,7 @@
      // retroactively — they remain spendable exactly as before, just without
      // the new guarantee.
      const isSelfSend = dest.toLowerCase() === account?.address?.toLowerCase?.();
@@ -858,7 +881,7 @@
  
      const nullifierIn = note.secret
        ? deriveNullifierForSpend(note.secret, note.commitment)
-@@ -5840,7 +6206,7 @@
+@@ -5840,7 +6220,7 @@
      // and relayed via ViewKeyRegistry in a second tx below — unrelated
      // transport, unrelated key). See PrivarShieldVault.sol's NoteJournal
      // doc comment for why embedding beats a follow-up broadcast.
@@ -867,7 +890,7 @@
      const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
      // Change always stays with the sender — always self-owned, so always
      // deterministically derivable when spendingKey is available (§7.6).
-@@ -5956,6 +6322,10 @@
+@@ -5956,6 +6336,10 @@
  
    const sendPublic = async () => {
      if (!amount) return;
@@ -878,7 +901,7 @@
      const dest = to.trim();
      if (isArcName) { notify("Send", "ARC Name Service is not live yet — enter a 0x address directly.", "error"); return; }
      if (!/^0x[0-9a-fA-F]{40}$/.test(dest)) { notify("Send", "Invalid address format", "error"); return; }
-@@ -6040,6 +6410,10 @@
+@@ -6040,6 +6424,10 @@
  
    const withdraw = async () => {
      if (!amount || Number(amount) <= 0) return;
@@ -889,7 +912,7 @@
      const target = dest || account?.address;
      if (!target || !/^0x[0-9a-fA-F]{40}$/.test(target)) {
        notify("Withdraw", "Invalid destination address", "error"); return;
-@@ -6131,7 +6505,7 @@
+@@ -6131,7 +6519,7 @@
      // §7.6 — change stays with the sender regardless of `target` (withdraw
      // can pay out to any recipient), so it's always self-owned/deterministic
      // when spendingKey is available.
@@ -898,7 +921,36 @@
  
      const feeDesc = withdrawFee > 0n
        ? ` (protocol fee: ${formatToken(withdrawFee, 6)} USDC)`
-@@ -6381,6 +6755,10 @@
+@@ -6310,11 +6698,23 @@
+           ⚠ No shielded notes found. Use the Shield panel to deposit first.
+         </div>
+       )}
+-      {avail <= 0 && (bals?.noteCount ?? 0) > 0 && (
+-        <div style={{ background:"rgba(14,165,233,.05)", border:"1px solid rgba(14,165,233,.2)", borderRadius:4, padding:"8px 12px", marginBottom:12, fontSize:9, color:"#0EA5E9", fontFamily:"monospace" }}>
+-          ⚠ Shielded {tk.sym} balance is zero. Select another token or shield {tk.sym} first.
+-        </div>
+-      )}
++      {(() => {
++        // UX FIX (2026-09): this used to fire whenever `avail` (spendable,
++        // i.e. UNLOCKED balance) was 0, even when the reason was a note
++        // correctly locked in an operation still in flight — telling the
++        // user their balance is zero and to go shield first while they
++        // have, say, $30 sitting right there as "pending" one line above.
++        // Suppressed while this token actually has a locked/pending amount.
++        const lockedForTk = tk.sym === "USDC" ? bals?.lockedUsdc
++          : tk.sym === "EURC" ? bals?.lockedEurc
++          : bals?.lockedCbtc;
++        const hasPending = Number(lockedForTk ?? 0n) > 0;
++        return avail <= 0 && (bals?.noteCount ?? 0) > 0 && !hasPending && (
++          <div style={{ background:"rgba(14,165,233,.05)", border:"1px solid rgba(14,165,233,.2)", borderRadius:4, padding:"8px 12px", marginBottom:12, fontSize:9, color:"#0EA5E9", fontFamily:"monospace" }}>
++            ⚠ Shielded {tk.sym} balance is zero. Select another token or shield {tk.sym} first.
++          </div>
++        );
++      })()}
+ 
+       <ArcBtn
+         label={!onArc?"⚠ SWITCH TO ARC TESTNET":`⟶ WITHDRAW ${tk.sym} FROM SHIELD`}
+@@ -6381,6 +6781,10 @@
    const bridge = async () => {
      if (!amount || Number(amount) <= 0 || !onArc) return;
      if (tk.bal <= 0) { notify("Bridge", `Insufficient shielded ${token} balance.`, "error"); return; }
@@ -909,7 +961,7 @@
      if (!isReachable(ch)) {
        notify("Bridge", `${ch.name} isn't (yet) reachable via LI.FI from Arc Testnet.`, "error");
        return;
-@@ -6472,7 +6850,7 @@
+@@ -6472,7 +6876,7 @@
      // SAME bridge transaction, forwarded through LiFiPrivacyBridge to
      // ShieldVault.withdraw() and emitted there. See PrivarShieldVault.sol's
      // NoteJournal doc comment.
@@ -918,7 +970,7 @@
      const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
      // §7.6 — bridge nullifier + change note, same pattern as withdraw()/swap():
      // nullifier deterministic from the spent note when it carries a secret;
-@@ -6481,7 +6859,7 @@
+@@ -6481,7 +6885,7 @@
      const bridgeNullifier = note.secret
        ? deriveNullifierForSpend(note.secret, note.commitment)
        : randomBytes32();

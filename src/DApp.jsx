@@ -4971,7 +4971,21 @@ function useTxSend({ account, onArc, notify, refreshBalance, onSuccess }) {
       const receipt = await waitForReceipt(hash);
       if (Number(receipt.status) === 1) {  // FIX F-11: handles both "0x1" (string) and 1 (int) from different RPC implementations
         notify(`${label} ✓`, "Transaction confirmed on Arc Testnet", "success", hash);
-        await refreshBalance(account.address);
+        // AUDIT FINDING (2026-09): this used to `await` refreshBalance()
+        // directly here — meaning the panel's "Processing..." button (its
+        // `loading` state only clears once this whole function returns)
+        // stayed up until the NATIVE BALANCE re-read finished, even though
+        // the actual operation was already confirmed on-chain the line
+        // above. Harmless when getNativeBalance() was a fast, unthrottled
+        // single call, but this session's own rate-limit fix routed it
+        // through the shared background queue (runPrivarThrottled) for
+        // good reason (see that function's doc comment) — which means it
+        // can now sit queued behind an arbitrary number of OTHER
+        // background scans before it even starts. A confirmed, successful
+        // transaction has no business waiting on that queue to show as
+        // done. Fire-and-forget: the balance still refreshes, just without
+        // holding the button hostage to it.
+        refreshBalance(account.address).catch(() => {});
         // Optional hook — lets a caller reconcile a pre-tx-predicted note
         // (e.g. swap()'s noteAmountOut, computed from an off-chain quote +
         // client-mirrored fee math) against the AUTHORITATIVE value the
@@ -6684,11 +6698,23 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
           ⚠ No shielded notes found. Use the Shield panel to deposit first.
         </div>
       )}
-      {avail <= 0 && (bals?.noteCount ?? 0) > 0 && (
-        <div style={{ background:"rgba(14,165,233,.05)", border:"1px solid rgba(14,165,233,.2)", borderRadius:4, padding:"8px 12px", marginBottom:12, fontSize:9, color:"#0EA5E9", fontFamily:"monospace" }}>
-          ⚠ Shielded {tk.sym} balance is zero. Select another token or shield {tk.sym} first.
-        </div>
-      )}
+      {(() => {
+        // UX FIX (2026-09): this used to fire whenever `avail` (spendable,
+        // i.e. UNLOCKED balance) was 0, even when the reason was a note
+        // correctly locked in an operation still in flight — telling the
+        // user their balance is zero and to go shield first while they
+        // have, say, $30 sitting right there as "pending" one line above.
+        // Suppressed while this token actually has a locked/pending amount.
+        const lockedForTk = tk.sym === "USDC" ? bals?.lockedUsdc
+          : tk.sym === "EURC" ? bals?.lockedEurc
+          : bals?.lockedCbtc;
+        const hasPending = Number(lockedForTk ?? 0n) > 0;
+        return avail <= 0 && (bals?.noteCount ?? 0) > 0 && !hasPending && (
+          <div style={{ background:"rgba(14,165,233,.05)", border:"1px solid rgba(14,165,233,.2)", borderRadius:4, padding:"8px 12px", marginBottom:12, fontSize:9, color:"#0EA5E9", fontFamily:"monospace" }}>
+            ⚠ Shielded {tk.sym} balance is zero. Select another token or shield {tk.sym} first.
+          </div>
+        );
+      })()}
 
       <ArcBtn
         label={!onArc?"⚠ SWITCH TO ARC TESTNET":`⟶ WITHDRAW ${tk.sym} FROM SHIELD`}
