@@ -155,8 +155,18 @@ async function rpcCallWithRetry(method, params = [], attempts = 3, delayMs = 900
 
 // Read native USDC balance (gas token, 18 dec)
 async function getNativeBalance(address) {
-  const raw = await rpcCall("eth_getBalance", [address, "latest"]);
-  return BigInt(raw);
+  // Throttled + retried (2026-09): this used to be a single bare rpcCall
+  // with no retry at all, so it failed outright (no backoff, just one
+  // console warning) the instant the shared RPC node was already busy —
+  // confirmed happening right alongside "stats fetch: 21/21 calls failed"
+  // in a user-supplied log, since both were hitting the same scarce budget
+  // with zero coordination. Routed through the same shared queue/cooldown
+  // as every other background RPC call (see runPrivarThrottled's doc
+  // comment) and given the same 3-attempt retry the rest of the app uses.
+  return runPrivarThrottled(async () => {
+    const raw = await rpcCallWithRetry("eth_getBalance", [address, "latest"], 3, 900);
+    return BigInt(raw);
+  });
 }
 
 // Convert native balance (18 dec) → display as USDC 6-dec equivalent
@@ -1816,12 +1826,30 @@ function useProtocolStats(onArc) {
         // Each entry wrapped individually too: a synchronous throw from any ONE
         // builder function (e.g. an undefined import) now only nulls that ONE call
         // instead of aborting calls.map() entirely and skipping every call after it.
-        // Throttled: see runPrivarThrottled's doc comment — this 21-call burst,
-        // firing every 30s independent of every log-scanner also running, was a
-        // major contributor to the confirmed rate-limit storm (fixed 2026-09).
-        const results = await runPrivarThrottled(() => Promise.allSettled(
-          calls.map(fn => { try { return fn(); } catch (e) { return Promise.reject(e); } })
-        ));
+        // Throttled AND chunked (2026-09): wrapping the whole batch in
+        // runPrivarThrottled stopped it from overlapping with the OTHER
+        // background scanners, but a user-supplied log showed "21/21 calls
+        // failed" persisting even after that — this internal 21-way
+        // simultaneous burst can trip the RPC's rate limit entirely on its
+        // own the instant it's this poll's turn in the queue, regardless of
+        // what else is or isn't running. Split into small groups with a
+        // short gap between them so the poll asks for a few numbers at a
+        // time instead of all 21 in one breath — same total calls, same
+        // result shape (`results[i]` still lines up with `calls[i]`), just
+        // spread out enough to stay under the limit that a single burst of
+        // 21 was hitting by itself.
+        const results = await runPrivarThrottled(async () => {
+          const CHUNK = 5;
+          const out = [];
+          for (let i = 0; i < calls.length; i += CHUNK) {
+            const group = calls.slice(i, i + CHUNK);
+            out.push(...await Promise.allSettled(
+              group.map(fn => { try { return fn(); } catch (e) { return Promise.reject(e); } })
+            ));
+            if (i + CHUNK < calls.length) await new Promise(r => setTimeout(r, 400));
+          }
+          return out;
+        });
       const v = (i) => results[i].status === "fulfilled" ? results[i].value : null;
       const [
         su, se, sb, leaf, vaultPaused, tUsdc, tEurc, tBtc,
