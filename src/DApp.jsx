@@ -1770,7 +1770,15 @@ function useProtocolStats(onArc) {
     // right now, show that honestly instead of pretending it's coming.
     pollCount: 0,
   });
-  const fetch = useCallback(async () => {
+  // `priority`: true for a refresh triggered directly by a user's own
+  // just-confirmed transaction (see onSuccess callbacks below) — skips the
+  // shared background queue (see runPrivarThrottled's doc comment) so a
+  // freshly-confirmed Shield/Swap/Withdraw doesn't sit waiting behind
+  // unrelated background scans before its own TVL/volume/fees update show
+  // up. False/omitted for the routine 30s interval poll, which stays
+  // queued like every other background scan — no reason for it to jump
+  // ahead of the others.
+  const fetch = useCallback(async (priority) => {
     if (!onArc) return;
     try {
         // Light retry (not the full 3x/900ms used for tx-gating reads, which
@@ -1849,7 +1857,7 @@ function useProtocolStats(onArc) {
         // result shape (`results[i]` still lines up with `calls[i]`), just
         // spread out enough to stay under the limit that a single burst of
         // 21 was hitting by itself.
-        const results = await runPrivarThrottled(async () => {
+        const runChunked = async () => {
           const CHUNK = 5;
           const out = [];
           for (let i = 0; i < calls.length; i += CHUNK) {
@@ -1860,7 +1868,12 @@ function useProtocolStats(onArc) {
             if (i + CHUNK < calls.length) await new Promise(r => setTimeout(r, 400));
           }
           return out;
-        });
+        };
+        // `priority` (see this function's declaration) skips the shared
+        // queue entirely — still chunked internally (the 21-wide burst was
+        // its own separate problem, unrelated to queueing), just not made
+        // to wait behind whatever background scan happens to be running.
+        const results = priority ? await runChunked() : await runPrivarThrottled(runChunked);
       const v = (i) => results[i].status === "fulfilled" ? results[i].value : null;
       const [
         su, se, sb, leaf, vaultPaused, tUsdc, tEurc, tBtc,
@@ -5041,7 +5054,7 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
   // §8.4 point 4 — optional third-party recipient. Empty = deposit to own
   // shielded balance (unchanged default). Mirrors SendPanel's `dest` field.
   const [depositRecipient, setDepositRecipient] = useState("");
-  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(); onChainActivity?.refresh?.(); } });
+  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(true); onChainActivity?.refresh?.(); } });
 
   // Ask user to confirm before hitting wallet — shows real amount for ERC-20 / ZK txs
   const askConfirm = (txInfo) => new Promise(resolve => {
@@ -5505,7 +5518,7 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
   const [amount, setAmount]   = useState("");
   const [q, setQ]             = useState(null);
   const [loading, setLoading] = useState(false);
-  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(); onChainActivity?.refresh?.(); } });
+  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(true); onChainActivity?.refresh?.(); } });
   const bals = shieldedBals;
 
   const SWAP_TOKENS = {
@@ -6043,7 +6056,7 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
   const askConfirm = (txInfo) => new Promise(resolve => { confirmRef.current = resolve; setConfirmTx(txInfo); });
   const onConfirm  = () => { setConfirmTx(null); confirmRef.current?.(true); };
   const onCancel   = () => { setConfirmTx(null); confirmRef.current?.(false); };
-  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(); onChainActivity?.refresh?.(); } });
+  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(true); onChainActivity?.refresh?.(); } });
   const bals = shieldedBals;
 
   // NOTE: ARC Name Service (.arc) is not yet deployed — there is no on-chain
@@ -6427,7 +6440,7 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
   const [dest, setDest]       = useState("");
   const [loading, setLoading] = useState(false);
   const [token, setToken]     = useState("USDC"); // selected token to withdraw
-  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(); onChainActivity?.refresh?.(); } });
+  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(true); onChainActivity?.refresh?.(); } });
   const bals = shieldedBals;
 
   // Token metadata — mirrors BridgePanel BRIDGE_TOKENS
@@ -6763,7 +6776,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
   const [recipient, setRecipient] = useState("");
   const [token, setToken]         = useState("USDC");
   const [step, setStep]           = useState("");
-  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(); onChainActivity?.refresh?.(); } });
+  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(true); onChainActivity?.refresh?.(); } });
   const bals = shieldedBals;
   const ch   = CH.find(c=>c.domainId===destId) || CH[0];
 
@@ -7112,15 +7125,23 @@ function AnalyticsPanel({ protocolStats, txHistory, account, onArc, prices, onCh
         if (!isFinite(cur)) return;
 
         // ── Read fees directly from contract state (most reliable) ──────────
-        // NOTE: feesCollectedByToken(address) does NOT exist on the deployed
-        // PrivarShieldVault v3.0.0 — this always reverted silently before.
-        // Only nextIndex() (commitment count) is real; fees stay at 0 until
-        // this contract exposes a real per-token fee counter.
-        const [leafRaw] = await Promise.all([
+        // AUDIT FIX (2026-09): the "feesCollectedByToken does NOT exist"
+        // premise this comment used to state was stale — checked directly
+        // against PrivarShieldVault.sol: the function exists, and its
+        // selector (SEL.feesCollectedByToken) was already independently
+        // verified elsewhere in this file (useProtocolStats) against a
+        // recomputed keccak256 hash. This block just never got updated to
+        // use it, so all-time fees always rendered as a hardcoded $0 here —
+        // while the SAME 24h fee figure a few lines below has always been
+        // computed correctly from real FeeCollected events. Reading the
+        // real value now, consistent with the rest of the file.
+        const [leafRaw, feesUsdcRaw, feesEurcRaw] = await Promise.all([
           rpcCall("eth_call", [{ to:CONTRACTS.PrivarMerkleTreeManager, data: SEL.nextIndex }, "latest"]),
+          rpcCall("eth_call", [{ to:CONTRACTS.PrivarShieldVault, data: SEL.feesCollectedByToken + encodeAddress(CONTRACTS.USDC) }, "latest"]).catch(() => null),
+          rpcCall("eth_call", [{ to:CONTRACTS.PrivarShieldVault, data: SEL.feesCollectedByToken + encodeAddress(CONTRACTS.EURC) }, "latest"]).catch(() => null),
         ]);
-        const feesUsdc   = 0;
-        const feesEurc   = 0;
+        const feesUsdc   = feesUsdcRaw != null && feesUsdcRaw !== "0x" ? Number(nativeToUsdc6(BigInt(feesUsdcRaw))) / 1e6 : 0;
+        const feesEurc   = feesEurcRaw != null && feesEurcRaw !== "0x" ? Number(BigInt(feesEurcRaw)) / 1e6 : 0;
         const allTimeTxCount = leafRaw && leafRaw !== "0x" ? Number(BigInt(leafRaw)) : 0; // 1 leaf = 1 deposit
         const totalFeesCollected = feesUsdc + feesEurc;
 
