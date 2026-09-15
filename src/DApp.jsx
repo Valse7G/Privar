@@ -1860,14 +1860,30 @@ function useProtocolStats(onArc) {
         // spread out enough to stay under the limit that a single burst of
         // 21 was hitting by itself.
         const runChunked = async () => {
-          const CHUNK = 5;
+          // AUDIT FINDING (2026-09, round 3): a console error object captured
+          // directly this time — {code: -32005, message: "Request exceeds
+          // defined limit... rate limit exceeded"} — confirmed 16/21 and
+          // 11/21 calls still failing even after round 2's proactive spacing.
+          // Root cause of THIS specific residual failure: that spacing is
+          // enforced BETWEEN separate runPrivarThrottled() calls, but this
+          // function's OWN internal chunking fired 5 calls AT ONCE (via
+          // Promise.allSettled) every 400ms — a burst of 5 concurrent
+          // requests the external spacing never saw or metered. This
+          // provider's real limit is evidently stricter than "5 at once is
+          // fine every 400ms". Fully sequential now: one call, wait, next
+          // call — slower for a single stats refresh (a background poll,
+          // nothing the user is blocked waiting on) but this is what
+          // actually respects a limit this tight instead of just resizing
+          // the burst that kept tripping it.
           const out = [];
-          for (let i = 0; i < calls.length; i += CHUNK) {
-            const group = calls.slice(i, i + CHUNK);
-            out.push(...await Promise.allSettled(
-              group.map(fn => { try { return fn(); } catch (e) { return Promise.reject(e); } })
-            ));
-            if (i + CHUNK < calls.length) await new Promise(r => setTimeout(r, 400));
+          for (let i = 0; i < calls.length; i++) {
+            try {
+              const value = await calls[i]();
+              out.push({ status: "fulfilled", value });
+            } catch (reason) {
+              out.push({ status: "rejected", reason });
+            }
+            if (i + 1 < calls.length) await new Promise(r => setTimeout(r, 350));
           }
           return out;
         };
