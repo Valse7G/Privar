@@ -251,7 +251,30 @@ async function sendTransaction(from, to, valueHex, data = "0x") {
     // Fallback: 500k gas — sufficient for PrivarShieldVault operations
     gasLimit = "0x7A120";
   }
-  return rpcCall("eth_sendTransaction", [{ from, to, value: valueHex, data, gas: gasLimit, chainId: toHex(ARC_TESTNET.id) }]);
+  // AUDIT FINDING (2026-09): captured directly from a wallet's own error
+  // dialog (a photographed Rabby popup) — "Request exceeds defined limit"
+  // for method eth_getTransactionCount, straight to rpc.testnet.arc.network.
+  // The WALLET ITSELF looks up the nonce before signing, as its own,
+  // separate request — entirely outside this app's control. None of this
+  // session's RPC-side work (the shared throttle queue, Multicall3) can
+  // reach that call, because it's the wallet extension making it, not this
+  // code. This is why Shield/Approve could still fail with "rejected by
+  // user" even after every other RPC path here got fixed — the rejection
+  // dialog IS a rate-limit error, just one Rabby chose to word that way.
+  //
+  // Best-effort mitigation: pre-fetch the nonce ourselves (through this
+  // app's own retry logic) and pass it explicitly in the tx object. A
+  // wallet that honors a caller-supplied nonce can skip its own separate
+  // lookup entirely — removing the exact call that was failing. A wallet
+  // that ignores this field and looks the nonce up anyway is no worse off
+  // than before; this is purely additive.
+  let nonceHex;
+  try {
+    nonceHex = await rpcCallWithRetry("eth_getTransactionCount", [from, "latest"], 3, 700);
+  } catch { /* fine — the wallet does its own lookup, same as before this fix */ }
+  const tx = { from, to, value: valueHex, data, gas: gasLimit, chainId: toHex(ARC_TESTNET.id) };
+  if (nonceHex) tx.nonce = nonceHex;
+  return rpcCall("eth_sendTransaction", [tx]);
 }
 
 // Wait for tx receipt (polling)
