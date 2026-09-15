@@ -1,5 +1,5 @@
 --- /tmp/orig_DApp.jsx	2026-09-05 15:59:45.098029873 +0000
-+++ frontend/src/DApp.jsx	2026-09-14 21:03:01.027190795 +0000
++++ frontend/src/DApp.jsx	2026-09-15 07:09:21.053764044 +0000
 @@ -155,8 +155,18 @@
  
  // Read native USDC balance (gas token, 18 dec)
@@ -43,7 +43,7 @@
        // Retry any SPEND broadcasts that failed on a previous session (see
        // "Pending SPEND broadcast queue") — a no-op wallet-side if the queue
        // is empty, so safe to run on every connect without extra prompts.
-@@ -1385,18 +1399,53 @@
+@@ -1385,19 +1399,56 @@
          if (synced > 0) recomputeShielded?.();
        }).catch(() => {});
      })();
@@ -53,6 +53,7 @@
 -    // identity key. Independent contract, independent guard flag — a
 -    // rejected view-key signature doesn't block this, and vice versa.
 -    ensureSpendKeyRegistered(account.address, sendViewKeyTx, notify).catch(() => {});
+-    // Rescan every 2 minutes in case new stealth notes / cloud journal entries arrive
 +    // ROOT CAUSE (found comparing this file against the last version the
 +    // user confirmed as fully working, v19_1_0, which has neither of these
 +    // two calls at all — this whole spend-key/view-key auto-registration
@@ -94,20 +95,24 @@
 +      // a rejected view-key signature doesn't block this, and vice versa.
 +      await ensureSpendKeyRegistered(account.address, sendViewKeyTx, notify).catch(() => {});
 +    })();
-     // Rescan every 2 minutes in case new stealth notes / cloud journal entries arrive
++    // Rescan every 3 minutes (was 2 — see runPrivarThrottled's AUDIT FINDING,
++    // round 2: reduces sustained request volume against a tight shared rate
++    // limit) in case new stealth notes / cloud journal entries arrive
      const id = setInterval(() => {
 -      scanStealthNotes(account.address, recomputeShielded).catch(() => {});
 -      scanNoteRelay(account.address, recomputeShielded).catch(() => {});
 -      resyncFromCloudVault(account.address, recomputeShielded).catch(() => {});
 -      resyncFromShieldVaultJournal(account.address, recomputeShielded).catch(() => {});
+-    }, 120_000);
 +      runPrivarThrottled(() => scanStealthNotes(account.address, recomputeShielded)).catch(() => {});
 +      runPrivarThrottled(() => scanNoteRelay(account.address, recomputeShielded)).catch(() => {});
 +      runPrivarThrottled(() => resyncFromCloudVault(account.address, recomputeShielded)).catch(() => {});
 +      runPrivarThrottled(() => resyncFromShieldVaultJournal(account.address, recomputeShielded)).catch(() => {});
-     }, 120_000);
++    }, 180_000);
      return () => { cancelled = true; clearInterval(id); };
    }, [account?.address, onArc, recomputeShielded, sendViewKeyTx, notify]);
-@@ -1709,8 +1758,27 @@
+ 
+@@ -1709,8 +1760,27 @@
      tx24h:null, volumeUsdc24h:null, volumeEurc24h:null, volumeBtc24h:null,
      feesUsdc24h:null, feesEurc24h:null, feesBtc24h:null,
      snapshotCoverage: null, // ms of history actually available (< 24h until the window fills up)
@@ -136,7 +141,7 @@
      if (!onArc) return;
      try {
          // Light retry (not the full 3x/900ms used for tx-gating reads, which
-@@ -1777,9 +1845,35 @@
+@@ -1777,9 +1847,35 @@
          // Each entry wrapped individually too: a synchronous throw from any ONE
          // builder function (e.g. an undefined import) now only nulls that ONE call
          // instead of aborting calls.map() entirely and skipping every call after it.
@@ -175,7 +180,7 @@
        const v = (i) => results[i].status === "fulfilled" ? results[i].value : null;
        const [
          su, se, sb, leaf, vaultPaused, tUsdc, tEurc, tBtc,
-@@ -1832,6 +1926,7 @@
+@@ -1832,6 +1928,7 @@
            bridgeFeeBps:   bridgeFeeBpsRes  != null ? Number(decodeUint256(bridgeFeeBpsRes))  : prev.bridgeFeeBps,
            flatFeeUsdc:    flatFeeUsdcRes   != null ? Number(decodeUint256(flatFeeUsdcRes))    : prev.flatFeeUsdc,
            treasury:       treasuryRes      != null && treasuryRes !== "0x" ? "0x" + treasuryRes.slice(-40) : prev.treasury,
@@ -183,7 +188,16 @@
          };
  
          // Record + compute 24h deltas from local snapshots (see takeStatsSnapshot/
-@@ -2535,11 +2630,31 @@
+@@ -1870,7 +1967,7 @@
+     // public testnet RPC, likely the cause of the intermittent stat
+     // failures/staleness reported (values working one moment, stuck
+     // "loading…" the next). 30s cuts steady-state request volume by 3x.
+-    const id = setInterval(fetch, 30000);
++    const id = setInterval(fetch, 45000); // was 30s — see runPrivarThrottled's AUDIT FINDING (round 2): reduces sustained request volume against a tight shared rate limit, on top of spacing/cooldown tuning
+     return () => clearInterval(id);
+   }, [onArc, fetch]);
+   return { ...stats, refresh: fetch };
+@@ -2535,11 +2632,31 @@
  // method we can trust to behave the same on TokenPocket, Rabby, MetaMask,
  // or anything else — a single deterministic codepath, no branching, no
  // possibility of two devices silently taking different paths.
@@ -216,7 +230,7 @@
      const sig = await personalSign(address, BACKUP_SIG_MESSAGE(address));
      try { localStorage.setItem(backupSigStorageKey(address), sig); } catch {}
      return sig;
-@@ -2604,8 +2719,8 @@
+@@ -2604,8 +2721,8 @@
  // Ensures a spendingKey is derivable (i.e. the backup signature is cached),
  // prompting the SAME gasless personal_sign as CloudVault if not yet cached —
  // same signature, distinct derived key (separate HKDF info label above).
@@ -227,7 +241,7 @@
    return deriveSpendingKey(address);
  }
  
-@@ -2622,7 +2737,7 @@
+@@ -2622,7 +2739,7 @@
    if (!CONTRACTS.PrivarSpendKeyRegistry || CONTRACTS.PrivarSpendKeyRegistry === "0x0000000000000000000000000000000000000000") return;
    if (!address) return;
  
@@ -236,7 +250,7 @@
    if (secret == null) return; // signature not available/cached yet — retried next connect, same as view key
  
    let alreadyRegistered = false;
-@@ -2958,6 +3073,55 @@
+@@ -2958,6 +3075,90 @@
    };
  }
  
@@ -263,6 +277,27 @@
 +// being the reason that limit never gets a chance to reset.
 +let __privarBgQueue = Promise.resolve();
 +let __privarBgCooldownUntil = 0;
++let __privarBgLastCallAt = 0;
++let __privarBgConsecutiveLimits = 0;
++
++// AUDIT FINDING (2026-09, round 2): a fresh log after the first version of
++// this coordinator still showed "stats fetch: 17/21 calls failed" and
++// three separate "Request limit exceeded" errors. The coordinator was
++// doing its job (serializing calls, sharing a cooldown on a 429) — but a
++// FIXED 4-second cooldown, applied only reactively after a limit was
++// already hit, wasn't conservative enough for how tight this RPC/
++// Blockscout budget actually is: it let the queue start hammering again
++// right as the provider's own (longer) window was still in effect,
++// re-triggering the same limit almost immediately. Two changes:
++// (1) a small PROACTIVE minimum gap between every throttled call, always
++//     enforced, not just after a failure — spaces requests out before
++//     hitting the wall instead of only backing off after;
++// (2) the reactive cooldown now grows with consecutive hits (6s, 12s,
++//     24s, capped at 30s) instead of a flat 4s every time, and resets
++//     once a call actually succeeds — so a provider whose window is
++//     longer than 4s eventually gets a cooldown long enough to actually
++//     clear it, without permanently over-throttling a healthy connection.
++const PRIVAR_MIN_GAP_MS = 500;
 +
 +function isPrivarRateLimitError(e) {
 +  const msg = ((e && e.message) || String(e || "")).toLowerCase();
@@ -271,18 +306,32 @@
 +      || msg.includes("exceeds defined limit");
 +}
 +
-+function markPrivarRateLimited(cooldownMs = 4000) {
++function markPrivarRateLimited() {
++  __privarBgConsecutiveLimits = Math.min(__privarBgConsecutiveLimits + 1, 3);
++  const cooldownMs = 6000 * Math.pow(2, __privarBgConsecutiveLimits - 1); // 6s, 12s, 24s
 +  __privarBgCooldownUntil = Math.max(__privarBgCooldownUntil, Date.now() + cooldownMs);
 +}
 +
-+// Runs `fn` once this device's shared background queue is free AND any
-+// active shared cooldown has elapsed. Chains regardless of outcome (a
-+// rejection must never wedge every future background scan behind it).
++// Runs `fn` once this device's shared background queue is free, any active
++// shared cooldown has elapsed, AND at least PRIVAR_MIN_GAP_MS has passed
++// since the last throttled call started (see the AUDIT FINDING above).
++// Chains regardless of outcome (a rejection must never wedge every future
++// background scan behind it).
 +function runPrivarThrottled(fn) {
 +  const run = async () => {
-+    const wait = __privarBgCooldownUntil - Date.now();
++    const cooldownWait = __privarBgCooldownUntil - Date.now();
++    const gapWait = (__privarBgLastCallAt + PRIVAR_MIN_GAP_MS) - Date.now();
++    const wait = Math.max(cooldownWait, gapWait);
 +    if (wait > 0) await new Promise(r => setTimeout(r, wait));
-+    return fn();
++    __privarBgLastCallAt = Date.now();
++    try {
++      const out = await fn();
++      __privarBgConsecutiveLimits = 0; // a clean call means this window has cleared
++      return out;
++    } catch (e) {
++      if (isPrivarRateLimitError(e)) markPrivarRateLimited();
++      throw e;
++    }
 +  };
 +  const result = __privarBgQueue.then(run, run);
 +  __privarBgQueue = result.then(() => {}, () => {});
@@ -292,7 +341,7 @@
  async function fetchLogsViaBlockscout(contractAddress, topics, fromBlock) {
    const params = new URLSearchParams({
      module: "logs", action: "getLogs",
-@@ -3004,6 +3168,10 @@
+@@ -3004,6 +3205,10 @@
  // reconnects) accumulate steadily and visibly instead of one call spending
  // minutes retrying in silence, which looks indistinguishable from "stuck".
  async function fetchLogsPaginated(contractAddress, topics, fromBlock, keyPrefix, address, label) {
@@ -303,7 +352,7 @@
    // BUG FIX (2026-08-26): `checkpointStart` used to only be computed inside
    // the RPC-fallback branch below (§2) — the Blockscout branch (§1, tried
    // FIRST and normally the one that actually runs, since it succeeds
-@@ -3037,6 +3205,7 @@
+@@ -3037,6 +3242,7 @@
      } catch {} // progress bookkeeping only — the logs were already fetched successfully either way
      return logs;
    } catch (e) {
@@ -311,7 +360,7 @@
      console.warn(`[${label}] scan(${topics[0]?.slice(2,10)}): Blockscout API unavailable (${e.message}), falling back to paginated RPC`);
    }
  
-@@ -3071,6 +3240,7 @@
+@@ -3071,6 +3277,7 @@
        const isRateLimit = msg.includes("rate limit") || msg.includes("too many requests") || msg.includes("request limit");
        if (isRateLimit && rateLimitRetries < 3) {
          rateLimitRetries++;
@@ -319,7 +368,7 @@
          console.info(`[${label}] scan(${topics[0]?.slice(2,10)}): rate limited, backing off (retry ${rateLimitRetries}/3)`);
          await sleep(1200 * rateLimitRetries); // backoff, same window/range — shrinking wouldn't help a rate limit
          continue;
-@@ -3561,6 +3731,23 @@
+@@ -3561,6 +3768,23 @@
  // the mempool, never for one that's merely slow to confirm.
  const OP_ABANDON_MS = 3 * 60 * 1000; // 3 min
  
@@ -343,7 +392,7 @@
  function newOpId() {
    return "op_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 10);
  }
-@@ -3771,17 +3958,36 @@
+@@ -3771,17 +3995,36 @@
  }
  
  
@@ -390,7 +439,7 @@
  };
  
  // ── Token decimals/symbol — single source of truth for tx-history formatting ──
-@@ -3824,6 +4030,43 @@
+@@ -3824,6 +4067,43 @@
  // ── Cross-device tx history: rebuild from on-chain events ─────────────────────
  // Called on wallet connect. Fetches PrivarShieldVault + PrivarStaking events for this address,
  // merges with localStorage cache, deduplicates by tx hash, returns sorted array.
@@ -434,7 +483,7 @@
  async function buildTxHistoryFromChain(address) {
    if (!address) return [];
    const MAX_BLOCKS = 5_000_000;
-@@ -3845,9 +4088,25 @@
+@@ -3845,9 +4125,25 @@
      const sv = CONTRACTS.PrivarShieldVault, st = CONTRACTS.PrivarStaking;
      const depLogs      = await fetchLogsPaginated(sv, [EV.Deposited, null, addrTopic], from, "privar_txhist_dep", address, "Privar tx-history");
      const wdLogs        = await fetchLogsPaginated(sv, [EV.Withdrawn, null, null, addrTopic], from, "privar_txhist_wd", address, "Privar tx-history");
@@ -463,7 +512,7 @@
      const stakeLogs     = st ? await fetchLogsPaginated(st, [EV.Staked, addrTopic], from, "privar_txhist_stk", address, "Privar tx-history") : [];
      const unstakeLogs   = st ? await fetchLogsPaginated(st, [EV.Unstaked, addrTopic], from, "privar_txhist_unstk", address, "Privar tx-history") : [];
      const claimLogs     = st ? await fetchLogsPaginated(st, [EV.RewardsClaimed, addrTopic], from, "privar_txhist_clm", address, "Privar tx-history") : [];
-@@ -3862,7 +4121,7 @@
+@@ -3862,7 +4158,7 @@
      // every DISTINCT block referenced across all 8 event types (small
      // concurrency to stay RPC-friendly, matches this function's existing
      // "fire-and-forget, not time-critical" posture).
@@ -472,7 +521,7 @@
      const uniqueBlocks = [...new Set(allLogs.map(l => l.blockNumber).filter(Boolean))];
      const blockTsMap = new Map();
      const BLOCK_TS_CONCURRENCY = 5;
-@@ -3901,21 +4160,10 @@
+@@ -3901,21 +4197,10 @@
        const sym = symbolForToken(tok);
        entries.push({ hash:log.transactionHash, label:"Withdraw", ts:tc(tsFor(log)), tsRaw:tsFor(log), status:"success", amount:formatToken(amount, decimalsForToken(tok), 2)+" "+sym, blockHex:log.blockNumber });
      }
@@ -498,7 +547,7 @@
      for (const log of stakeLogs) {
        const data = (log.data||"0x").replace("0x","");
        const amount = data.length >= 64 ? u256(data,0) : 0n;
-@@ -3939,12 +4187,15 @@
+@@ -3939,12 +4224,15 @@
      const seen = new Set();
      const unique = entries.filter(e => { if (!e.hash || seen.has(e.hash)) return false; seen.add(e.hash); return true; });
  
@@ -520,7 +569,7 @@
  
      return unique.slice(0, 200); // cap at 200 entries
    } catch(e) {
-@@ -4042,23 +4293,28 @@
+@@ -4042,23 +4330,28 @@
  // number of "getNotes/saveNotes" round trips.
  //
  // A note is:
@@ -560,7 +609,7 @@
  async function reconcileAndVerifyNotes(address) {
    if (!address) return { spent: 0, unbacked: 0 };
    const notes = getNotes(address);
-@@ -4068,17 +4324,73 @@
+@@ -4068,17 +4361,73 @@
      const current = Number(BigInt(await rpcCallWithBackoff("eth_blockNumber", [])));
      const fromBlock = Math.max(0, current - 5_000_000);
  
@@ -645,7 +694,7 @@
  
      const spentNullifiers = new Set();
      if (Array.isArray(withdrawnLogs)) {
-@@ -4087,6 +4399,27 @@
+@@ -4087,6 +4436,27 @@
          if (n) spentNullifiers.add(n.toLowerCase());
        }
      }
@@ -673,7 +722,7 @@
      const depositedCommitments = new Set();
      let depositedScanOk = false;
      if (Array.isArray(depositedLogs)) {
-@@ -4307,7 +4640,7 @@
+@@ -4307,7 +4677,7 @@
  }
  
  function useShieldedBalances(prices, address) {
@@ -682,7 +731,7 @@
    const [bals, setBals] = useState(SAFE_BALS);
    // Timestamp of the last successful on-chain reconciliation pass — shown
    // in the UI so "this balance is precise" is a verifiable fact the user
-@@ -4335,6 +4668,22 @@
+@@ -4335,6 +4705,22 @@
        [CONTRACTS.EURC]:     0n,
        [CONTRACTS.cirBTC]:   0n,
      };
@@ -705,7 +754,7 @@
      // BUG FIX (2026-08-26): this loop used to sum EVERY note regardless of
      // `status`, including "sent" — the sender-side HISTORY COPY of an
      // output note that finalizeOp() deliberately keeps in the sender's own
-@@ -4352,19 +4701,19 @@
+@@ -4352,19 +4738,19 @@
      // making the balance look unchanged. "locked" is excluded too, for the
      // same reason (mid-flight notes shouldn't count as available funds).
      for (const n of notes) {
@@ -736,7 +785,7 @@
      }
      // Convert to display values — guard against BigInt overflow or zero-address tokens
      const usdc  = isFinite(Number(acc[NATIVE_USDC]))      ? Number(acc[NATIVE_USDC])      / 1e6 : 0;
-@@ -4383,6 +4732,12 @@
+@@ -4383,6 +4769,12 @@
        rawUsdc:  acc[NATIVE_USDC],
        rawEurc:  acc[CONTRACTS.EURC],
        rawCbtc:  acc[CONTRACTS.cirBTC],
@@ -749,7 +798,7 @@
        noteCount: notes.length,
        quarantined: quarantinedNow + unbackedRemovedRef.current,
      });
-@@ -4408,9 +4763,17 @@
+@@ -4408,9 +4800,17 @@
      const runChecks = () => {
        // Resolve any swap/send/withdraw/bridge left dangling by a closed
        // tab, a timeout, or a dropped connection — see watchPendingOps()'s
@@ -770,7 +819,7 @@
        watchPendingOps(address).catch(() => {});
        reconcileAndVerifyNotes(address).then(({ unbacked }) => {
          // OVERWRITE, not accumulate: this ref should reflect "how many were
-@@ -4515,11 +4878,19 @@
+@@ -4515,11 +4915,19 @@
    const rawUsdc = bals.rawUsdc  ?? 0n;
    const rawEurc = bals.rawEurc  ?? 0n;
    const rawCbtc = bals.rawCbtc  ?? 0n;
@@ -793,7 +842,7 @@
    ];
  
    // USD total: only from actionable tokens (what this panel can spend)
-@@ -4591,6 +4962,7 @@
+@@ -4591,6 +4999,7 @@
                }}>
                <div style={{ fontSize:8, color: isActionable ? "#64748b" : "#334155", fontFamily:"monospace", marginBottom:3 }}>{t.sym}</div>
                <div style={{ fontSize:11, color: isClickable ? t.color : "#334155", fontFamily:"monospace", fontWeight:700 }}>{t.fmt(t.val)}</div>
@@ -801,7 +850,7 @@
                {isClickable  && <div style={{ fontSize:7, color:"#4a7c5f", fontFamily:"monospace", marginTop:2 }}>tap → MAX</div>}
                {!isActionable && <div style={{ fontSize:6, color:"#475569", fontFamily:"monospace", marginTop:2 }}>not used here</div>}
              </button>
-@@ -4611,6 +4983,7 @@
+@@ -4611,6 +5020,7 @@
      if (!onArc) { notify(label, "Switch to Arc Testnet first", "error"); return false; }
      if (!account?.address) { notify(label, "Wallet not connected", "error"); return false; }
      notify(label, description + " — confirm in wallet...", "pending");
@@ -809,7 +858,7 @@
      try {
        const tx = await buildTx(account.address);
        const hash = await sendTransaction(account.address, tx.to, tx.value || "0x0", tx.data || "0x");
-@@ -4623,7 +4996,21 @@
+@@ -4623,7 +5033,21 @@
        const receipt = await waitForReceipt(hash);
        if (Number(receipt.status) === 1) {  // FIX F-11: handles both "0x1" (string) and 1 (int) from different RPC implementations
          notify(`${label} ✓`, "Transaction confirmed on Arc Testnet", "success", hash);
@@ -832,7 +881,7 @@
          // Optional hook — lets a caller reconcile a pre-tx-predicted note
          // (e.g. swap()'s noteAmountOut, computed from an off-chain quote +
          // client-mirrored fee math) against the AUTHORITATIVE value the
-@@ -4649,6 +5036,8 @@
+@@ -4649,6 +5073,8 @@
        const msg = e.code === 4001 ? "Rejected by user" : e.message || "Transaction failed";
        notify(`${label} Failed`, msg, "error");
        return false;
@@ -841,7 +890,7 @@
      }
    }, [account, onArc, notify, refreshBalance, onSuccess]);
  
-@@ -4665,7 +5054,7 @@
+@@ -4665,7 +5091,7 @@
    // §8.4 point 4 — optional third-party recipient. Empty = deposit to own
    // shielded balance (unchanged default). Mirrors SendPanel's `dest` field.
    const [depositRecipient, setDepositRecipient] = useState("");
@@ -850,7 +899,7 @@
  
    // Ask user to confirm before hitting wallet — shows real amount for ERC-20 / ZK txs
    const askConfirm = (txInfo) => new Promise(resolve => {
-@@ -4680,6 +5069,14 @@
+@@ -4680,6 +5106,14 @@
    const submit = async () => {
      const parsed = parseFloat(amount);
      if (!amount || isNaN(parsed) || parsed <= 0) return;
@@ -865,7 +914,7 @@
      setLoading(true);
  
      // Block deposit of tokens not deployed on Arc Testnet
-@@ -4788,7 +5185,7 @@
+@@ -4788,7 +5222,7 @@
      // blinding) must embed the actual on-chain-credited amount.
      // spendingKey is deterministically re-derivable from the same cached
      // wallet signature already used for CloudVault — see ensureSpendKeyReady.
@@ -874,7 +923,7 @@
      let commitment, noteSecret, noteBlinding, notePubkeyOwner, thirdPartyBlinding;
      if (isThirdPartyDeposit) {
        // §8.4 point 4 — commitment built against the RECIPIENT's own
-@@ -4830,7 +5227,7 @@
+@@ -4830,7 +5264,7 @@
      // in that case; the recipient gets their own encrypted note payload
      // separately, relayed via ViewKeyRegistry AFTER the deposit succeeds
      // (see below), same transport sendShielded() already uses.
@@ -883,7 +932,18 @@
      const journalEntry = isThirdPartyDeposit
        ? null
        : await encryptJournalBlob(account?.address, { ts: Date.now(), ops: [{ t: 0, commitment, amount: netAmount.toString(), token: token.address }] });
-@@ -5050,23 +5447,27 @@
+@@ -4989,8 +5423,8 @@
+     ?? (onChainActivity?.ready ? (Number(onChainActivity.volumeUsdc||0) + Number(onChainActivity.volumeEurc||0)/1e6 + (Number(onChainActivity.volumeBtc||0)/1e8)*btcUsd) : null);
+   const feesTotal = ps?.feesUsdc != null ? Number(ps.feesUsdc)/1e6
+     : (onChainActivity?.ready ? Number(onChainActivity.feesUsdc||0) : null);
+-  const protocolVolumeUsd = volTotal  != null ? "$"+volTotal.toLocaleString(undefined,{maximumFractionDigits:2})  : (onChainActivity?.loading ? "loading…" : "—");
+-  const protocolFeesUsd   = feesTotal != null ? "$"+feesTotal.toLocaleString(undefined,{maximumFractionDigits:4}) : (onChainActivity?.loading ? "loading…" : "—");
++  const protocolVolumeUsd = volTotal  != null ? "$"+volTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})  : (onChainActivity?.loading ? "loading…" : "—");
++  const protocolFeesUsd   = feesTotal != null ? "$"+feesTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:4}) : (onChainActivity?.loading ? "loading…" : "—");
+ 
+   // Token registration status — if false, deposit will revert TokenNotSupported
+   const tokenSupport  = ps?.tokenSupport || {};
+@@ -5050,23 +5484,27 @@
              ? "Recipient must have opened Privar at least once (registered spend key) — otherwise these funds can't be spent by anyone."
              : null}/>
          {(() => {
@@ -914,7 +974,7 @@
            return <IG items={[["Protocol Fee", feeLabel, "paid in USDC, separate"], ["Gas","USDC","Arc Testnet"], ["Privacy","ZK proof","On-chain"]]}/>;
          })()}
        </div>
-@@ -5117,7 +5518,7 @@
+@@ -5117,7 +5555,7 @@
    const [amount, setAmount]   = useState("");
    const [q, setQ]             = useState(null);
    const [loading, setLoading] = useState(false);
@@ -923,7 +983,7 @@
    const bals = shieldedBals;
  
    const SWAP_TOKENS = {
-@@ -5150,6 +5551,10 @@
+@@ -5150,6 +5588,10 @@
      if (!amount || !q || !onArc) return;
      if (fr === to) { notify("Swap","Sélectionnez deux tokens différents.","error"); return; }
      if (tkFr.bal <= 0) { notify("Swap",`Insufficient shielded ${fr} balance.`,"error"); return; }
@@ -934,7 +994,7 @@
  
      // LIQUIDITY ENGINE: privateSwapWithRouter() lets the frontend pick ANY
      // whitelisted adapter per call, instead of being locked into the
-@@ -5434,7 +5839,7 @@
+@@ -5434,7 +5876,7 @@
      // noteAmountOut (fee-adjusted), NOT outAmountBig — must embed the exact
      // amount actually credited on-chain, same reasoning as deposit()'s
      // commitment being computed after netAmount, not before.
@@ -943,7 +1003,7 @@
      let commitmentOut, outNoteSecret, outNoteBlinding, outNotePubkeyOwner;
      if (swapSpendingKey != null) {
        const built = createOwnedNote({ spendingKey: swapSpendingKey, amount: noteAmountOut, token: tkTo.addr });
-@@ -5447,7 +5852,7 @@
+@@ -5447,7 +5889,7 @@
      // v3.4 — embed the SPEND + ADD(s) journal ops directly in this SAME swap
      // transaction instead of 2-3 separate follow-up calls. See
      // PrivarShieldVault.sol's NoteJournal doc comment.
@@ -952,7 +1012,7 @@
      // The change note's base MUST be the smaller of (a) what the local note
      // claims and (b) the real on-chain balance just read above (`realBal`,
      // when available) — never note.amount alone. If the clamp above fired
-@@ -5651,7 +6056,7 @@
+@@ -5651,7 +6093,7 @@
    const askConfirm = (txInfo) => new Promise(resolve => { confirmRef.current = resolve; setConfirmTx(txInfo); });
    const onConfirm  = () => { setConfirmTx(null); confirmRef.current?.(true); };
    const onCancel   = () => { setConfirmTx(null); confirmRef.current?.(false); };
@@ -961,7 +1021,7 @@
    const bals = shieldedBals;
  
    // NOTE: ARC Name Service (.arc) is not yet deployed — there is no on-chain
-@@ -5669,6 +6074,10 @@
+@@ -5669,6 +6111,10 @@
  
    const sendShielded = async () => {
      if (!amount || Number(amount) <= 0) return;
@@ -972,7 +1032,7 @@
      const dest = to.trim();
      if (isArcName) { notify("Send", "ARC Name Service is not live yet — enter a 0x address directly.", "error"); return; }
      if (!/^0x[0-9a-fA-F]{40}$/.test(dest)) { notify("Send", "Invalid address format", "error"); return; }
-@@ -5718,7 +6127,7 @@
+@@ -5718,7 +6164,7 @@
      // retroactively — they remain spendable exactly as before, just without
      // the new guarantee.
      const isSelfSend = dest.toLowerCase() === account?.address?.toLowerCase?.();
@@ -981,7 +1041,7 @@
  
      const nullifierIn = note.secret
        ? deriveNullifierForSpend(note.secret, note.commitment)
-@@ -5840,7 +6249,7 @@
+@@ -5840,7 +6286,7 @@
      // and relayed via ViewKeyRegistry in a second tx below — unrelated
      // transport, unrelated key). See PrivarShieldVault.sol's NoteJournal
      // doc comment for why embedding beats a follow-up broadcast.
@@ -990,7 +1050,7 @@
      const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
      // Change always stays with the sender — always self-owned, so always
      // deterministically derivable when spendingKey is available (§7.6).
-@@ -5956,6 +6365,10 @@
+@@ -5956,6 +6402,10 @@
  
    const sendPublic = async () => {
      if (!amount) return;
@@ -1001,7 +1061,7 @@
      const dest = to.trim();
      if (isArcName) { notify("Send", "ARC Name Service is not live yet — enter a 0x address directly.", "error"); return; }
      if (!/^0x[0-9a-fA-F]{40}$/.test(dest)) { notify("Send", "Invalid address format", "error"); return; }
-@@ -6027,7 +6440,7 @@
+@@ -6027,7 +6477,7 @@
    const [dest, setDest]       = useState("");
    const [loading, setLoading] = useState(false);
    const [token, setToken]     = useState("USDC"); // selected token to withdraw
@@ -1010,7 +1070,7 @@
    const bals = shieldedBals;
  
    // Token metadata — mirrors BridgePanel BRIDGE_TOKENS
-@@ -6040,6 +6453,10 @@
+@@ -6040,6 +6490,10 @@
  
    const withdraw = async () => {
      if (!amount || Number(amount) <= 0) return;
@@ -1021,7 +1081,7 @@
      const target = dest || account?.address;
      if (!target || !/^0x[0-9a-fA-F]{40}$/.test(target)) {
        notify("Withdraw", "Invalid destination address", "error"); return;
-@@ -6131,7 +6548,7 @@
+@@ -6131,7 +6585,7 @@
      // §7.6 — change stays with the sender regardless of `target` (withdraw
      // can pay out to any recipient), so it's always self-owned/deterministic
      // when spendingKey is available.
@@ -1030,7 +1090,7 @@
  
      const feeDesc = withdrawFee > 0n
        ? ` (protocol fee: ${formatToken(withdrawFee, 6)} USDC)`
-@@ -6310,11 +6727,23 @@
+@@ -6310,11 +6764,23 @@
            ⚠ No shielded notes found. Use the Shield panel to deposit first.
          </div>
        )}
@@ -1059,7 +1119,7 @@
  
        <ArcBtn
          label={!onArc?"⚠ SWITCH TO ARC TESTNET":`⟶ WITHDRAW ${tk.sym} FROM SHIELD`}
-@@ -6347,7 +6776,7 @@
+@@ -6347,7 +6813,7 @@
    const [recipient, setRecipient] = useState("");
    const [token, setToken]         = useState("USDC");
    const [step, setStep]           = useState("");
@@ -1068,7 +1128,7 @@
    const bals = shieldedBals;
    const ch   = CH.find(c=>c.domainId===destId) || CH[0];
  
-@@ -6381,6 +6810,10 @@
+@@ -6381,6 +6847,10 @@
    const bridge = async () => {
      if (!amount || Number(amount) <= 0 || !onArc) return;
      if (tk.bal <= 0) { notify("Bridge", `Insufficient shielded ${token} balance.`, "error"); return; }
@@ -1079,7 +1139,7 @@
      if (!isReachable(ch)) {
        notify("Bridge", `${ch.name} isn't (yet) reachable via LI.FI from Arc Testnet.`, "error");
        return;
-@@ -6472,7 +6905,7 @@
+@@ -6472,7 +6942,7 @@
      // SAME bridge transaction, forwarded through LiFiPrivacyBridge to
      // ShieldVault.withdraw() and emitted there. See PrivarShieldVault.sol's
      // NoteJournal doc comment.
@@ -1088,7 +1148,7 @@
      const remaining = BigInt(Math.round(Number(note.amount)||0)) - amountBig;
      // §7.6 — bridge nullifier + change note, same pattern as withdraw()/swap():
      // nullifier deterministic from the spent note when it carries a secret;
-@@ -6481,7 +6914,7 @@
+@@ -6481,7 +6951,7 @@
      const bridgeNullifier = note.secret
        ? deriveNullifierForSpend(note.secret, note.commitment)
        : randomBytes32();
@@ -1097,7 +1157,7 @@
      let changeCommitment = null, changeNoteSecret, changeNoteBlinding, changeNotePubkeyOwner;
      if (remaining > 0n) {
        if (bridgeSpendingKey != null) {
-@@ -6692,15 +7125,23 @@
+@@ -6692,15 +7162,23 @@
          if (!isFinite(cur)) return;
  
          // ── Read fees directly from contract state (most reliable) ──────────
@@ -1128,3 +1188,23 @@
          const allTimeTxCount = leafRaw && leafRaw !== "0x" ? Number(BigInt(leafRaw)) : 0; // 1 leaf = 1 deposit
          const totalFeesCollected = feesUsdc + feesEurc;
  
+@@ -6918,8 +7396,8 @@
+             const fees = ps?.feesUsdc != null ? Number(ps.feesUsdc)/1e6 : (oc.ready ? Number(oc.feesUsdc||0) : null);
+             return [
+               { l:"TX COUNT", v: txCount != null ? String(txCount) : (oc.loading?"loading…":"—"), c:"#0EA5E9" },
+-              { l:"VOLUME",   v: vol  != null ? "$"+vol.toLocaleString(undefined,{maximumFractionDigits:2})  : (oc.loading?"loading…":"—"), c:"#00FFB0" },
+-              { l:"FEES",     v: fees != null ? "$"+fees.toLocaleString(undefined,{maximumFractionDigits:4}) : (oc.loading?"loading…":"—"), c:"#fbbf24" },
++              { l:"VOLUME",   v: vol  != null ? "$"+vol.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})  : (oc.loading?"loading…":"—"), c:"#00FFB0" },
++              { l:"FEES",     v: fees != null ? "$"+fees.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:4}) : (oc.loading?"loading…":"—"), c:"#fbbf24" },
+             ];
+           })().map(s=>(
+             <div key={s.l} style={{ display:"flex", justifyContent:"space-between", marginBottom:5 }}>
+@@ -6946,7 +7424,7 @@
+           const feesUsd = ps?.feesUsdc != null ? Number(ps.feesUsdc)/1e6 : (oc.ready ? Number(oc.feesUsdc||0) : null);
+           return [
+             { l:"Total Tx (vault + staking)",  v: combinedTx!=null ? String(combinedTx) : (oc.loading?"loading…":"—"), c:"#0EA5E9" },
+-            { l:"Fees Collected (USDC)", v: feesUsd != null ? "$"+feesUsd.toLocaleString(undefined,{maximumFractionDigits:4}) : (oc.loading?"loading…":"—"), c:"#fbbf24" },
++            { l:"Fees Collected (USDC)", v: feesUsd != null ? "$"+feesUsd.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:4}) : (oc.loading?"loading…":"—"), c:"#fbbf24" },
+             { l:"Fee Rate (deposit/withdraw)", v: feeRateLabel,                                                       c:"#64748b" },
+             { l:"Treasury",             v: feeConfig.treasury ? feeConfig.treasury.slice(0,6)+"…"+feeConfig.treasury.slice(-4) : "loading…", c:"#64748b" },
+           ];

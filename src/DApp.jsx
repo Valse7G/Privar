@@ -1440,13 +1440,15 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
       // a rejected view-key signature doesn't block this, and vice versa.
       await ensureSpendKeyRegistered(account.address, sendViewKeyTx, notify).catch(() => {});
     })();
-    // Rescan every 2 minutes in case new stealth notes / cloud journal entries arrive
+    // Rescan every 3 minutes (was 2 — see runPrivarThrottled's AUDIT FINDING,
+    // round 2: reduces sustained request volume against a tight shared rate
+    // limit) in case new stealth notes / cloud journal entries arrive
     const id = setInterval(() => {
       runPrivarThrottled(() => scanStealthNotes(account.address, recomputeShielded)).catch(() => {});
       runPrivarThrottled(() => scanNoteRelay(account.address, recomputeShielded)).catch(() => {});
       runPrivarThrottled(() => resyncFromCloudVault(account.address, recomputeShielded)).catch(() => {});
       runPrivarThrottled(() => resyncFromShieldVaultJournal(account.address, recomputeShielded)).catch(() => {});
-    }, 120_000);
+    }, 180_000);
     return () => { cancelled = true; clearInterval(id); };
   }, [account?.address, onArc, recomputeShielded, sendViewKeyTx, notify]);
 
@@ -1965,7 +1967,7 @@ function useProtocolStats(onArc) {
     // public testnet RPC, likely the cause of the intermittent stat
     // failures/staleness reported (values working one moment, stuck
     // "loading…" the next). 30s cuts steady-state request volume by 3x.
-    const id = setInterval(fetch, 30000);
+    const id = setInterval(fetch, 45000); // was 30s — see runPrivarThrottled's AUDIT FINDING (round 2): reduces sustained request volume against a tight shared rate limit, on top of spacing/cooldown tuning
     return () => clearInterval(id);
   }, [onArc, fetch]);
   return { ...stats, refresh: fetch };
@@ -3096,6 +3098,27 @@ function normalizeBlockscoutLog(l) {
 // being the reason that limit never gets a chance to reset.
 let __privarBgQueue = Promise.resolve();
 let __privarBgCooldownUntil = 0;
+let __privarBgLastCallAt = 0;
+let __privarBgConsecutiveLimits = 0;
+
+// AUDIT FINDING (2026-09, round 2): a fresh log after the first version of
+// this coordinator still showed "stats fetch: 17/21 calls failed" and
+// three separate "Request limit exceeded" errors. The coordinator was
+// doing its job (serializing calls, sharing a cooldown on a 429) — but a
+// FIXED 4-second cooldown, applied only reactively after a limit was
+// already hit, wasn't conservative enough for how tight this RPC/
+// Blockscout budget actually is: it let the queue start hammering again
+// right as the provider's own (longer) window was still in effect,
+// re-triggering the same limit almost immediately. Two changes:
+// (1) a small PROACTIVE minimum gap between every throttled call, always
+//     enforced, not just after a failure — spaces requests out before
+//     hitting the wall instead of only backing off after;
+// (2) the reactive cooldown now grows with consecutive hits (6s, 12s,
+//     24s, capped at 30s) instead of a flat 4s every time, and resets
+//     once a call actually succeeds — so a provider whose window is
+//     longer than 4s eventually gets a cooldown long enough to actually
+//     clear it, without permanently over-throttling a healthy connection.
+const PRIVAR_MIN_GAP_MS = 500;
 
 function isPrivarRateLimitError(e) {
   const msg = ((e && e.message) || String(e || "")).toLowerCase();
@@ -3104,18 +3127,32 @@ function isPrivarRateLimitError(e) {
       || msg.includes("exceeds defined limit");
 }
 
-function markPrivarRateLimited(cooldownMs = 4000) {
+function markPrivarRateLimited() {
+  __privarBgConsecutiveLimits = Math.min(__privarBgConsecutiveLimits + 1, 3);
+  const cooldownMs = 6000 * Math.pow(2, __privarBgConsecutiveLimits - 1); // 6s, 12s, 24s
   __privarBgCooldownUntil = Math.max(__privarBgCooldownUntil, Date.now() + cooldownMs);
 }
 
-// Runs `fn` once this device's shared background queue is free AND any
-// active shared cooldown has elapsed. Chains regardless of outcome (a
-// rejection must never wedge every future background scan behind it).
+// Runs `fn` once this device's shared background queue is free, any active
+// shared cooldown has elapsed, AND at least PRIVAR_MIN_GAP_MS has passed
+// since the last throttled call started (see the AUDIT FINDING above).
+// Chains regardless of outcome (a rejection must never wedge every future
+// background scan behind it).
 function runPrivarThrottled(fn) {
   const run = async () => {
-    const wait = __privarBgCooldownUntil - Date.now();
+    const cooldownWait = __privarBgCooldownUntil - Date.now();
+    const gapWait = (__privarBgLastCallAt + PRIVAR_MIN_GAP_MS) - Date.now();
+    const wait = Math.max(cooldownWait, gapWait);
     if (wait > 0) await new Promise(r => setTimeout(r, wait));
-    return fn();
+    __privarBgLastCallAt = Date.now();
+    try {
+      const out = await fn();
+      __privarBgConsecutiveLimits = 0; // a clean call means this window has cleared
+      return out;
+    } catch (e) {
+      if (isPrivarRateLimitError(e)) markPrivarRateLimited();
+      throw e;
+    }
   };
   const result = __privarBgQueue.then(run, run);
   __privarBgQueue = result.then(() => {}, () => {});
@@ -5386,8 +5423,8 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
     ?? (onChainActivity?.ready ? (Number(onChainActivity.volumeUsdc||0) + Number(onChainActivity.volumeEurc||0)/1e6 + (Number(onChainActivity.volumeBtc||0)/1e8)*btcUsd) : null);
   const feesTotal = ps?.feesUsdc != null ? Number(ps.feesUsdc)/1e6
     : (onChainActivity?.ready ? Number(onChainActivity.feesUsdc||0) : null);
-  const protocolVolumeUsd = volTotal  != null ? "$"+volTotal.toLocaleString(undefined,{maximumFractionDigits:2})  : (onChainActivity?.loading ? "loading…" : "—");
-  const protocolFeesUsd   = feesTotal != null ? "$"+feesTotal.toLocaleString(undefined,{maximumFractionDigits:4}) : (onChainActivity?.loading ? "loading…" : "—");
+  const protocolVolumeUsd = volTotal  != null ? "$"+volTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})  : (onChainActivity?.loading ? "loading…" : "—");
+  const protocolFeesUsd   = feesTotal != null ? "$"+feesTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:4}) : (onChainActivity?.loading ? "loading…" : "—");
 
   // Token registration status — if false, deposit will revert TokenNotSupported
   const tokenSupport  = ps?.tokenSupport || {};
@@ -7359,8 +7396,8 @@ function AnalyticsPanel({ protocolStats, txHistory, account, onArc, prices, onCh
             const fees = ps?.feesUsdc != null ? Number(ps.feesUsdc)/1e6 : (oc.ready ? Number(oc.feesUsdc||0) : null);
             return [
               { l:"TX COUNT", v: txCount != null ? String(txCount) : (oc.loading?"loading…":"—"), c:"#0EA5E9" },
-              { l:"VOLUME",   v: vol  != null ? "$"+vol.toLocaleString(undefined,{maximumFractionDigits:2})  : (oc.loading?"loading…":"—"), c:"#00FFB0" },
-              { l:"FEES",     v: fees != null ? "$"+fees.toLocaleString(undefined,{maximumFractionDigits:4}) : (oc.loading?"loading…":"—"), c:"#fbbf24" },
+              { l:"VOLUME",   v: vol  != null ? "$"+vol.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})  : (oc.loading?"loading…":"—"), c:"#00FFB0" },
+              { l:"FEES",     v: fees != null ? "$"+fees.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:4}) : (oc.loading?"loading…":"—"), c:"#fbbf24" },
             ];
           })().map(s=>(
             <div key={s.l} style={{ display:"flex", justifyContent:"space-between", marginBottom:5 }}>
@@ -7387,7 +7424,7 @@ function AnalyticsPanel({ protocolStats, txHistory, account, onArc, prices, onCh
           const feesUsd = ps?.feesUsdc != null ? Number(ps.feesUsdc)/1e6 : (oc.ready ? Number(oc.feesUsdc||0) : null);
           return [
             { l:"Total Tx (vault + staking)",  v: combinedTx!=null ? String(combinedTx) : (oc.loading?"loading…":"—"), c:"#0EA5E9" },
-            { l:"Fees Collected (USDC)", v: feesUsd != null ? "$"+feesUsd.toLocaleString(undefined,{maximumFractionDigits:4}) : (oc.loading?"loading…":"—"), c:"#fbbf24" },
+            { l:"Fees Collected (USDC)", v: feesUsd != null ? "$"+feesUsd.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:4}) : (oc.loading?"loading…":"—"), c:"#fbbf24" },
             { l:"Fee Rate (deposit/withdraw)", v: feeRateLabel,                                                       c:"#64748b" },
             { l:"Treasury",             v: feeConfig.treasury ? feeConfig.treasury.slice(0,6)+"…"+feeConfig.treasury.slice(-4) : "loading…", c:"#64748b" },
           ];
