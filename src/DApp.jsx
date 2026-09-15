@@ -23,6 +23,7 @@ import {
   buildRegisterSpendKeyCalldata, buildHasSpendKeyCall, buildGetSpendKeyCall, decodeSpendKeyReturn,
   buildPrivateBridgeWithAdapterCalldata,
   buildRelayNoteCalldata,
+  buildAggregate3Calldata, decodeAggregate3Result,
 } from "./contracts.js";
 import {
   scalarFromEntropy, createOwnedNote, deriveNullifierForSpend, randomBlinding,
@@ -1804,15 +1805,19 @@ function useProtocolStats(onArc) {
         // once already (buildTotalVolumeByTokenCall/decodeStringReturn were used here
         // but never imported) and silently zeroed out the whole panel every poll with
         // no visible error short of an uncaught rejection in devtools. Never again.
+        // Plain {to, data} descriptors now (not closures) — used to build
+        // ONE Multicall3.aggregate3 call (see below) instead of up to 21
+        // separate eth_call round-trips; the sequential-fallback path further
+        // down just wraps each one in call(d.to, d.data) same as before.
         const calls = [
           // v3.3 — totalShielded(token) is real again (restored on the vault) and
           // is MORE accurate than balanceOf(vault): it reflects net shielded
           // principal only, excluding any fee residue sitting in the contract
           // that hasn't been claimed via withdrawFees() yet.
-          () => call(CONTRACTS.PrivarShieldVault, SEL.totalShielded + encodeAddress(CONTRACTS.USDC)),
-          () => call(CONTRACTS.PrivarShieldVault, SEL.totalShielded + encodeAddress(CONTRACTS.EURC)),
-          () => call(CONTRACTS.PrivarShieldVault, SEL.totalShielded + encodeAddress(CONTRACTS.cirBTC)),
-          () => call(CONTRACTS.PrivarMerkleTreeManager,   SEL.nextIndex),
+          { to: CONTRACTS.PrivarShieldVault, data: SEL.totalShielded + encodeAddress(CONTRACTS.USDC) },
+          { to: CONTRACTS.PrivarShieldVault, data: SEL.totalShielded + encodeAddress(CONTRACTS.EURC) },
+          { to: CONTRACTS.PrivarShieldVault, data: SEL.totalShielded + encodeAddress(CONTRACTS.cirBTC) },
+          { to: CONTRACTS.PrivarMerkleTreeManager, data: SEL.nextIndex },
           // v3.4.1 — the legacy EmergencyController contract (v2.x era) is
           // gone from every recent redeploy and was never re-pointed at a
           // real address afterward; these two calls always failed silently
@@ -1821,64 +1826,52 @@ function useProtocolStats(onArc) {
           // already prioritized vaultPaused, the real paused() bool on
           // ShieldVault itself — the SAME call still made two lines below).
           // Removed to stop wasting 2 of ~23 RPC calls every 30s poll.
-          () => call(CONTRACTS.PrivarShieldVault, SEL.paused),
-          () => call(CONTRACTS.PrivarShieldVault, SEL.supportedTokens + encodeAddress(CONTRACTS.USDC)),
-          () => call(CONTRACTS.PrivarShieldVault, SEL.supportedTokens + encodeAddress(CONTRACTS.EURC)),
-          () => call(CONTRACTS.PrivarShieldVault, SEL.supportedTokens + encodeAddress(CONTRACTS.cirBTC)),
-          () => call(CONTRACTS.PrivarShieldVault, SEL.VERSION),
-          () => call(CONTRACTS.PrivarShieldVault, SEL.protocolFeeBps),
-          () => call(CONTRACTS.PrivarShieldVault, SEL.flatFeeUsdc),
+          { to: CONTRACTS.PrivarShieldVault, data: SEL.paused },
+          { to: CONTRACTS.PrivarShieldVault, data: SEL.supportedTokens + encodeAddress(CONTRACTS.USDC) },
+          { to: CONTRACTS.PrivarShieldVault, data: SEL.supportedTokens + encodeAddress(CONTRACTS.EURC) },
+          { to: CONTRACTS.PrivarShieldVault, data: SEL.supportedTokens + encodeAddress(CONTRACTS.cirBTC) },
+          { to: CONTRACTS.PrivarShieldVault, data: SEL.VERSION },
+          { to: CONTRACTS.PrivarShieldVault, data: SEL.protocolFeeBps },
+          { to: CONTRACTS.PrivarShieldVault, data: SEL.flatFeeUsdc },
           // v3.3 — restored: these functions now genuinely exist on the vault
           // (ported from the v2.8 reference implementation).
-          () => call(CONTRACTS.PrivarShieldVault, SEL.totalTxCount),
-          () => call(CONTRACTS.PrivarShieldVault, buildTotalVolumeByTokenCall(CONTRACTS.USDC)),
-          () => call(CONTRACTS.PrivarShieldVault, buildTotalVolumeByTokenCall(CONTRACTS.EURC)),
-          () => call(CONTRACTS.PrivarShieldVault, buildTotalVolumeByTokenCall(CONTRACTS.cirBTC)),
+          { to: CONTRACTS.PrivarShieldVault, data: SEL.totalTxCount },
+          { to: CONTRACTS.PrivarShieldVault, data: buildTotalVolumeByTokenCall(CONTRACTS.USDC) },
+          { to: CONTRACTS.PrivarShieldVault, data: buildTotalVolumeByTokenCall(CONTRACTS.EURC) },
+          { to: CONTRACTS.PrivarShieldVault, data: buildTotalVolumeByTokenCall(CONTRACTS.cirBTC) },
           // Fees always land in feesCollectedByToken[NATIVE_USDC] only (see
           // ShieldVault's v3.3 fee model) — EURC/cirBTC entries will always
           // read 0, kept only for interface completeness.
-          () => call(CONTRACTS.PrivarShieldVault, SEL.feesCollectedByToken + encodeAddress(CONTRACTS.USDC)),
-          () => call(CONTRACTS.PrivarShieldVault, SEL.feesCollectedByToken + encodeAddress(CONTRACTS.EURC)),
-          () => call(CONTRACTS.PrivarShieldVault, SEL.feesCollectedByToken + encodeAddress(CONTRACTS.cirBTC)),
-          () => call(CONTRACTS.PrivarShieldVault, SEL.swapFeeBps),
-          () => call(CONTRACTS.PrivarShieldVault, SEL.bridgeFeeBps),
-          () => call(CONTRACTS.PrivarShieldVault, SEL.treasury),
+          { to: CONTRACTS.PrivarShieldVault, data: SEL.feesCollectedByToken + encodeAddress(CONTRACTS.USDC) },
+          { to: CONTRACTS.PrivarShieldVault, data: SEL.feesCollectedByToken + encodeAddress(CONTRACTS.EURC) },
+          { to: CONTRACTS.PrivarShieldVault, data: SEL.feesCollectedByToken + encodeAddress(CONTRACTS.cirBTC) },
+          { to: CONTRACTS.PrivarShieldVault, data: SEL.swapFeeBps },
+          { to: CONTRACTS.PrivarShieldVault, data: SEL.bridgeFeeBps },
+          { to: CONTRACTS.PrivarShieldVault, data: SEL.treasury },
         ];
-        // Each entry wrapped individually too: a synchronous throw from any ONE
-        // builder function (e.g. an undefined import) now only nulls that ONE call
-        // instead of aborting calls.map() entirely and skipping every call after it.
-        // Throttled AND chunked (2026-09): wrapping the whole batch in
-        // runPrivarThrottled stopped it from overlapping with the OTHER
-        // background scanners, but a user-supplied log showed "21/21 calls
-        // failed" persisting even after that — this internal 21-way
-        // simultaneous burst can trip the RPC's rate limit entirely on its
-        // own the instant it's this poll's turn in the queue, regardless of
-        // what else is or isn't running. Split into small groups with a
-        // short gap between them so the poll asks for a few numbers at a
-        // time instead of all 21 in one breath — same total calls, same
-        // result shape (`results[i]` still lines up with `calls[i]`), just
-        // spread out enough to stay under the limit that a single burst of
-        // 21 was hitting by itself.
-        const runChunked = async () => {
-          // AUDIT FINDING (2026-09, round 3): a console error object captured
-          // directly this time — {code: -32005, message: "Request exceeds
-          // defined limit... rate limit exceeded"} — confirmed 16/21 and
-          // 11/21 calls still failing even after round 2's proactive spacing.
-          // Root cause of THIS specific residual failure: that spacing is
-          // enforced BETWEEN separate runPrivarThrottled() calls, but this
-          // function's OWN internal chunking fired 5 calls AT ONCE (via
-          // Promise.allSettled) every 400ms — a burst of 5 concurrent
-          // requests the external spacing never saw or metered. This
-          // provider's real limit is evidently stricter than "5 at once is
-          // fine every 400ms". Fully sequential now: one call, wait, next
-          // call — slower for a single stats refresh (a background poll,
-          // nothing the user is blocked waiting on) but this is what
-          // actually respects a limit this tight instead of just resizing
-          // the burst that kept tripping it.
+        // AUDIT FINDING (2026-09, round 4 — the actual fix, not another
+        // tuning pass): rounds 2 and 3 kept reshaping the SAME 21 individual
+        // eth_call round-trips (spacing, then fully sequential) and still
+        // hit {code:-32005, "Request exceeds defined limit"} — the user's
+        // own diagnosis was exactly right: "trop d'appels RPC" (too many RPC
+        // calls). Spacing 21 calls out, however carefully, still means 21
+        // calls. The actual fix is not needing 21 in the first place: every
+        // one of them targets one of just two contracts (PrivarShieldVault,
+        // PrivarMerkleTreeManager), which is exactly what Multicall3 (the
+        // canonical instance deployed on Arc Testnet at the same address as
+        // 250+ other EVM chains — see CONTRACTS.Multicall3) exists to batch
+        // into a SINGLE eth_call. 21 round-trips become 1.
+        //
+        // Falls back to the previous fully-sequential approach if the
+        // Multicall3 call itself fails for any reason (wrong address on some
+        // future network, the contract not actually deployed, a malformed
+        // response) — same defensive pattern already used elsewhere in this
+        // file (fetchLogsPaginated's Blockscout-then-RPC fallback).
+        const runSequential = async () => {
           const out = [];
           for (let i = 0; i < calls.length; i++) {
             try {
-              const value = await calls[i]();
+              const value = await call(calls[i].to, calls[i].data);
               out.push({ status: "fulfilled", value });
             } catch (reason) {
               out.push({ status: "rejected", reason });
@@ -1887,11 +1880,26 @@ function useProtocolStats(onArc) {
           }
           return out;
         };
+        const runViaMulticall = async () => {
+          const multicallData = buildAggregate3Calldata(
+            calls.map(c => ({ target: c.to, allowFailure: true, callData: c.data }))
+          );
+          const raw = await rpcCallWithRetry("eth_call", [{ to: CONTRACTS.Multicall3, data: multicallData }, "latest"], 2, 500);
+          const decoded = decodeAggregate3Result(raw);
+          if (decoded.length !== calls.length) throw new Error(`Multicall3 returned ${decoded.length} results, expected ${calls.length}`);
+          return decoded.map(r => r.success
+            ? { status: "fulfilled", value: r.returnData }
+            : { status: "rejected", reason: new Error("call reverted inside Multicall3.aggregate3") });
+        };
         // `priority` (see this function's declaration) skips the shared
-        // queue entirely — still chunked internally (the 21-wide burst was
-        // its own separate problem, unrelated to queueing), just not made
-        // to wait behind whatever background scan happens to be running.
-        const results = priority ? await runChunked() : await runPrivarThrottled(runChunked);
+        // queue entirely — not needed to worry about internal bursts here
+        // anymore (that was the round-2/3 problem this replaces): Multicall3
+        // is always exactly ONE outbound request either way.
+        const runStatsFetch = async () => {
+          try { return await runViaMulticall(); }
+          catch (e) { console.warn("[Privar] stats: Multicall3 failed, falling back to sequential eth_call:", e.message); return runSequential(); }
+        };
+        const results = priority ? await runStatsFetch() : await runPrivarThrottled(runStatsFetch);
       const v = (i) => results[i].status === "fulfilled" ? results[i].value : null;
       const [
         su, se, sb, leaf, vaultPaused, tUsdc, tEurc, tBtc,

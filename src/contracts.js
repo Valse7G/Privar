@@ -148,6 +148,14 @@ export const CONTRACTS = {
   // EURC + cirBTC — real addresses from latest.json v3.0.0 (Arc Testnet, 2026-07-20)
   EURC:                import.meta.env.VITE_EURC_ADDRESS   ?? "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
   cirBTC:              import.meta.env.VITE_CIRBTC_ADDRESS ?? "0xf0C4a4CE82A5746AbAAd9425360Ab04fbBA432BF",
+  // Canonical Multicall3 — same address on 250+ EVM chains via the
+  // deterministic CREATE2 deployer, Arc Testnet included (confirmed against
+  // Arc's own RPC docs). Batches many eth_call reads into ONE RPC
+  // round-trip — see buildAggregate3Calldata/decodeAggregate3Result below,
+  // used by the protocol-stats poll to cut ~21 individual eth_calls down to
+  // 1 per refresh (2026-09 fix for a confirmed, persistent RPC rate-limit
+  // problem — see that poll's own comments for the full story).
+  Multicall3:          import.meta.env.VITE_MULTICALL3_ADDRESS ?? "0xcA11bde05977b3631167028862bE2a173976CA11",
   CCTP_TokenMessenger: "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA",
   // Deployed by Privar
   PrivarShieldVault:         _c.PrivarShieldVault,
@@ -261,6 +269,10 @@ export const NATIVE_TO_ERC20    = BigInt("1000000000000"); // 10^12
 export const KIT_KEY = import.meta.env.VITE_KIT_KEY ?? "";
 
 export const SEL = {
+  // Multicall3.aggregate3((address,bool,bytes)[]) — keccak256 selector,
+  // independently recomputed and cross-checked against the well-known
+  // public value for this widely-deployed contract.
+  aggregate3:         "0x82ad56cb",
   // ERC-20
   balanceOf:          "0x70a08231",  // balanceOf(address)
   approve:            "0x095ea7b3",  // approve(address,uint256)
@@ -426,6 +438,72 @@ export const encodedBytesSize = (hexOrBytes) => {
   const byteLen = hex.length / 2;
   return 32 + Math.ceil(byteLen / 32) * 32;
 };
+
+// ── Multicall3.aggregate3 — encode/decode ────────────────────────────────
+// Batches many independent eth_call reads into ONE RPC round-trip: pass
+// an array of { target, allowFailure, callData } and get back the exact
+// return-data each individual call would have produced, without ever
+// sending them as separate requests. Written for the protocol-stats poll
+// (21 individual eth_calls → 1), which is where this session confirmed —
+// via a captured {code:-32005, "Request exceeds defined limit"} error and
+// the user's own correct diagnosis ("trop d'appels RPC") — that spacing
+// and chunking alone weren't enough; the fix that actually respects a
+// tight rate limit is not needing 21 round-trips in the first place.
+//
+// Call3 = (address target, bool allowFailure, bytes callData). Standard
+// ABI tuple-array encoding: N head words (per-element offsets, relative
+// to the start of the array's own data — i.e. right after the length
+// word) followed by each element's own head/tail encoding in turn. Each
+// element here has exactly one dynamic field (callData), so its own
+// encoding is 3 head words (target, allowFailure, offset-to-callData)
+// followed by callData's length+data tail.
+export function buildAggregate3Calldata(calls) {
+  const n = calls.length;
+  let offset = n * 32; // first element's tail starts right after the N head words
+  const heads = [];
+  const tails = [];
+  for (const c of calls) {
+    heads.push(encodeUint256(BigInt(offset)));
+    const elementHex =
+      encodeAddress(c.target) +
+      encodeUint256(c.allowFailure ? 1n : 0n) +
+      encodeUint256(96n) + // offset to callData, relative to this element's own start: 3 head words * 32
+      encodeBytes(c.callData);
+    tails.push(elementHex);
+    offset += elementHex.length / 2;
+  }
+  const arrayData = encodeUint256(BigInt(n)) + heads.join("") + tails.join("");
+  return SEL.aggregate3 + encodeUint256(32n) + arrayData;
+}
+
+// Decodes an aggregate3 return blob into [{ success, returnData }], one
+// per call, in the same order they were passed to buildAggregate3Calldata.
+// `returnData` is the exact hex string the individual eth_call would have
+// resolved to (e.g. "0x0000...0001"), or "0x" for a 0-length/failed call.
+export function decodeAggregate3Result(hex) {
+  const data = (hex || "").replace("0x", "");
+  const u256At = (byteOffset) => {
+    const chunk = data.slice(byteOffset * 2, byteOffset * 2 + 64);
+    return chunk ? BigInt("0x" + chunk) : 0n;
+  };
+  if (data.length < 64) return [];
+  const arrayOffset = Number(u256At(0));
+  const n = Number(u256At(arrayOffset));
+  const arrayDataBase = arrayOffset + 32;
+  const results = [];
+  for (let i = 0; i < n; i++) {
+    const elementRelOffset = Number(u256At(arrayDataBase + i * 32));
+    const elementStart = arrayDataBase + elementRelOffset;
+    const success = u256At(elementStart) === 1n;
+    const returnDataRelOffset = Number(u256At(elementStart + 32));
+    const returnDataStart = elementStart + returnDataRelOffset;
+    const returnDataLen = Number(u256At(returnDataStart));
+    const returnData = returnDataLen === 0 ? "0x"
+      : "0x" + data.slice((returnDataStart + 32) * 2, (returnDataStart + 32) * 2 + returnDataLen * 2);
+    results.push({ success, returnData });
+  }
+  return results;
+}
 
 // Dynamic array of a STATIC element type (bytes32[] or uint256[] — both single
 // 32-byte words per element). Returns { size, words } where `words` is the
