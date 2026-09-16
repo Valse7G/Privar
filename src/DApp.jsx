@@ -1473,7 +1473,42 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
       runPrivarThrottled(() => resyncFromCloudVault(account.address, recomputeShielded)).catch(() => {});
       runPrivarThrottled(() => resyncFromShieldVaultJournal(account.address, recomputeShielded)).catch(() => {});
     }, 180_000);
-    return () => { cancelled = true; clearInterval(id); };
+    // AUDIT FINDING (2026-09): repeated cross-device sync reports, even
+    // after every RPC-reliability fix this session, traced to something
+    // the throttle/cooldown work never addressed — not failure, but TIME.
+    // fetchLogsPaginatedInner's RPC fallback path only advances up to
+    // MAX_CHUNKS_PER_CALL(6) * 2000 = 12,000 blocks per call before saving
+    // progress and returning (deliberately, to stay polite to a tight rate
+    // limit — see that function's own comment). Fine once caught up, but a
+    // BRAND-NEW device has to walk potentially millions of blocks from
+    // each scanner's genesis block, 12,000 at a time, and — combined with
+    // this same session's own fix moving the steady-state interval from
+    // 2 minutes to 3 for load reasons — that catch-up could take a very
+    // long time this way alone, indistinguishable from "cross-device sync
+    // is broken" to someone testing shortly after connecting on a second
+    // device. Blockscout (tried first, whenever it's up) usually gets the
+    // whole range in one shot and sidesteps this entirely — this burst
+    // only matters when it's down and every scanner is stuck walking the
+    // slow RPC-paginated path.
+    //
+    // Fast catch-up burst: for the first ~2 minutes after connecting, run
+    // an EXTRA pass of all 4 scanners every 12s (still fully throttled —
+    // this doesn't bypass the shared queue/cooldown, it just asks more
+    // often) instead of waiting the full 3-minute steady-state interval.
+    // Self-limiting: fetchLogsPaginatedInner's own "already caught up to
+    // head" early-return (see its own log line) makes every extra call
+    // after catch-up cheap — effectively a fast/slow mode that settles on
+    // its own, not a permanent increase in steady-state load.
+    let burstCount = 0;
+    const burstId = setInterval(() => {
+      burstCount++;
+      if (burstCount > 10) { clearInterval(burstId); return; }
+      runPrivarThrottled(() => scanStealthNotes(account.address, recomputeShielded)).catch(() => {});
+      runPrivarThrottled(() => scanNoteRelay(account.address, recomputeShielded)).catch(() => {});
+      runPrivarThrottled(() => resyncFromCloudVault(account.address, recomputeShielded)).catch(() => {});
+      runPrivarThrottled(() => resyncFromShieldVaultJournal(account.address, recomputeShielded)).catch(() => {});
+    }, 12_000);
+    return () => { cancelled = true; clearInterval(id); clearInterval(burstId); };
   }, [account?.address, onArc, recomputeShielded, sendViewKeyTx, notify]);
 
   const panelProps = { account, balance, usdcBalance, onArc, notify, refreshBalance, txHistory, loadingBal, prices, changes, change24h, lastUpdate, priceError, setPanel, protocolStats, onChainActivity, shieldedBals, recomputeShielded, sendRealTx: sendViewKeyTx };
