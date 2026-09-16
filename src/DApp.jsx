@@ -5063,7 +5063,7 @@ function ShieldedWallet({ bals, onMax, tokenFilter, actionableFilter, compact = 
 }
 
 function useTxSend({ account, onArc, notify, refreshBalance, onSuccess }) {
-  const sendRealTx = useCallback(async ({ label, description, buildTx, onHash, onReceipt }) => {
+  const sendRealTx = useCallback(async ({ label, description, buildTx, onHash, onReceipt, skipOnSuccess }) => {
     if (!onArc) { notify(label, "Switch to Arc Testnet first", "error"); return false; }
     if (!account?.address) { notify(label, "Wallet not connected", "error"); return false; }
     notify(label, description + " — confirm in wallet...", "pending");
@@ -5110,7 +5110,26 @@ function useTxSend({ account, onArc, notify, refreshBalance, onSuccess }) {
         // Dashboard stats (TVL, tx count, volume, fees) poll on a timer and
         // would otherwise wait up to 30s to reflect this transaction — refresh
         // them immediately instead of leaving the UI looking stale/unchanged.
-        try { onSuccess?.(); } catch {}
+        //
+        // AUDIT FINDING (2026-09): confirmed via a photographed wallet error
+        // dialog that the WALLET's own eth_getTransactionCount (nonce lookup)
+        // was hitting this same RPC's rate limit — see sendTransaction()'s
+        // own comment. This "instant" refresh (protocolStats.refresh(true)
+        // deliberately bypasses the shared queue — see its own doc comment)
+        // plus onChainActivity's own multi-call refresh both fire right here,
+        // fire-and-forget, the MOMENT a tx confirms. For a 2-step flow
+        // (Approve → Deposit, EURC/cirBTC's only path — native USDC needs
+        // just the one Deposit tx) that means this burst of THIS app's own
+        // RPC calls lands in the EXACT narrow window between Approve
+        // confirming and the caller immediately building+sending Deposit —
+        // competing with the wallet's own upcoming nonce lookup for that
+        // second transaction, at the worst possible moment. An approve()
+        // moves no value and changes no stat this refresh would show
+        // anyway, so there's nothing to refresh for yet — skipped entirely
+        // for callers that pass skipOnSuccess (every Approve step, across
+        // every panel), and still fires normally for the real,
+        // value-moving transaction right after it.
+        if (!skipOnSuccess) { try { onSuccess?.(); } catch {} }
         return true;
       } else {
         notify(`${label} Failed`, "Transaction reverted", "error", hash);
@@ -5231,6 +5250,7 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
         label: `Approve ${token.symbol}`,
         description: `Approving ${amount} ${token.symbol} for PrivarShieldVault`,
         buildTx: () => ({ to: token.address, value: "0x0", data: buildApproveCalldata(CONTRACTS.PrivarShieldVault, amountBig) }),
+        skipOnSuccess: true, // see sendRealTx's own comment — an approve() moves no value; skip the stats burst so it doesn't compete with the Deposit tx's own wallet-side nonce lookup right after
       });
       if (!approved) { setLoading(false); return; }
     }
@@ -7655,6 +7675,7 @@ function StakingPanel({ account, usdcBalance, onArc, notify, refreshBalance }) {
       label: "Approve USDC",
       description: `Approve ${stakeAmt} USDC for PrivarStaking`,
       buildTx: () => ({ to: CONTRACTS.USDC, value: "0x0", data: buildApproveCalldata(CONTRACTS.PrivarStaking, amtWei) }),
+      skipOnSuccess: true, // see sendRealTx's own comment — same reasoning as the Shield panel's approve step
     });
 
     if (approveOk) {
