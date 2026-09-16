@@ -1891,12 +1891,29 @@ function useProtocolStats(onArc) {
         // response) — same defensive pattern already used elsewhere in this
         // file (fetchLogsPaginated's Blockscout-then-RPC fallback).
         const runSequential = async () => {
+          // AUDIT FINDING (2026-09, round 5): a log showed the Multicall3
+          // attempt failing with a rate-limit error, THEN this exact
+          // fallback ALSO failing 21/21 — meaning the provider was in a
+          // sustained rate-limit window, not just a momentary burst. This
+          // loop's flat 350ms delay ignores the shared cooldown
+          // (__privarBgCooldownUntil) that a rate-limit hit sets elsewhere
+          // in this file — so call #1 getting rate-limited (and extending
+          // that cooldown) did nothing to stop calls #2 through #21 from
+          // immediately retrying into the exact same still-active window,
+          // wasting the whole fallback pass on a wall that was never going
+          // to clear in 350ms. Now checks and waits out that same shared
+          // cooldown before each individual call, and feeds it on every
+          // failure — so a sustained limit is actually waited out instead
+          // of hammered.
           const out = [];
           for (let i = 0; i < calls.length; i++) {
+            const wait = __privarBgCooldownUntil - Date.now();
+            if (wait > 0) await new Promise(r => setTimeout(r, wait));
             try {
               const value = await call(calls[i].to, calls[i].data);
               out.push({ status: "fulfilled", value });
             } catch (reason) {
+              if (isPrivarRateLimitError(reason)) markPrivarRateLimited();
               out.push({ status: "rejected", reason });
             }
             if (i + 1 < calls.length) await new Promise(r => setTimeout(r, 350));
@@ -3175,8 +3192,14 @@ function isPrivarRateLimitError(e) {
 }
 
 function markPrivarRateLimited() {
-  __privarBgConsecutiveLimits = Math.min(__privarBgConsecutiveLimits + 1, 3);
-  const cooldownMs = 6000 * Math.pow(2, __privarBgConsecutiveLimits - 1); // 6s, 12s, 24s
+  // Cap raised 24s → 60s (2026-09, round 5): a log showed 21/21 calls
+  // still failing in the fully-sequential, cooldown-respecting fallback —
+  // meaning the provider's actual rate-limit window outlasted a 24s max
+  // cooldown at least once in practice. 6s → 12s → 24s → 48s → 60s
+  // (capped) gives real headroom for a sustained window instead of
+  // topping out too early and going back to hammering it.
+  __privarBgConsecutiveLimits = Math.min(__privarBgConsecutiveLimits + 1, 5);
+  const cooldownMs = Math.min(6000 * Math.pow(2, __privarBgConsecutiveLimits - 1), 60000);
   __privarBgCooldownUntil = Math.max(__privarBgCooldownUntil, Date.now() + cooldownMs);
 }
 
@@ -3204,6 +3227,58 @@ function runPrivarThrottled(fn) {
   const result = __privarBgQueue.then(run, run);
   __privarBgQueue = result.then(() => {}, () => {});
   return result;
+}
+
+// ── Foreground multi-read via Multicall3, with a resilient fallback ─────
+// AUDIT FINDING (2026-09): the user's own report finally pinned this down
+// — "Could not read Merkle root" (Swap/Withdraw/Bridge) and "Could not
+// read current fees" (every operation) are the LAST remaining friction
+// point after everything else this session fixed. Root cause: these are
+// FOREGROUND pre-flight reads inside each panel's submit(), completely
+// separate from the dashboard's 21-call stats poll (already fixed via
+// Multicall3) — each one was its own bare rpcCallWithRetry (3 attempts,
+// 900ms), same tight RPC, no batching. A Merkle-root read and a fee read
+// happen back-to-back for every spend operation — two round-trips where
+// one will do, on the exact same public RPC that's been the whole
+// story this session. Confirmed by the user: "when we don't get these
+// errors, the operations work perfectly" — this genuinely is the last
+// gap, not a new mystery.
+//
+// `descriptors`: [{ to, data }, ...]. Returns an array of raw hex return
+// values (or null for a call that failed/reverted), same order as given.
+// Tries ONE Multicall3 call first; falls back to sequential reads with a
+// MORE generous retry than before (4 attempts, 1000ms) if Multicall3
+// itself fails for any reason.
+async function multicallRead(descriptors) {
+  try {
+    const calldata = buildAggregate3Calldata(
+      descriptors.map(d => ({ target: d.to, allowFailure: true, callData: d.data }))
+    );
+    const raw = await rpcCallWithRetry("eth_call", [{ to: CONTRACTS.Multicall3, data: calldata }, "latest"], 3, 900);
+    const decoded = decodeAggregate3Result(raw);
+    if (decoded.length !== descriptors.length) throw new Error(`Multicall3 returned ${decoded.length} results, expected ${descriptors.length}`);
+    return decoded.map(r => (r.success && r.returnData !== "0x") ? r.returnData : null);
+  } catch (e) {
+    if (isPrivarRateLimitError(e)) markPrivarRateLimited();
+    console.warn("[Privar] multicallRead: Multicall3 failed, falling back to sequential eth_call:", e.message);
+    // Same round-5 fix as useProtocolStats' runSequential — wait out (and
+    // keep feeding) the shared cooldown between each fallback call instead
+    // of hammering a rate limit that a sustained provider-side window
+    // won't have cleared yet.
+    const out = [];
+    for (const d of descriptors) {
+      const wait = __privarBgCooldownUntil - Date.now();
+      if (wait > 0) await new Promise(r => setTimeout(r, wait));
+      try {
+        const res = await rpcCallWithRetry("eth_call", [{ to: d.to, data: d.data }, "latest"], 4, 1000);
+        out.push(res && res !== "0x" ? res : null);
+      } catch (e2) {
+        if (isPrivarRateLimitError(e2)) markPrivarRateLimited();
+        out.push(null);
+      }
+    }
+    return out;
+  }
 }
 
 async function fetchLogsViaBlockscout(contractAddress, topics, fromBlock) {
@@ -5263,16 +5338,11 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
     // credited in FULL (no skim), so netAmount == amountBig for those tokens.
     const isNativeUsdc = token.isNative;
     let depositFee = 0n, netAmount = amountBig, flatFeeUsdc = 0n;
-    try {
-      const [bpsRes, flatRes] = await Promise.all([
-        rpcCallWithRetry("eth_call", [{ to: CONTRACTS.PrivarShieldVault, data: SEL.protocolFeeBps }, "latest"]),
-        rpcCallWithRetry("eth_call", [{ to: CONTRACTS.PrivarShieldVault, data: SEL.flatFeeUsdc },   "latest"]),
-      ]);
-      const bps = bpsRes && bpsRes !== "0x" ? BigInt(bpsRes) : 0n;
-      flatFeeUsdc = flatRes && flatRes !== "0x" ? BigInt(flatRes) : 0n;
-      const preview = previewDepositFee(amountBig, bps, isNativeUsdc, flatFeeUsdc);
-      depositFee = preview.fee; netAmount = preview.net;
-    } catch (e) {
+    const [bpsRes, flatRes] = await multicallRead([
+      { to: CONTRACTS.PrivarShieldVault, data: SEL.protocolFeeBps },
+      { to: CONTRACTS.PrivarShieldVault, data: SEL.flatFeeUsdc },
+    ]);
+    if (bpsRes == null || flatRes == null) {
       // Silently assuming 0 here used to be safe (flatFeeUsdc was always 0 in
       // practice). Now that it's a real nonzero fee, defaulting to 0 builds a
       // tx with msg.value=0 that the contract WILL reject with WrongFee() —
@@ -5280,6 +5350,12 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
       notify("Shield", "Could not read current fees (slow network) — please retry.", "error");
       setLoading(false);
       return;
+    }
+    {
+      const bps = BigInt(bpsRes);
+      flatFeeUsdc = BigInt(flatRes);
+      const preview = previewDepositFee(amountBig, bps, isNativeUsdc, flatFeeUsdc);
+      depositFee = preview.fee; netAmount = preview.net;
     }
 
     // Step 2: Generate commitment — deterministic Note Engine derivation
@@ -5873,12 +5949,17 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     outAmountBig = chosen.outAmountBig;
     minOut       = chosen.minOut;
 
-    // Read Merkle root
-    let merkleRoot;
-    try {
-      const res = await rpcCallWithRetry("eth_call",[{ to:CONTRACTS.PrivarMerkleTreeManager, data:buildGetLastRootCall() },"latest"]);
-      merkleRoot = (res && res !== "0x" && res.length >= 66) ? res : null;
-    } catch { merkleRoot = null; }
+    // Merkle root + both swap-leg fees, batched into ONE Multicall3 call
+    // (was 3 separate eth_calls, 2 of them already concurrent via
+    // Promise.all but still a second round-trip after the Merkle root) —
+    // see multicallRead's doc comment for why this was the last remaining
+    // friction point after everything else this session fixed.
+    const [merkleRootRes, flatFeeRes, swapFeeBpsRes] = await multicallRead([
+      { to: CONTRACTS.PrivarMerkleTreeManager, data: buildGetLastRootCall() },
+      { to: CONTRACTS.PrivarShieldVault, data: SEL.flatFeeUsdc },
+      { to: CONTRACTS.PrivarShieldVault, data: SEL.swapFeeBps },
+    ]);
+    const merkleRoot = (merkleRootRes && merkleRootRes.length >= 66) ? merkleRootRes : null;
     if (!merkleRoot) {
       notify("Swap","Could not read the Merkle root.","error");
       setLoading(false); return;
@@ -5917,17 +5998,12 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     // exactly the "local balance higher than TVL" drift reported in prod.
     const isNativeOut = tkTo.addr.toLowerCase() === NATIVE_USDC.toLowerCase();
     let flatFeeUsdc = 0n, swapFeeBps = 0n;
-    try {
-      const [flatRes, swapFeeBpsRes] = await Promise.all([
-        rpcCallWithRetry("eth_call",[{ to:CONTRACTS.PrivarShieldVault, data:SEL.flatFeeUsdc },"latest"]),
-        rpcCallWithRetry("eth_call",[{ to:CONTRACTS.PrivarShieldVault, data:SEL.swapFeeBps },"latest"]),
-      ]);
-      flatFeeUsdc = flatRes && flatRes !== "0x" ? BigInt(flatRes) : 0n;
-      swapFeeBps  = swapFeeBpsRes && swapFeeBpsRes !== "0x" ? BigInt(swapFeeBpsRes) : 0n;
-    } catch (e) {
+    if (flatFeeRes == null || swapFeeBpsRes == null) {
       notify("Swap", "Could not read current fees (slow network) — please retry.", "error");
       setLoading(false); return;
     }
+    flatFeeUsdc = BigInt(flatFeeRes);
+    swapFeeBps  = BigInt(swapFeeBpsRes);
 
     // Mirror the contract's skim exactly (integer division, same rounding
     // as Solidity) so the local note never claims more than what actually
@@ -6607,11 +6683,17 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
     // (withdraw()) as before this fix, for the common case.
     const note = selectedNotes.length === 1 ? selectedNotes[0] : null;
 
-    let root;
-    try {
-      const res = await rpcCallWithRetry("eth_call", [{ to: CONTRACTS.PrivarMerkleTreeManager, data: buildGetLastRootCall() }, "latest"]);
-      root = (res && res !== "0x" && res.length >= 66) ? res : null;
-    } catch { root = null; }
+    // Merkle root + fee, batched into ONE Multicall3 call (was 2 separate
+    // eth_calls) — see multicallRead's doc comment for why this was the
+    // last remaining friction point after everything else this session
+    // fixed. feeSelector varies by token (bps for native, flat for
+    // ERC-20), so it's picked before the batched read.
+    const feeSelector = tk.isNative ? SEL.protocolFeeBps : SEL.flatFeeUsdc;
+    const [rootRes, feeRes] = await multicallRead([
+      { to: CONTRACTS.PrivarMerkleTreeManager, data: buildGetLastRootCall() },
+      { to: CONTRACTS.PrivarShieldVault, data: feeSelector },
+    ]);
+    const root = (rootRes && rootRes.length >= 66) ? rootRes : null;
     if (!root) {
       notify("Withdraw", "Could not read Merkle root. Ensure you are on Arc Testnet.", "error");
       setLoading(false); return;
@@ -6630,20 +6712,17 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
     //              buildWithdrawCalldata computes: value = flatFeeUsdc * NATIVE_TO_ERC20
     let flatFeeUsdc = 0n;
     let withdrawFee = 0n;
-    try {
-      if (tk.isNative) {
-        const feeRes = await rpcCallWithRetry("eth_call", [{ to: CONTRACTS.PrivarShieldVault, data: SEL.protocolFeeBps }, "latest"]);
-        const bps = feeRes && feeRes !== "0x" ? BigInt(feeRes) : 0n;
-        withdrawFee = previewWithdrawFee(amountBig, bps, true, 0n).fee;
-        // flatFeeUsdc stays 0n for native USDC — fee is skimmed on-chain, no msg.value needed
-      } else {
-        const feeRes = await rpcCallWithRetry("eth_call", [{ to: CONTRACTS.PrivarShieldVault, data: SEL.flatFeeUsdc }, "latest"]);
-        flatFeeUsdc  = feeRes && feeRes !== "0x" ? BigInt(feeRes) : 0n;
-        withdrawFee  = flatFeeUsdc;
-      }
-    } catch (e) {
+    if (feeRes == null) {
       notify("Withdraw", "Could not read current fees (slow network) — please retry.", "error");
       setLoading(false); return;
+    }
+    if (tk.isNative) {
+      const bps = BigInt(feeRes);
+      withdrawFee = previewWithdrawFee(amountBig, bps, true, 0n).fee;
+      // flatFeeUsdc stays 0n for native USDC — fee is skimmed on-chain, no msg.value needed
+    } else {
+      flatFeeUsdc  = BigInt(feeRes);
+      withdrawFee  = flatFeeUsdc;
     }
     // v3.4 — embed the SPEND (and, if there's change, ADD) journal ops
     // directly in this SAME withdraw transaction instead of separate
@@ -6941,14 +7020,12 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
     setLoading(true);
     let amountBig = BigInt(Math.round(Number(amount) * (10 ** tk.dec)));
 
-    // 1. Merkle root
+    // 1. Merkle root — routed through multicallRead (see its doc comment)
+    // even as a single call, for the same improved retry/fallback
+    // resilience as the batched Swap/Withdraw reads.
     setStep("Étape 1/3 — Lecture du Merkle root…");
-    let root;
-    try {
-      const res = await rpcCallWithRetry("eth_call", [{ to: CONTRACTS.PrivarMerkleTreeManager, data: buildGetLastRootCall() }, "latest"]);
-      root = (res && res !== "0x" && res.length >= 66) ? res : null;
-    } catch { root = null; }
-    if (!root) {
+    const [root] = await multicallRead([{ to: CONTRACTS.PrivarMerkleTreeManager, data: buildGetLastRootCall() }]);
+    if (!root || root.length < 66) {
       notify("Bridge", "Could not read the Merkle root.", "error");
       setLoading(false); setStep(""); return;
     }
@@ -6997,13 +7074,12 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
 
     // 4. Protocol fee (flat USDC side-payment, EURC/cirBTC only — same model as withdraw())
     let flatFeeUsdc = 0n;
-    try {
-      const feeRes = await rpcCallWithRetry("eth_call", [{ to: CONTRACTS.PrivarShieldVault, data: SEL.flatFeeUsdc }, "latest"]);
-      flatFeeUsdc = feeRes && feeRes !== "0x" ? BigInt(feeRes) : 0n;
-    } catch (e) {
+    const [feeRes] = await multicallRead([{ to: CONTRACTS.PrivarShieldVault, data: SEL.flatFeeUsdc }]);
+    if (feeRes == null) {
       notify("Bridge", "Could not read current fees (slow network) — please retry.", "error");
       setLoading(false); setStep(""); return;
     }
+    flatFeeUsdc = BigInt(feeRes);
 
     // v3.4 — embed the SPEND (+ ADD for change) journal ops directly in this
     // SAME bridge transaction, forwarded through LiFiPrivacyBridge to
