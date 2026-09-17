@@ -251,30 +251,28 @@ async function sendTransaction(from, to, valueHex, data = "0x") {
     // Fallback: 500k gas — sufficient for PrivarShieldVault operations
     gasLimit = "0x7A120";
   }
-  // AUDIT FINDING (2026-09): captured directly from a wallet's own error
-  // dialog (a photographed Rabby popup) — "Request exceeds defined limit"
-  // for method eth_getTransactionCount, straight to rpc.testnet.arc.network.
-  // The WALLET ITSELF looks up the nonce before signing, as its own,
-  // separate request — entirely outside this app's control. None of this
-  // session's RPC-side work (the shared throttle queue, Multicall3) can
-  // reach that call, because it's the wallet extension making it, not this
-  // code. This is why Shield/Approve could still fail with "rejected by
-  // user" even after every other RPC path here got fixed — the rejection
-  // dialog IS a rate-limit error, just one Rabby chose to word that way.
-  //
-  // Best-effort mitigation: pre-fetch the nonce ourselves (through this
-  // app's own retry logic) and pass it explicitly in the tx object. A
-  // wallet that honors a caller-supplied nonce can skip its own separate
-  // lookup entirely — removing the exact call that was failing. A wallet
-  // that ignores this field and looks the nonce up anyway is no worse off
-  // than before; this is purely additive.
-  let nonceHex;
-  try {
-    nonceHex = await rpcCallWithRetry("eth_getTransactionCount", [from, "latest"], 3, 700);
-  } catch { /* fine — the wallet does its own lookup, same as before this fix */ }
-  const tx = { from, to, value: valueHex, data, gas: gasLimit, chainId: toHex(ARC_TESTNET.id) };
-  if (nonceHex) tx.nonce = nonceHex;
-  return rpcCall("eth_sendTransaction", [tx]);
+  // REVERTED (2026-09): a prior version of this function pre-fetched the
+  // nonce via eth_getTransactionCount and passed it explicitly, on the
+  // theory that a wallet honoring a caller-supplied nonce could skip its
+  // own separate (and previously confirmed rate-limited) lookup. Reported
+  // regression since: EURC/cirBTC Shield's Approve step failing on EVERY
+  // attempt after the first successful one in a session — a deterministic
+  // pattern, not the original intermittent rate-limit symptom. Checked
+  // the token contract (plain OpenZeppelin ERC20, no allowance-reset
+  // requirement) to rule that out as the cause. Most likely explanation:
+  // this app's freshly-fetched "latest" nonce can be STALE relative to
+  // what the wallet already expects — many wallets track "next nonce"
+  // optimistically in memory right after broadcasting a transaction,
+  // without waiting for the RPC to catch up, so a caller-supplied nonce
+  // that's one behind the wallet's own internal counter reads as invalid
+  // rather than simply ignored. What was meant to be purely additive
+  // turned out not to be. Reverted to letting the wallet manage its own
+  // nonce entirely, as it did before that change — this session's other,
+  // much larger fixes (Multicall3, cooldown-respecting fallbacks, batched
+  // pre-flight reads) have since substantially reduced overall RPC
+  // pressure, which should make the wallet's own lookup succeed more
+  // often anyway, independent of this.
+  return rpcCall("eth_sendTransaction", [{ from, to, value: valueHex, data, gas: gasLimit, chainId: toHex(ARC_TESTNET.id) }]);
 }
 
 // Wait for tx receipt (polling)
@@ -1803,8 +1801,43 @@ function get24hDelta(vaultAddr, current) {
   } catch { return null; }
 }
 
+// AUDIT FINDING (2026-09): reported as a new regression — with desktop AND
+// phone connected to the same address simultaneously, stats show only "—"
+// everywhere. Root cause: this app's rate-limit coordination (the shared
+// throttle queue, cooldown, Multicall3) is entirely IN-MEMORY, per browser
+// tab — it has zero visibility into what any OTHER device or tab is doing
+// against the same public RPC. Two independent, individually well-behaved
+// sessions can together exceed a provider's actual limit without either
+// one knowing. A true fix for N simultaneous devices needs a SHARED,
+// server-side coordination point (a small proxy/cache layer every client
+// goes through) — outside the scope of a frontend-only change. What's
+// fixable here: when a session's very FIRST poll(s) fail under exactly
+// this kind of contention, there's no earlier successful poll in THIS
+// tab's memory to fall back to (the existing `prev.field` fallback below
+// already keeps last-known-good values — but only within one page
+// load). Persist the last reasonably-complete result to localStorage
+// (per device, cheap, no server needed) and seed initial state from it —
+// so a fresh page load shows the last real numbers this device saw
+// instead of a wall of dashes, even if every poll since loading has
+// failed so far.
+const STATS_CACHE_KEY = "privar_stats_cache_v1";
+function loadCachedStats() {
+  try {
+    const raw = localStorage.getItem(STATS_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    if (Date.now() - (parsed._cachedAt || 0) > 24 * 3600 * 1000) return null; // stale past a day — don't show it as if current
+    const { _cachedAt, ...rest } = parsed;
+    return rest;
+  } catch { return null; }
+}
+function saveCachedStats(stats) {
+  try { localStorage.setItem(STATS_CACHE_KEY, JSON.stringify({ ...stats, _cachedAt: Date.now() })); } catch {}
+}
+
 function useProtocolStats(onArc) {
-  const [stats, setStats] = useState({
+  const [stats, setStats] = useState(() => ({
     shieldedUsdc:null, shieldedEurc:null, shieldedBtc:null, leafCount:null,
     depositsAllowed:null, vaultPaused:null, tokenSupport:{},
     version:null, totalTxCount:null,
@@ -1830,7 +1863,13 @@ function useProtocolStats(onArc) {
     // still loading; 2+ and still null → this field just isn't available
     // right now, show that honestly instead of pretending it's coming.
     pollCount: 0,
-  });
+    // Seeded from this device's own last reasonably-complete snapshot (see
+    // this hook's own doc comment) — real, slightly-stale numbers instead
+    // of a wall of dashes while the first poll of THIS page load is still
+    // in flight or contending with another simultaneously-connected device.
+    ...loadCachedStats(),
+    pollCount: 0, // never trust a cached pollCount — this IS a fresh session's first poll
+  }));
   // `priority`: true for a refresh triggered directly by a user's own
   // just-confirmed transaction (see onSuccess callbacks below) — skips the
   // shared background queue (see runPrivarThrottled's doc comment) so a
@@ -2048,6 +2087,14 @@ function useProtocolStats(onArc) {
             next.snapshotCoverage = delta.snapshotCoverage;
           }
         }
+
+        // Persist a reasonably-complete snapshot to this device's own
+        // localStorage (see loadCachedStats/saveCachedStats' doc comment) —
+        // survives a page reload, seeds the NEXT session's initial state
+        // instead of a wall of dashes. Cheap and only written when the core
+        // fields actually have real values, so a mostly-failed poll never
+        // overwrites a good earlier cache with mostly-null data.
+        if (next.shieldedUsdc != null && next.totalTxCount != null) saveCachedStats(next);
 
         return next;
       });
