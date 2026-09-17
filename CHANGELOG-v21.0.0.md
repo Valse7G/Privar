@@ -156,3 +156,67 @@ reading each panel's submit function, not just asserted.
 None of this removes wallet/network latency itself (outside frontend
 control), but it removes RPC round trips this app was adding on top of it,
 on the direct path to the first wallet popup, for every operation.
+
+---
+
+## v21.2.0 — cross-device balance divergence, stuck "verifying…", scalability hook
+
+Addresses live evidence (screenshots, same wallet on two devices) showing:
+different shielded balances per device, "verifying…" not resolving, and
+stats failing to load with 2 devices connected at once.
+
+### Root cause found: cross-device deposit discovery was starting from block 0
+`SHIELD_VAULT_JOURNAL_GENESIS_BLOCK` — the floor block for the scan that
+lets one device discover a deposit made on ANOTHER device — was hardcoded to
+`0`, with a TODO left in the code itself acknowledging it needed the real
+deployment block "once known." Arc Testnet is 55M+ blocks deep. Whenever
+Blockscout is unavailable and this falls back to raw chunked `eth_getLogs`,
+progress advances only ~12,000 blocks per 2-minute pass — a 55M-block
+backlog would take days, not minutes, to clear. This is the concrete
+mechanism behind "my other device's Shield never shows up here": it isn't
+lost, the discovery scan just hasn't reached that block yet, and may not
+for a very long time.
+
+**Fix**: `getContractDeploymentBlock()` finds the REAL deployment block at
+runtime — first via Blockscout's `getcontractcreation` endpoint, falling
+back to a binary search over `eth_getCode` (provably correct, no
+dependency on Blockscout, ~26 one-time calls, gently paced) if that's
+unavailable — and caches it permanently in localStorage. Unlike a
+hardcoded constant, this never goes stale on the NEXT redeployment either
+(this codebase alone has been through v3.4 → v5.0 → v5.1 → v5.2 → v5.3).
+
+### "Verifying…" made to resolve immediately after an action, not up to 120s later
+Shield/Swap/Send/Withdraw/Bridge already refresh stats and the native
+balance the instant they confirm — but not the shielded-balance
+reconciliation pass that clears the "verifying…" badge, which only ran on
+its own 2-minute timer. Now every action's success handler also triggers
+an immediate reconcile pass, the same way it already does for stats.
+
+### Scalability: the "2 devices = no stats" ceiling is upstream of the frontend
+Traced `rpcCall()`: every RPC method goes through `window.ethereum.request`
+— i.e. through the CONNECTED WALLET's own RPC connection for Arc Testnet,
+which for essentially every wallet is the same public
+`rpc.testnet.arc.network` endpoint this app itself supplies via
+`wallet_addEthereumChain`. That means Privar's traffic — from this user's
+2 devices, or from anyone else's — shares ONE public testnet node's budget
+with the entire Arc Testnet ecosystem. No amount of merging/reducing calls
+inside this app (v21.0.0/v21.1.0) changes a budget that outside traffic
+can also exhaust. **Added `PRIVAR_READ_RPC_URL`**: an opt-in dedicated
+endpoint for read-only calls (`eth_call`/`eth_getLogs`/`eth_blockNumber`/
+`eth_getBalance`/`eth_getCode`/`eth_chainId`/`eth_getTransactionReceipt`),
+fetched directly instead of through the wallet, falling back to today's
+exact behavior if unset or if it fails. Left empty by default — this
+environment has no way to provision or verify a real production endpoint,
+so nothing is guessed. **This is the actual fix for "must scale to many
+concurrent devices"**: provision a paid Arc Testnet RPC endpoint (Alchemy/
+Infura/QuickNode, or a self-run node) and set this constant. Wallet-signing
+methods (`eth_sendTransaction`, `eth_requestAccounts`, etc.) are untouched
+— always go through the wallet, as they must.
+
+### What wasn't touched
+Per the request to not alter what already works: the shared throttle queue,
+the merged-scan helpers from v21.0.0/v21.1.0, the note lifecycle
+(pendingOps/lockNotesForOp), and the one-time-approve logic are all
+unchanged — this release only adds the deployment-block lookup, the
+immediate-reconcile trigger, and the opt-in dedicated-RPC hook, all
+additive and fail-safe to prior behavior.

@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v21.1.0-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v21.2.0-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -270,6 +270,17 @@ git push origin main --tags
 Open a PR against `main`, and before merging a contract-address sync specifically: confirm the Shield panel's TVL/version stats reflect the new vault, and — since a full-suite redeploy is never a migration — communicate to users that any balance on the previous `PrivarShieldVault` address must be withdrawn from there before switching over.
 
 ## Changelog
+
+### v21.2.0 — cross-device balance divergence fixed, immediate reconcile, scalability hook (2026-09-17)
+See `CHANGELOG-v21.0.0.md` (§v21.2.0) for full details. Summary: found and
+fixed the real reason a deposit on one device could take days to appear on
+another (`SHIELD_VAULT_JOURNAL_GENESIS_BLOCK` was hardcoded to block 0 on a
+chain 55M+ blocks deep) by discovering the real deployment block at runtime
+instead of guessing. "Verifying…" now resolves immediately after any
+action instead of waiting up to 120s. Added an opt-in dedicated read-RPC
+endpoint (`PRIVAR_READ_RPC_URL`) — the real fix for scaling to many
+concurrent devices, since all reads currently share the wallet's own
+(public, ecosystem-wide) RPC budget.
 
 ### v21.1.0 — one-time approve for Shield/Stake, fewer RPC round trips before every wallet prompt (2026-09-17)
 See `CHANGELOG-v21.0.0.md` (§v21.1.0 section) for full details. Summary:

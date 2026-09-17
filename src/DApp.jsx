@@ -133,7 +133,55 @@ function useIsMobile() {
 /* ═══════════════════════════════════════════════════════════════
    EIP-1193 HELPERS  (real on-chain calls via window.ethereum)
 ═══════════════════════════════════════════════════════════════ */
+// v21.2.0 — optional dedicated read-RPC endpoint (disabled by default).
+//
+// CONFIRMED root cause of "stats never load with 2+ devices connected":
+// rpcCall() below routes every RPC method through window.ethereum.request —
+// i.e. through the CONNECTED WALLET's own RPC connection for Arc Testnet,
+// which for virtually every wallet is configured with the same public URL
+// this app itself uses for wallet_addEthereumChain (ARC_TESTNET.rpcUrl,
+// above). That means Privar's own traffic shares ONE public testnet node's
+// rate-limit budget with every other wallet and every other dapp currently
+// using Arc Testnet — not just this user's other device. No amount of
+// merging/reducing Privar's OWN call count (see the v21.0.0/v21.1.0 fixes)
+// changes that a budget shared with the entire external ecosystem can be
+// exhausted by traffic this app never sent. That is the honest ceiling of a
+// frontend-only fix.
+//
+// What CAN be fixed here: provision a dedicated RPC endpoint for Privar
+// (a paid Alchemy/Infura/QuickNode Arc Testnet endpoint, or Privar's own
+// node) and set PRIVAR_READ_RPC_URL to it. Every READ-ONLY call (the ones
+// below, in READ_ONLY_RPC_METHODS — never a wallet-signing method) will then
+// go there directly via fetch(), under a budget Privar controls and can
+// size to its real concurrent-user count, completely separate from the
+// public node's shared budget. Left empty (the default), behavior is
+// UNCHANGED from before this fix — every call still goes through the
+// wallet exactly as it does today. This is deliberately a zero-risk,
+// opt-in hook, not an attempt to guess/hardcode a real production endpoint
+// this environment has no way to provision or verify.
+const PRIVAR_READ_RPC_URL = ""; // e.g. "https://arc-testnet.g.alchemy.com/v2/<key>" — fill in once provisioned
+const READ_ONLY_RPC_METHODS = new Set([
+  "eth_call", "eth_getLogs", "eth_blockNumber", "eth_getBalance",
+  "eth_getCode", "eth_chainId", "eth_getTransactionReceipt",
+]);
+
+async function fetchViaDedicatedRpc(method, params) {
+  const res = await fetch(PRIVAR_READ_RPC_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+  });
+  if (!res.ok) throw new Error(`dedicated RPC HTTP ${res.status}`);
+  const json = await res.json();
+  if (json.error) throw new Error(json.error.message || "dedicated RPC error");
+  return json.result;
+}
+
 async function rpcCall(method, params = []) {
+  if (PRIVAR_READ_RPC_URL && READ_ONLY_RPC_METHODS.has(method)) {
+    try { return await fetchViaDedicatedRpc(method, params); }
+    catch (e) { console.warn(`[rpc] dedicated endpoint failed for ${method} (${e.message}), falling back to wallet provider`); }
+  }
   if (!window.ethereum) throw new Error("No wallet provider");
   return window.ethereum.request({ method, params });
 }
@@ -1390,7 +1438,7 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
     }
   }, [account?.address]);
 
-  const { bals: shieldedBals, recompute: recomputeShielded, lastVerified: shieldedLastVerified } = useShieldedBalances(prices, account?.address);
+  const { bals: shieldedBals, recompute: recomputeShielded, lastVerified: shieldedLastVerified, triggerReconcile: triggerShieldedReconcile } = useShieldedBalances(prices, account?.address);
   const { sendRealTx: sendViewKeyTx } = useTxSend({ account, onArc, notify, refreshBalance });
 
   // Scan chain for ECDH stealth notes addressed to this wallet on every connect,
@@ -1512,6 +1560,10 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
 
   const panelProps = { account, balance, usdcBalance, onArc, notify, refreshBalance, txHistory, loadingBal, prices, changes, change24h, lastUpdate, priceError, setPanel, protocolStats, onChainActivity, shieldedBals, recomputeShielded, sendRealTx: sendViewKeyTx };
   useEffect(() => { window._privarShieldedLastVerified = shieldedLastVerified; }, [shieldedLastVerified]);
+  // v21.2.0: same window-level exposure pattern as the line above — lets
+  // every panel's onSuccess trigger an immediate reconcile pass without
+  // threading triggerReconcile through 5 separate component prop chains.
+  useEffect(() => { window._privarTriggerShieldedReconcile = triggerShieldedReconcile; }, [triggerShieldedReconcile]);
   // Expose address + recompute for ShieldedWallet stale-notes purge button
   useEffect(() => { window._privarAccount = account?.address || ""; }, [account?.address]);
   useEffect(() => { window._privarRecomputeShielded = recomputeShielded; }, [recomputeShielded]);
@@ -2716,15 +2768,92 @@ async function eciesDecryptNoteWithViewKey(recipientAddress, encryptedNoteHex, e
 const CLOUD_VAULT_GENESIS_BLOCK = 55200000;
 
 // Floor block for scanning PrivarShieldVault's own NoteJournal events (v3.4).
-// SEPARATE from CLOUD_VAULT_GENESIS_BLOCK above — that one was calibrated for
-// the v3.3-era PrivarCloudVault deployment and has no relation to this
-// contract's own deployment block. TODO: set this to ShieldVault v3.4's
-// actual deployment block once known (same reasoning as CLOUD_VAULT_GENESIS_
-// BLOCK — Arc Testnet is 50M+ blocks deep, scanning from 0 triggers the RPC
-// rate-limit death spiral even for a contract with zero history before it).
-// 0 is a safe (if slow) default until then — a brand-new contract simply has
-// no events before its own deployment block regardless of where the scan starts.
-const SHIELD_VAULT_JOURNAL_GENESIS_BLOCK = 0;
+// v21.2.0: replaces the previous hardcoded `0` (see the removed TODO — it's
+// exactly the root cause of a real cross-device bug: a fresh device's
+// journal scan, needed to discover a deposit made on ANOTHER device, was
+// starting from block 0 on a chain already 55M+ blocks deep, and — whenever
+// Blockscout was unavailable/rate-limited and it fell back to raw chunked
+// eth_getLogs — advancing only ~12,000 blocks per 2-minute pass. At that
+// rate a 55M-block backlog takes DAYS to clear, which is indistinguishable
+// from "stuck on verifying…" and "the other device's deposit never shows
+// up" from the user's side. CLOUD_VAULT_GENESIS_BLOCK above got a correct,
+// working hardcoded value because someone was able to manually investigate
+// the chain at the time; ShieldVault gets redeployed on every version bump
+// (v3.4 → v5.0 → v5.1 → v5.2 → v5.3 seen in this codebase alone), so any
+// hardcoded block would go stale — silently reintroducing this exact bug —
+// on the next redeployment. getContractDeploymentBlock() below finds the
+// real answer at runtime instead, and never needs updating again.
+async function getContractDeploymentBlock(contractAddress) {
+  const cacheKey = `privar_deployblock_${contractAddress.toLowerCase()}`;
+  try {
+    const cached = localStorage.getItem(cacheKey);
+    if (cached != null) return Number(cached);
+  } catch {}
+
+  // 1) Blockscout's Etherscan-compatible "getcontractcreation" endpoint
+  //    returns the exact creation block in one HTTP call, when available.
+  try {
+    const params = new URLSearchParams({ module: "contract", action: "getcontractcreation", contractaddresses: contractAddress });
+    const res = await fetch(`${BLOCKSCOUT_API_BASE}?${params.toString()}`);
+    if (res.ok) {
+      const json = await res.json();
+      const entry = Array.isArray(json.result) ? json.result[0] : null;
+      const block = entry?.blockNumber ?? entry?.block_number;
+      if (block != null) {
+        const n = Number(block);
+        if (Number.isFinite(n) && n >= 0) { try { localStorage.setItem(cacheKey, String(n)); } catch {} return n; }
+      }
+    }
+  } catch (e) {
+    console.warn(`[deploy-block] Blockscout lookup failed for ${contractAddress}, falling back to binary search:`, e.message);
+  }
+
+  // 2) Fallback: binary search via eth_getCode. A contract's code is empty
+  //    ("0x") at every block before it's deployed and non-empty at every
+  //    block from its deployment onward — a monotonic step function, so
+  //    binary search finds the exact boundary in ~log2(chain height) calls
+  //    (≈26 for a 50-60M block chain), a one-time cost fully amortized by
+  //    the permanent cache above. Provably correct regardless of Blockscout
+  //    being up — no assumption about API shape or availability.
+  try {
+    const headHex = await rpcCallWithBackoff("eth_blockNumber", []);
+    let hi = Number(BigInt(headHex || "0x0"));
+    let lo = 0;
+    // Guard: if the contract has no code even at head, it isn't deployed on
+    // this chain/RPC at all — bail out to the block-0 floor rather than
+    // binary-searching against a boundary that doesn't exist.
+    const codeAtHead = await rpcCallWithBackoff("eth_getCode", [contractAddress, "0x" + hi.toString(16)]);
+    if (!codeAtHead || codeAtHead === "0x") return 0;
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      const code = await rpcCallWithBackoff("eth_getCode", [contractAddress, "0x" + mid.toString(16)]);
+      if (code && code !== "0x") hi = mid; else lo = mid + 1;
+      if (lo < hi) await sleep(300); // one-time cost (result cached forever after) — keep it gentle on the shared RPC budget rather than firing ~26 calls back-to-back
+    }
+    try { localStorage.setItem(cacheKey, String(lo)); } catch {}
+    return lo;
+  } catch (e) {
+    console.warn(`[deploy-block] binary-search fallback failed for ${contractAddress}, using block 0 (slow but safe):`, e.message);
+    return 0; // never wrong, just as slow as the old default — strictly no worse than before this fix
+  }
+}
+
+// Module-level memoized promise — getContractDeploymentBlock() above already
+// caches to localStorage, but that still costs one read + (on a cold cache)
+// a network round trip; this collapses concurrent callers within the same
+// page load (journal resync fires from more than one place — mount, the
+// main interval, the burst interval) into a single lookup.
+let __shieldVaultDeployBlockPromise = null;
+function shieldVaultJournalGenesisBlock() {
+  if (!__shieldVaultDeployBlockPromise) {
+    // Routed through the shared queue too (see runPrivarThrottled) — the
+    // eth_getCode binary-search fallback below can fire up to ~26 calls on a
+    // cold cache; those should queue behind/ahead of other background scans
+    // like everything else, not burst independently.
+    __shieldVaultDeployBlockPromise = runPrivarThrottled(() => getContractDeploymentBlock(CONTRACTS.PrivarShieldVault)).catch(() => 0);
+  }
+  return __shieldVaultDeployBlockPromise;
+}
 
 // IMPORTANT: the address is normalized to lowercase here. Different wallets
 // return the connected account in different casing from eth_requestAccounts/
@@ -3858,9 +3987,10 @@ async function _resyncFromShieldVaultJournalImpl(address, recompute) {
   try {
     await ensureSelfBackupKeyReady(address);
     const ownerTopic = "0x" + "0".repeat(24) + address.toLowerCase().slice(2);
+    const journalFromBlock = await shieldVaultJournalGenesisBlock();
     const logs = await fetchLogsPaginated(
       CONTRACTS.PrivarShieldVault, [NOTE_JOURNAL_TOPIC, ownerTopic],
-      SHIELD_VAULT_JOURNAL_GENESIS_BLOCK, "privar_shieldvault_journal_scanprogress", address, "shield vault journal resync"
+      journalFromBlock, "privar_shieldvault_journal_scanprogress", address, "shield vault journal resync"
     );
     if (!Array.isArray(logs) || logs.length === 0) return;
 
@@ -5148,6 +5278,7 @@ function useShieldedBalances(prices, address) {
   // trip) and compute() has no other way to know about it.
   const unbackedRemovedRef = useRef(0);
 
+  const runChecksRef = useRef(null);
   const compute = useCallback(() => {
     // Retroactive recovery FIRST — restores any note previously (and
     // wrongly) quarantined for lacking a Deposited event when it was
@@ -5283,6 +5414,7 @@ function useShieldedBalances(prices, address) {
         compute();
       }).catch(() => {});
     };
+    runChecksRef.current = runChecks;
     runChecks();
     const id = setInterval(runChecks, 120_000); // 2 min, matches other resyncs
     // Also re-check when the tab regains focus after being hidden — a user
@@ -5305,7 +5437,16 @@ function useShieldedBalances(prices, address) {
     };
   }, [compute, address]);
 
-  return { bals, recompute: compute, lastVerified };
+  // v21.2.0: stable function (survives re-renders/effect re-runs since it
+  // only ever reads the ref) that callers can invoke right after a
+  // Shield/Swap/Send/Withdraw/Bridge confirms, instead of waiting up to the
+  // full 120s interval for the "verifying…" badge to resolve and for a
+  // note spent/created elsewhere to be picked up. No-op before the effect
+  // above has run once (ref still null) — same as calling it a moment too
+  // early on any other ref-based API.
+  const triggerReconcile = useCallback(() => { runChecksRef.current?.(); }, []);
+
+  return { bals, recompute: compute, lastVerified, triggerReconcile };
 }
 
 // ── ShieldedWallet mini-panel ─────────────────────────────────────────────────
@@ -5568,7 +5709,7 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
   // §8.4 point 4 — optional third-party recipient. Empty = deposit to own
   // shielded balance (unchanged default). Mirrors SendPanel's `dest` field.
   const [depositRecipient, setDepositRecipient] = useState("");
-  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(true); onChainActivity?.refresh?.(); } });
+  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(true); onChainActivity?.refresh?.(); window._privarTriggerShieldedReconcile?.(); } });
 
   // Ask user to confirm before hitting wallet — shows real amount for ERC-20 / ZK txs
   const askConfirm = (txInfo) => new Promise(resolve => {
@@ -6047,7 +6188,7 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
   const [amount, setAmount]   = useState("");
   const [q, setQ]             = useState(null);
   const [loading, setLoading] = useState(false);
-  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(true); onChainActivity?.refresh?.(); } });
+  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(true); onChainActivity?.refresh?.(); window._privarTriggerShieldedReconcile?.(); } });
   const bals = shieldedBals;
 
   const SWAP_TOKENS = {
@@ -6585,7 +6726,7 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
   const askConfirm = (txInfo) => new Promise(resolve => { confirmRef.current = resolve; setConfirmTx(txInfo); });
   const onConfirm  = () => { setConfirmTx(null); confirmRef.current?.(true); };
   const onCancel   = () => { setConfirmTx(null); confirmRef.current?.(false); };
-  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(true); onChainActivity?.refresh?.(); } });
+  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(true); onChainActivity?.refresh?.(); window._privarTriggerShieldedReconcile?.(); } });
   const bals = shieldedBals;
 
   // NOTE: ARC Name Service (.arc) is not yet deployed — there is no on-chain
@@ -6972,7 +7113,7 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
   const [dest, setDest]       = useState("");
   const [loading, setLoading] = useState(false);
   const [token, setToken]     = useState("USDC"); // selected token to withdraw
-  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(true); onChainActivity?.refresh?.(); } });
+  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(true); onChainActivity?.refresh?.(); window._privarTriggerShieldedReconcile?.(); } });
   const bals = shieldedBals;
 
   // Token metadata — mirrors BridgePanel BRIDGE_TOKENS
@@ -7311,7 +7452,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
   const [recipient, setRecipient] = useState("");
   const [token, setToken]         = useState("USDC");
   const [step, setStep]           = useState("");
-  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(true); onChainActivity?.refresh?.(); } });
+  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(true); onChainActivity?.refresh?.(); window._privarTriggerShieldedReconcile?.(); } });
   const bals = shieldedBals;
   const ch   = CH.find(c=>c.domainId===destId) || CH[0];
 
