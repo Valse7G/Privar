@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v19.2.0-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v21.0.0-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -270,6 +270,18 @@ git push origin main --tags
 Open a PR against `main`, and before merging a contract-address sync specifically: confirm the Shield panel's TVL/version stats reflect the new vault, and — since a full-suite redeploy is never a migration — communicate to users that any balance on the previous `PrivarShieldVault` address must be withdrawn from there before switching over.
 
 ## Changelog
+
+### v21.0.0 — merged RPC round trips, tx-history Deposited fix, patches/ folder retired (2026-09-17)
+See `CHANGELOG-v21.0.0.md` at the repo root for full details. Summary:
+`reconcileAndVerifyNotes()` (6→2 calls) and `buildTxHistoryFromChain()`'s
+staking scan (3→1 call) now merge same-contract event scans via
+`eth_getLogs`'s topic-OR support instead of one call per event type, verified
+against the deployed contracts' actual event signatures. Fixed a bug where
+Shield entries never appeared in tx history (`Deposited`'s address-comparison
+filter was checking a token address against the wallet address — never
+equal). `patches/`'s 20 files are retired; this changelog is now the single
+source of truth going forward. No contract changes; `PROTOCOL_VERSION` stays
+`5.3.0`.
 
 ### v19.2.0 — Note Engine: private send/bridge to third parties, address-free note relay (v5.3.0 redeploy, 2026-08-25)
 - Full-suite redeploy sync against the new `deployments/latest.json` (deployed `2026-08-25T20:50:51.702Z`) — every Privar-deployed address refreshed: `PrivarShieldVault`, `PrivarMerkleTreeManager`, `PrivarNullifierRegistry`, `PrivarDepositManager`, `XyloNetPrivacyAdapter`, `LiFiPrivacyAdapter`/`LiFiPrivacyBridge`, `CurvePrivacyAdapter`, `PrivarStaking`, `PrivarCloudVault` — **plus three newly-deployed contracts**: `PrivarSpendKeyRegistry`, `PrivarNoteRelay`, `LiFiBridgeAdapter` (all previously `0x000…000`/not deployed, now live). `PROTOCOL_VERSION` bumped to `"5.3.0"`.

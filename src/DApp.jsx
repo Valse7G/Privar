@@ -3506,6 +3506,217 @@ async function cloudVaultGetLogs(topics, address, fromBlock) {
   return fetchLogsPaginated(CONTRACTS.PrivarCloudVault, topics, fromBlock, "privar_cloudvault_scanprogress", address, "cloud vault resync");
 }
 
+// ── v21.0.0 — merged multi-event scan ───────────────────────────────────────
+// Several PrivarShieldVault event types (Withdrawn/Deposited/PrivateSwap/
+// ShieldedSent/PrivateBridged) were each fetched with their OWN
+// fetchLogsPaginated call — same contract, same block range, only topic0
+// differs — and NONE of them filter beyond topic0 (topics[1..] are always
+// left open; the nullifier/commitment is read from the result, not filtered
+// on). That means eth_getLogs' native support for an ARRAY at a topic
+// position (= "match any of these", per the JSON-RPC spec) can merge them
+// into exactly one round trip with no change in which logs match — verified
+// directly against each event's `indexed` parameters in PrivarShieldVault.sol,
+// not assumed. This is the same "N calls -> 1" idea that already fixed the
+// protocol-stats poll via Multicall3, applied here to log scanning: what was
+// 5 sequential calls per reconcile pass (and, before that, 6 when this ran
+// via Promise.all — see CHANGELOG history) is now 1.
+//
+// Safe to merge ONLY because every included event leaves topics[1..]
+// unfiltered. Do not add an event here that needs its own topics[1] filter
+// (e.g. an address-indexed event) — that would silently narrow every OTHER
+// event in the merge to the same filter. See fetchLogsPaginated for that case.
+async function fetchLogsPaginatedMerged(contractAddress, topic0List, fromBlock, keyPrefix, address, label) {
+  return runPrivarThrottled(() => fetchLogsPaginatedMergedInner(contractAddress, topic0List, fromBlock, keyPrefix, address, label));
+}
+
+function mergedScanProgressKey(keyPrefix, address) { return `${keyPrefix}_merged_${address.toLowerCase()}`; }
+
+async function fetchLogsPaginatedMergedInner(contractAddress, topic0List, fromBlock, keyPrefix, address, label) {
+  const progKey = mergedScanProgressKey(keyPrefix, address);
+  let saved;
+  try { const v = localStorage.getItem(progKey); saved = v ? Number(v) : null; } catch { saved = null; }
+  const checkpointStart = Math.max(fromBlock, saved ?? fromBlock);
+  const save = (block) => { try { localStorage.setItem(progKey, String(block)); } catch {} };
+  const tag = `${topic0List.length} event types`;
+
+  // 1) Blockscout: the Etherscan-compatible getLogs endpoint has no "OR of
+  //    topic0" concept, but omitting topic0 entirely returns every event the
+  //    contract emits in range in ONE request — still cheaper than N
+  //    topic0-filtered requests for N>=2. Filter to our set client-side.
+  try {
+    const logs = await fetchLogsViaBlockscout(contractAddress, [], checkpointStart);
+    const wanted = new Set(topic0List.map(t => t.toLowerCase()));
+    const filtered = logs.filter(l => wanted.has((l.topics?.[0] || "").toLowerCase()));
+    console.info(`[${label}] merged-scan(${tag}): ${filtered.length}/${logs.length} log(s) via Blockscout, from block ${checkpointStart}`);
+    try {
+      const headHex = await rpcCallWithBackoff("eth_blockNumber", []);
+      save(Number(BigInt(headHex || "0x0")) + 1);
+    } catch {} // progress bookkeeping only
+    return filtered;
+  } catch (e) {
+    if (isPrivarRateLimitError(e)) markPrivarRateLimited();
+    console.warn(`[${label}] merged-scan(${tag}): Blockscout unavailable (${e.message}), falling back to paginated RPC`);
+  }
+
+  // 2) RPC fallback: one eth_getLogs per chunk, topics=[topic0List] = OR
+  //    across every event type in this merge. Same chunking/backoff as the
+  //    single-event path (fetchLogsPaginatedInner) — just more event types
+  //    per round trip instead of one call per type.
+  const headHex = await rpcCallWithBackoff("eth_blockNumber", []);
+  const head = Number(BigInt(headHex || "0x0"));
+  const all = [];
+  let start = checkpointStart;
+  let window = 2000;
+  let rateLimitRetries = 0;
+  let chunkCount = 0;
+  const MAX_CHUNKS_PER_CALL = 6;
+
+  if (start > head) { console.info(`[${label}] merged-scan(${tag}): already caught up`); return all; }
+  console.info(`[${label}] merged-scan(${tag}): resuming from block ${start}, head=${head}, ${head - start} blocks remaining`);
+
+  while (start <= head && chunkCount < MAX_CHUNKS_PER_CALL) {
+    const end = Math.min(start + window - 1, head);
+    try {
+      const logs = await rpcCall("eth_getLogs", [{
+        fromBlock: "0x" + start.toString(16), toBlock: "0x" + end.toString(16),
+        address: contractAddress, topics: [topic0List],
+      }]);
+      if (Array.isArray(logs)) all.push(...logs);
+      start = end + 1;
+      save(start);
+      rateLimitRetries = 0;
+      chunkCount++;
+      if (start <= head) await sleep(1500);
+    } catch (e) {
+      const msg = (e.message || "").toLowerCase();
+      const isRateLimit = msg.includes("rate limit") || msg.includes("too many requests") || msg.includes("request limit");
+      if (isRateLimit && rateLimitRetries < 3) {
+        rateLimitRetries++;
+        markPrivarRateLimited();
+        console.info(`[${label}] merged-scan(${tag}): rate limited, backing off (retry ${rateLimitRetries}/3)`);
+        await sleep(1200 * rateLimitRetries);
+        continue;
+      }
+      if (window <= 200 || !isRateLimit) {
+        console.warn(`[${label}] merged-scan(${tag}): stopping this pass at block ${start} — progress saved:`, e.message);
+        break;
+      }
+      window = Math.floor(window / 4) || 200;
+      rateLimitRetries = 0;
+    }
+  }
+  console.info(`[${label}] merged-scan(${tag}): pass done — ${all.length} log(s), now at block ${start}${start <= head ? ` (${head - start} remaining)` : " (caught up)"}`);
+  return all;
+}
+
+// ── v21.0.0 — merged multi-event scan, WITH a topics[1] filter ─────────────
+// Same idea as fetchLogsPaginatedMerged above, for the case where every
+// merged event ALSO shares an identical filter at topics[1] (e.g. an
+// address-indexed `user`/`recipient` param at the same position — verified
+// per-event against the contract source before use, same discipline as
+// fetchLogsPaginatedMerged). eth_getLogs' topics array supports this
+// natively: topics=[[eventA,eventB,eventC], filterValue]. Blockscout's
+// Etherscan-style API has no equivalent (no OR within one topic position),
+// so its branch instead fetches the whole contract+range unfiltered and
+// filters BOTH positions client-side — still one HTTP round trip.
+async function fetchLogsPaginatedMergedFiltered(contractAddress, topic0List, topic1Filter, fromBlock, keyPrefix, address, label) {
+  return runPrivarThrottled(() => fetchLogsPaginatedMergedFilteredInner(contractAddress, topic0List, topic1Filter, fromBlock, keyPrefix, address, label));
+}
+
+async function fetchLogsPaginatedMergedFilteredInner(contractAddress, topic0List, topic1Filter, fromBlock, keyPrefix, address, label) {
+  const progKey = mergedScanProgressKey(keyPrefix, address);
+  let saved;
+  try { const v = localStorage.getItem(progKey); saved = v ? Number(v) : null; } catch { saved = null; }
+  const checkpointStart = Math.max(fromBlock, saved ?? fromBlock);
+  const save = (block) => { try { localStorage.setItem(progKey, String(block)); } catch {} };
+  const tag = `${topic0List.length} event types, filtered`;
+  const wanted0 = new Set(topic0List.map(t => t.toLowerCase()));
+  const wanted1 = topic1Filter.toLowerCase();
+
+  try {
+    const logs = await fetchLogsViaBlockscout(contractAddress, [], checkpointStart);
+    const filtered = logs.filter(l =>
+      wanted0.has((l.topics?.[0] || "").toLowerCase()) && (l.topics?.[1] || "").toLowerCase() === wanted1
+    );
+    console.info(`[${label}] merged-scan(${tag}): ${filtered.length}/${logs.length} log(s) via Blockscout, from block ${checkpointStart}`);
+    try {
+      const headHex = await rpcCallWithBackoff("eth_blockNumber", []);
+      save(Number(BigInt(headHex || "0x0")) + 1);
+    } catch {}
+    return filtered;
+  } catch (e) {
+    if (isPrivarRateLimitError(e)) markPrivarRateLimited();
+    console.warn(`[${label}] merged-scan(${tag}): Blockscout unavailable (${e.message}), falling back to paginated RPC`);
+  }
+
+  const headHex = await rpcCallWithBackoff("eth_blockNumber", []);
+  const head = Number(BigInt(headHex || "0x0"));
+  const all = [];
+  let start = checkpointStart;
+  let window = 2000;
+  let rateLimitRetries = 0;
+  let chunkCount = 0;
+  const MAX_CHUNKS_PER_CALL = 6;
+
+  if (start > head) return all;
+
+  while (start <= head && chunkCount < MAX_CHUNKS_PER_CALL) {
+    const end = Math.min(start + window - 1, head);
+    try {
+      const logs = await rpcCall("eth_getLogs", [{
+        fromBlock: "0x" + start.toString(16), toBlock: "0x" + end.toString(16),
+        address: contractAddress, topics: [topic0List, topic1Filter],
+      }]);
+      if (Array.isArray(logs)) all.push(...logs);
+      start = end + 1;
+      save(start);
+      rateLimitRetries = 0;
+      chunkCount++;
+      if (start <= head) await sleep(1500);
+    } catch (e) {
+      const msg = (e.message || "").toLowerCase();
+      const isRateLimit = msg.includes("rate limit") || msg.includes("too many requests") || msg.includes("request limit");
+      if (isRateLimit && rateLimitRetries < 3) {
+        rateLimitRetries++;
+        markPrivarRateLimited();
+        await sleep(1200 * rateLimitRetries);
+        continue;
+      }
+      if (window <= 200 || !isRateLimit) { console.warn(`[${label}] merged-scan(${tag}): stopping, progress saved:`, e.message); break; }
+      window = Math.floor(window / 4) || 200;
+      rateLimitRetries = 0;
+    }
+  }
+  return all;
+}
+
+// One-time migration: seed the new merged checkpoint from the MINIMUM of the
+// 5 legacy per-event checkpoints it replaces, so devices that already
+// scanned close to the chain tip under v20.x don't fall back to a cold,
+// multi-million-block replay under the new merged key. Taking the minimum
+// (not the max) is the safe direction: worst case a few thousand already-
+// processed blocks are re-fetched once (harmless — every consumer dedupes by
+// nullifier/commitment), never skipped.
+function migrateReconcileScanProgress(address, fromBlock) {
+  const newKey = mergedScanProgressKey("privar_reconcile_scanprogress", address);
+  try { if (localStorage.getItem(newKey) != null) return; } catch { return; }
+  const legacy = [
+    scanProgressKey("privar_reconcile_scanprogress", [EV.Withdrawn], address),
+    scanProgressKey("privar_verify_scanprogress", [EV.Deposited], address),
+    scanProgressKey("privar_reconcile_scanprogress_swap", [EV.PrivateSwap], address),
+    scanProgressKey("privar_reconcile_scanprogress_sent", [EV.ShieldedSent], address),
+    scanProgressKey("privar_reconcile_scanprogress_bridged", [EV.PrivateBridged], address),
+  ];
+  let min = null;
+  for (const k of legacy) {
+    try {
+      const v = localStorage.getItem(k);
+      if (v != null) { const n = Number(v); if (min === null || n < min) min = n; }
+    } catch {}
+  }
+  try { localStorage.setItem(newKey, String(min ?? fromBlock)); } catch {}
+}
+
 const _resyncInFlight = new Map(); // address(lowercase) -> Promise, prevents overlapping resync runs
 
 async function resyncFromCloudVault(address, recompute) {
@@ -4327,7 +4538,24 @@ async function buildTxHistoryFromChain(address) {
     // fine for this to populate gradually over a few connects/polls instead
     // of contending with CloudVault/stealth-scan for the same RPC budget.
     const sv = CONTRACTS.PrivarShieldVault, st = CONTRACTS.PrivarStaking;
-    const depLogs      = await fetchLogsPaginated(sv, [EV.Deposited, null, addrTopic], from, "privar_txhist_dep", address, "Privar tx-history");
+    // v21.0.0 BUG FIX: PrivarShieldVault.Deposited only indexes
+    // (bytes32 commitment, address token) — verified against the contract
+    // source (PrivarShieldVault.sol). The depositor's own address is NOT
+    // indexed at all, so filtering topics[2]==addrTopic (as this call did
+    // through v20.9.0) was comparing the token address against the user's
+    // wallet address — never equal, for any real token. depLogs was
+    // therefore silently empty for every account, every time: "Shield"
+    // entries never appeared in tx history. Fixed the only way an unindexed
+    // field can be attributed: scan ALL Deposited events (unfiltered, same
+    // pattern already used for Swap/Send/Bridge below) and keep only the
+    // ones whose commitment matches a note this device actually knows about
+    // (getNotes(address) — populated from local creation plus every
+    // cross-device recovery path: CloudVault, shield-vault journal, stealth
+    // scan, note relay). This also makes "Shield" entries cross-device,
+    // unlike before.
+    const depLogsAll   = await fetchLogsPaginated(sv, [EV.Deposited], from, "privar_txhist_dep", address, "Privar tx-history");
+    const knownCommitments = new Set(getNotes(address).map(n => n.commitment).filter(Boolean).map(c => c.toLowerCase()));
+    const depLogs = depLogsAll.filter(l => knownCommitments.has((l.topics?.[1] || "").toLowerCase()));
     const wdLogs        = await fetchLogsPaginated(sv, [EV.Withdrawn, null, null, addrTopic], from, "privar_txhist_wd", address, "Privar tx-history");
     // AUDIT FINDING (2026-09): Swap/Bridge/Send used to be fetched here via
     // eth_getLogs with NO address filter at all — PrivateSwap/ShieldedSent/
@@ -4348,9 +4576,34 @@ async function buildTxHistoryFromChain(address) {
     // already accepted elsewhere in this file for the note-relay's O(n)
     // scan cost, not a new one introduced here.
     const swapSendBridgeEntries = buildLocalOpTxEntries(address);
-    const stakeLogs     = st ? await fetchLogsPaginated(st, [EV.Staked, addrTopic], from, "privar_txhist_stk", address, "Privar tx-history") : [];
-    const unstakeLogs   = st ? await fetchLogsPaginated(st, [EV.Unstaked, addrTopic], from, "privar_txhist_unstk", address, "Privar tx-history") : [];
-    const claimLogs     = st ? await fetchLogsPaginated(st, [EV.RewardsClaimed, addrTopic], from, "privar_txhist_clm", address, "Privar tx-history") : [];
+    // v21.0.0: Staked/Unstaked/RewardsClaimed all index `user` at the exact
+    // same topic position (topics[1] — verified against PrivarStaking.sol),
+    // so they merge into one eth_getLogs call with topics=[[3 hashes],
+    // addrTopic] — 3 calls -> 1. This is a genuine topics[1]-filtered merge
+    // (different from fetchLogsPaginatedMerged, which is for the unfiltered
+    // ShieldVault events above) — safe specifically because all three share
+    // the identical filter position, unlike Deposited/Withdrawn which don't.
+    if (st) {
+      const newKey = mergedScanProgressKey("privar_txhist_staking", address);
+      try {
+        if (localStorage.getItem(newKey) == null) {
+          const legacy = [
+            scanProgressKey("privar_txhist_stk", [EV.Staked], address),
+            scanProgressKey("privar_txhist_unstk", [EV.Unstaked], address),
+            scanProgressKey("privar_txhist_clm", [EV.RewardsClaimed], address),
+          ];
+          let min = null;
+          for (const k of legacy) { const v = localStorage.getItem(k); if (v != null) { const n = Number(v); if (min === null || n < min) min = n; } }
+          localStorage.setItem(newKey, String(min ?? from));
+        }
+      } catch {}
+    }
+    const stakingLogs = st ? await fetchLogsPaginatedMergedFiltered(
+      st, [EV.Staked, EV.Unstaked, EV.RewardsClaimed], addrTopic, from, "privar_txhist_staking", address, "Privar tx-history"
+    ) : [];
+    const stakeLogs   = stakingLogs.filter(l => (l.topics?.[0] || "").toLowerCase() === EV.Staked.toLowerCase());
+    const unstakeLogs = stakingLogs.filter(l => (l.topics?.[0] || "").toLowerCase() === EV.Unstaked.toLowerCase());
+    const claimLogs   = stakingLogs.filter(l => (l.topics?.[0] || "").toLowerCase() === EV.RewardsClaimed.toLowerCase());
 
     const tc = (tsMs) => tsMs ? new Date(tsMs).toLocaleString("fr-FR", { dateStyle:"short", timeStyle:"short" }) : "—";
 
@@ -4610,24 +4863,24 @@ async function reconcileAndVerifyNotes(address) {
     // so this fires every single time, not intermittently — matching
     // exactly what was reported.
     //
-    // Fix: run them ONE AT A TIME (sequential awaits, not Promise.all).
-    // This restores the original 2-scan-at-a-time ceiling on shared-channel
-    // pressure regardless of how many event types this function scans, at
-    // the cost of this pass taking longer wall-clock time to finish — an
-    // acceptable trade since it runs in the background, not on a path the
-    // user is blocked waiting on. Once every account's 4 new checkpoints
-    // have caught up to the chain tip (one time only), each future pass is
-    // as cheap as the original 2-scan version was.
-    const withdrawnLogs      = await fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.Withdrawn],
-      fromBlock, "privar_reconcile_scanprogress", address, "Privar");
-    const depositedLogs      = await fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.Deposited],
-      fromBlock, "privar_verify_scanprogress", address, "Privar");
-    const swapLogs           = await fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.PrivateSwap],
-      fromBlock, "privar_reconcile_scanprogress_swap", address, "Privar");
-    const sentLogs           = await fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.ShieldedSent],
-      fromBlock, "privar_reconcile_scanprogress_sent", address, "Privar");
-    const bridgedLogs        = await fetchLogsPaginated(CONTRACTS.PrivarShieldVault, [EV.PrivateBridged],
-      fromBlock, "privar_reconcile_scanprogress_bridged", address, "Privar");
+    // v21.0.0: the 5 ShieldVault event types below (Withdrawn/Deposited/
+    // PrivateSwap/ShieldedSent/PrivateBridged) are now ONE merged eth_getLogs
+    // call instead of 5 sequential ones — see fetchLogsPaginatedMerged's doc
+    // comment for why this is safe (none of them filter beyond topic0). The
+    // legacy LiFiPrivacyBridge.Bridged event lives on a different contract
+    // address, so it stays a separate (2nd) call — still 6 calls -> 2.
+    migrateReconcileScanProgress(address, fromBlock);
+    const mergedLogs = await fetchLogsPaginatedMerged(
+      CONTRACTS.PrivarShieldVault,
+      [EV.Withdrawn, EV.Deposited, EV.PrivateSwap, EV.ShieldedSent, EV.PrivateBridged],
+      fromBlock, "privar_reconcile_scanprogress", address, "Privar"
+    );
+    const byTopic0 = (hash) => mergedLogs.filter(l => (l.topics?.[0] || "").toLowerCase() === hash.toLowerCase());
+    const withdrawnLogs = byTopic0(EV.Withdrawn);
+    const depositedLogs = byTopic0(EV.Deposited);
+    const swapLogs       = byTopic0(EV.PrivateSwap);
+    const sentLogs        = byTopic0(EV.ShieldedSent);
+    const bridgedLogs   = byTopic0(EV.PrivateBridged);
     const legacyBridgedLogs  = CONTRACTS.LiFiPrivacyBridge
       ? await fetchLogsPaginated(CONTRACTS.LiFiPrivacyBridge, [EV.Bridged],
           fromBlock, "privar_reconcile_scanprogress_legacybridge", address, "Privar")
