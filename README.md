@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v21.0.0-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v21.1.0-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -270,6 +270,17 @@ git push origin main --tags
 Open a PR against `main`, and before merging a contract-address sync specifically: confirm the Shield panel's TVL/version stats reflect the new vault, and — since a full-suite redeploy is never a migration — communicate to users that any balance on the previous `PrivarShieldVault` address must be withdrawn from there before switching over.
 
 ## Changelog
+
+### v21.1.0 — one-time approve for Shield/Stake, fewer RPC round trips before every wallet prompt (2026-09-17)
+See `CHANGELOG-v21.0.0.md` (§v21.1.0 section) for full details. Summary:
+EURC/cirBTC Shield and Staking no longer send a redundant `approve()` when
+a prior one already covers the amount — checked via allowance (folded into
+the existing multicall, no extra round trip) instead of firing
+unconditionally every time. When an approve IS needed, it now approves
+`MAX_UINT256` once instead of the exact amount each time, so it's the last
+approve that action ever needs. Also merged 2 more pairs of sequential
+reads into single multicalls (Send: root+fee; Bridge: root+fee), matching
+what Swap/Withdraw already did.
 
 ### v21.0.0 — merged RPC round trips, tx-history Deposited fix, patches/ folder retired (2026-09-17)
 See `CHANGELOG-v21.0.0.md` at the repo root for full details. Summary:

@@ -236,6 +236,14 @@ export const TOKEN_LIST = Object.values(TOKENS);
 // Conversion: display_usdc = native_wei / 1e12
 export const NATIVE_USDC        = "0x3600000000000000000000000000000000000000";
 export const NATIVE_TO_ERC20    = BigInt("1000000000000"); // 10^12
+// v21.1.0: used for a one-time "infinite" ERC20 approve so Shield/Stake only
+// ever need a second wallet confirmation (the approve itself) on the FIRST
+// deposit/stake of a given token — every subsequent one has enough allowance
+// already and skips straight to the single action tx. Standard pattern
+// (same one Uniswap etc. use); safe for a plain OpenZeppelin ERC20 with no
+// allowance-reset-before-reuse requirement (confirmed for PrivarMockERC20 —
+// see the nonce-revert changelog entry).
+export const MAX_UINT256 = (1n << 256n) - 1n;
 
 // ── Function selectors ────────────────────────────────────────────────────────
 // Computed with: keccak256(functionSignature).slice(0,4)
@@ -364,6 +372,7 @@ export const SEL = {
   VERSION:              "0x54fd4d50",  // version() returns (string) — was wrongly calling VERSION() (0xffa1ad74, uppercase), which doesn't exist; PrivarShieldVault only has lowercase version()
   paused:               "0x5c975abb",  // paused() — real public bool on PrivarShieldVault (single source of truth for vault pause state; the old EmergencyController-based selectors were removed, see v3.4.1 header comment)
   supportedTokens:      "0x68c4ac26",  // supportedTokens(address) — real public mapping on PrivarShieldVault; PrivarDepositManager.isTokenSupported(address) does NOT exist (only a tokens(address) struct getter)
+  allowance:            "0xdd62ed3e",  // allowance(address,address) — standard ERC20, used to skip a redundant approve() when a prior one already covers this deposit
   totalTxCount:         "0x9b4f50e7",  // totalTxCount() returns (uint256)
   totalVolumeByToken:   "0x38caed9f",  // totalVolumeByToken(address) returns (uint256)
 

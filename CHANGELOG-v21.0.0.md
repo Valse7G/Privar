@@ -108,3 +108,51 @@ cross-device too, unlike before).
 5. Force a Blockscout outage (or just watch a session where it's down) to
    confirm the RPC-fallback branch of both new merge helpers still returns
    correct, non-duplicated results.
+
+---
+
+## v21.1.0 — one-time approve (not one per Shield/Stake), fewer round trips before every wallet prompt
+
+Follow-up to v21.0.0, addressing two reports: "Approve EURC Failed" recurring
+on every Shield of a non-native token, and the Processing button taking a
+long time before the wallet even shows a confirmation prompt.
+
+### Shield/Stake no longer re-approve every time
+`needsApproveBeforeDeposit()` fired an `approve()` transaction on **every**
+EURC/cirBTC Shield and **every** Stake, unconditionally — even when a prior
+approve already granted enough allowance. Two wallet-prompted transactions
+back-to-back, every time, is exactly the failure mode in the reported
+screenshot (an approve competing with the deposit tx for the same nonce
+sequence). Now: allowance is checked first (folded into the same multicall
+as the fee/support reads — no extra round trip), and approve is only sent
+when it's actually insufficient. When it IS sent, it approves `MAX_UINT256`
+instead of the exact amount, so it's the **last** approve that token/action
+ever needs — every subsequent Shield or Stake of any size becomes
+single-step. Applied to both the Shield panel (EURC/cirBTC → vault) and the
+Staking panel (USDC → PrivarStaking).
+
+**Honesty note:** this is the closest achievable result *without* changing
+the contracts. A true single-*transaction* approve+deposit (EIP-2612
+`permit()`) would need `PrivarMockERC20`/`PrivarShieldVault` to support it —
+neither does today (checked the Solidity source directly: no `permit()`, no
+permit-accepting `deposit()` overload). Native USDC was already single-step
+because it pays via `msg.value`, not `approve()`+`transferFrom()` — there
+was never a second step to remove there. Withdraw/Swap/Send/Bridge were
+already single-step (they move funds already held by the vault via the
+shielded note's nullifier, not an external ERC20 transfer) — confirmed by
+reading each panel's submit function, not just asserted.
+
+### Fewer RPC round trips before the wallet prompt
+- **Shield**: the token-support pre-flight check, fee preview, and (new)
+  allowance check were 2 sequential round trips before any approve/deposit
+  tx — now 1 merged multicall.
+- **Send**: the merkle-root read and flat-fee read were 2 separate
+  sequential `eth_call`s (one right at submit, one right before the confirm
+  modal) — merged into 1 multicall, matching the pattern Swap/Withdraw/
+  Bridge already used.
+- **Bridge**: the merkle-root read and flat-fee read were 2 separate
+  single-item `multicallRead` calls — merged into 1.
+
+None of this removes wallet/network latency itself (outside frontend
+control), but it removes RPC round trips this app was adding on top of it,
+on the direct path to the first wallet popup, for every operation.

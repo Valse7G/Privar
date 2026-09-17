@@ -11,6 +11,7 @@ import {
   buildSwapWithRouterCalldata, buildLiFiBridgeCalldata,
   encodeLiFiRouteData, encodeCurveRouteData, fetchLiFiQuote, fetchLiFiDestinations,
   buildApproveCalldata, buildStakeCalldata, needsApproveBeforeDeposit,
+  MAX_UINT256,
   randomBytes32, buildGetLastRootCall,
   buildRegisterViewKeyCalldata, buildHasViewKeyCall, buildGetViewKeyCall,
   buildEmitNoteCalldata, decodeBytesReturn, decodeStringReturn,
@@ -5628,41 +5629,59 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
       }
     }
 
+    // v21.1.0: the token-support pre-flight check, the fee preview, AND (for
+    // ERC20 tokens) the current allowance are now ONE multicall instead of
+    // "1 eth_call, then wait for approve, then 1 multicall" — cuts a full
+    // RPC round trip out of the critical path before the wallet even shows
+    // its FIRST confirmation prompt, for every token, every time. This is
+    // also what makes the allowance check below possible without adding a
+    // round trip of its own.
+    const isNativeUsdc = token.isNative;
+    const reads = [
+      { to: CONTRACTS.PrivarShieldVault, data: SEL.supportedTokens + encodeAddress(token.address) },
+      { to: CONTRACTS.PrivarShieldVault, data: SEL.protocolFeeBps },
+      { to: CONTRACTS.PrivarShieldVault, data: SEL.flatFeeUsdc },
+    ];
+    if (!isNativeUsdc) reads.push({ to: token.address, data: SEL.allowance + encodeAddress(account.address) + encodeAddress(CONTRACTS.PrivarShieldVault) });
+    const [supportedRes, bpsRes, flatRes, allowanceRes] = await multicallRead(reads);
+
     // ── PRE-FLIGHT: verify token is registered in PrivarDepositManager ──────────
-    // Arc Testnet truncates revert data in receipts ("0x" on ARCScan).
-    // The most common cause of deposit failure is TokenNotSupported —
-    // addToken() was not called on PrivarDepositManager after deployment.
-    // We check this BEFORE sending the tx to give a clear error.
-    try {
-      const isSupportedData = SEL.supportedTokens + encodeAddress(token.address);
-      const res = await rpcCall("eth_call", [
-        { to: CONTRACTS.PrivarShieldVault, data: isSupportedData },
-        "latest",
-      ]);
-      // Returns bool: 0x00...01 = true, 0x00...00 = false
-      const isSupported = res && res !== "0x" && BigInt(res) === 1n;
-      if (!isSupported) {
-        notify(
-          "Deposit blocked",
-          `${token.symbol} deposits are temporarily unavailable. Please try again later.`,
-          "error"
-        );
-        setLoading(false); return;
-      }
-    } catch {
-      // If the pre-flight call itself fails (network issue), warn but proceed
+    // Arc Testnet truncates revert data in receipts ("0x" on ARCScan). The
+    // most common cause of deposit failure is TokenNotSupported — addToken()
+    // was not called on PrivarDepositManager after deployment. Checked here,
+    // before any tx, to give a clear error instead of a wasted-gas revert.
+    if (supportedRes == null) {
       notify("Deposit", "Could not verify token support — proceeding anyway.", "warning");
+    } else if (BigInt(supportedRes) !== 1n) {
+      notify("Deposit blocked", `${token.symbol} deposits are temporarily unavailable. Please try again later.`, "error");
+      setLoading(false); return;
     }
 
-    // Step 1: ERC-20 approve (skip for native USDC — uses msg.value instead)
+    // Step 1: ERC-20 approve (skip for native USDC — uses msg.value instead).
+    // v21.1.0: only sent if the CURRENT on-chain allowance is actually
+    // insufficient — previously this fired unconditionally on every single
+    // deposit, even when a prior approve already covered it, meaning EVERY
+    // EURC/cirBTC Shield needed two wallet confirmations back-to-back (the
+    // reported "Approve EURC Failed" screenshots trace to exactly this: two
+    // wallet-prompted transactions fired in a row, competing for the same
+    // nonce sequence). When an approve IS needed, it now approves
+    // MAX_UINT256 instead of the exact amount, so it's the LAST approve this
+    // token ever needs from this wallet — every future Shield of any size
+    // becomes single-step. A true single-TRANSACTION approve+deposit (e.g.
+    // EIP-2612 permit) would need PrivarMockERC20/PrivarShieldVault contract
+    // changes — out of scope for a frontend-only release; this is the
+    // closest equivalent achievable without touching the contracts.
     if (needsApproveBeforeDeposit(token.address)) {
-      const approved = await sendRealTx({
-        label: `Approve ${token.symbol}`,
-        description: `Approving ${amount} ${token.symbol} for PrivarShieldVault`,
-        buildTx: () => ({ to: token.address, value: "0x0", data: buildApproveCalldata(CONTRACTS.PrivarShieldVault, amountBig) }),
-        skipOnSuccess: true, // see sendRealTx's own comment — an approve() moves no value; skip the stats burst so it doesn't compete with the Deposit tx's own wallet-side nonce lookup right after
-      });
-      if (!approved) { setLoading(false); return; }
+      const currentAllowance = allowanceRes != null ? BigInt(allowanceRes) : 0n;
+      if (currentAllowance < amountBig) {
+        const approved = await sendRealTx({
+          label: `Approve ${token.symbol}`,
+          description: `Approving ${token.symbol} for PrivarShieldVault (one-time — future deposits won't need this step again)`,
+          buildTx: () => ({ to: token.address, value: "0x0", data: buildApproveCalldata(CONTRACTS.PrivarShieldVault, MAX_UINT256) }),
+          skipOnSuccess: true, // see sendRealTx's own comment — an approve() moves no value; skip the stats burst so it doesn't compete with the Deposit tx's own wallet-side nonce lookup right after
+        });
+        if (!approved) { setLoading(false); return; }
+      }
     }
 
     // ── Protocol fee preview (v2.8 — ALWAYS denominated/collected in USDC) ──────
@@ -5671,12 +5690,7 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
     // actually credits to totalShieldedByToken. EURC/cirBTC: flat flatFeeUsdc paid as
     // a SEPARATE USDC side-payment via msg.value — the deposited amount itself is
     // credited in FULL (no skim), so netAmount == amountBig for those tokens.
-    const isNativeUsdc = token.isNative;
     let depositFee = 0n, netAmount = amountBig, flatFeeUsdc = 0n;
-    const [bpsRes, flatRes] = await multicallRead([
-      { to: CONTRACTS.PrivarShieldVault, data: SEL.protocolFeeBps },
-      { to: CONTRACTS.PrivarShieldVault, data: SEL.flatFeeUsdc },
-    ]);
     if (bpsRes == null || flatRes == null) {
       // Silently assuming 0 here used to be safe (flatFeeUsdc was always 0 in
       // practice). Now that it's a real nonzero fee, defaulting to 0 builds a
@@ -6622,15 +6636,24 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       setLoading(false); return;
     }
 
-    let merkleRoot;
-    try {
-      const res = await rpcCallWithRetry("eth_call", [{ to: CONTRACTS.PrivarMerkleTreeManager, data: buildGetLastRootCall() }, "latest"]);
-      merkleRoot = (res && res !== "0x" && res.length >= 66) ? res : null;
-    } catch { merkleRoot = null; }
+    // v21.1.0: merkle root + flat fee used to be two separate sequential
+    // rpcCallWithRetry round trips (one here, one further down right before
+    // the confirm modal) — merged into the one multicallRead the other
+    // panels (Swap/Withdraw/Bridge) already use, cutting a full RPC round
+    // trip out of the critical path before Send even shows its confirm
+    // modal, let alone the wallet prompt.
+    const [merkleRootRes, sendFlatFeeRes] = await multicallRead([
+      { to: CONTRACTS.PrivarMerkleTreeManager, data: buildGetLastRootCall() },
+      { to: CONTRACTS.PrivarShieldVault, data: SEL.flatFeeUsdc },
+    ]);
+    const merkleRoot = (merkleRootRes && merkleRootRes !== "0x" && merkleRootRes.length >= 66) ? merkleRootRes : null;
     if (!merkleRoot) {
       notify("Send", "Could not read on-chain state. Ensure you are on Arc Testnet.", "error");
       setLoading(false); return;
     }
+    // Defaults to 0 until governance opts in via setSendFlatFee — matches
+    // pre-v2.4 behavior exactly when unset.
+    const sendFee = sendFlatFeeRes && sendFlatFeeRes !== "0x" ? BigInt(sendFlatFeeRes) : 0n;
 
     // ── Note Engine — deterministic derivation (§7.6/§8.3, replaces randomBytes32()) ──
     // nullifierIn: this is the exact fix for the audit finding at the top of
@@ -6734,15 +6757,9 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       }
     }
 
-    // ── Flat protocol fee (PrivarShieldVault v2.4+ — flatFeeUsdc, native USDC msg.value) ──
-    // Read before showing the confirm modal so the fee is disclosed up front.
-    // Defaults to 0 until governance opts in via setSendFlatFee — matches pre-v2.4
-    // behavior exactly when unset.
-    let sendFee = 0n;
-    try {
-      const feeRes = await rpcCallWithRetry("eth_call", [{ to: CONTRACTS.PrivarShieldVault, data: SEL.flatFeeUsdc }, "latest"]);
-      sendFee = feeRes && feeRes !== "0x" ? BigInt(feeRes) : 0n;
-    } catch { /* fee read failed — assume 0, matches default deploy state */ }
+    // Flat protocol fee already read above (merged with the merkle-root
+    // read) — read before showing the confirm modal so the fee is
+    // disclosed up front, same as before, just one round trip earlier.
 
     const confirmed = await askConfirm({
       label:  "Confidential Send",
@@ -7358,8 +7375,14 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
     // 1. Merkle root — routed through multicallRead (see its doc comment)
     // even as a single call, for the same improved retry/fallback
     // resilience as the batched Swap/Withdraw reads.
+    // v21.1.0: merkle root + flat fee merged into one multicallRead (were
+    // two separate single-item calls) — same "cut a round trip before the
+    // wallet prompt" fix applied to Shield/Send above.
     setStep("Étape 1/3 — Lecture du Merkle root…");
-    const [root] = await multicallRead([{ to: CONTRACTS.PrivarMerkleTreeManager, data: buildGetLastRootCall() }]);
+    const [root, bridgeFeeRes] = await multicallRead([
+      { to: CONTRACTS.PrivarMerkleTreeManager, data: buildGetLastRootCall() },
+      { to: CONTRACTS.PrivarShieldVault, data: SEL.flatFeeUsdc },
+    ]);
     if (!root || root.length < 66) {
       notify("Bridge", "Could not read the Merkle root.", "error");
       setLoading(false); setStep(""); return;
@@ -7409,7 +7432,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
 
     // 4. Protocol fee (flat USDC side-payment, EURC/cirBTC only — same model as withdraw())
     let flatFeeUsdc = 0n;
-    const [feeRes] = await multicallRead([{ to: CONTRACTS.PrivarShieldVault, data: SEL.flatFeeUsdc }]);
+    const [feeRes] = [bridgeFeeRes]; // already read above, merged with the merkle-root call
     if (feeRes == null) {
       notify("Bridge", "Could not read current fees (slow network) — please retry.", "error");
       setLoading(false); setStep(""); return;
@@ -8080,14 +8103,23 @@ function StakingPanel({ account, usdcBalance, onArc, notify, refreshBalance }) {
     setStaking(true);
     const amtWei = BigInt(Math.round(Number(stakeAmt) * 1e6));
 
-    // Arc native USDC (0x3600...) supports ERC-20 interface for approve
-    // Must approve PrivarStaking contract to call safeTransferFrom
-    const approveOk = await sendRealTx({
-      label: "Approve USDC",
-      description: `Approve ${stakeAmt} USDC for PrivarStaking`,
-      buildTx: () => ({ to: CONTRACTS.USDC, value: "0x0", data: buildApproveCalldata(CONTRACTS.PrivarStaking, amtWei) }),
-      skipOnSuccess: true, // see sendRealTx's own comment — same reasoning as the Shield panel's approve step
-    });
+    // v21.1.0: same allowance-check optimization as the Shield panel — only
+    // approve if the current allowance is actually short, and approve
+    // MAX_UINT256 (not the exact amount) so this is the LAST time this
+    // wallet needs to approve USDC for PrivarStaking, not once per stake.
+    const [stakingAllowanceRes] = await multicallRead([
+      { to: CONTRACTS.USDC, data: SEL.allowance + encodeAddress(account.address) + encodeAddress(CONTRACTS.PrivarStaking) },
+    ]);
+    const currentStakingAllowance = stakingAllowanceRes != null ? BigInt(stakingAllowanceRes) : 0n;
+    let approveOk = true;
+    if (currentStakingAllowance < amtWei) {
+      approveOk = await sendRealTx({
+        label: "Approve USDC",
+        description: `Approve USDC for PrivarStaking (one-time — future stakes won't need this step again)`,
+        buildTx: () => ({ to: CONTRACTS.USDC, value: "0x0", data: buildApproveCalldata(CONTRACTS.PrivarStaking, MAX_UINT256) }),
+        skipOnSuccess: true, // see sendRealTx's own comment — same reasoning as the Shield panel's approve step
+      });
+    }
 
     if (approveOk) {
       // Pass lk.sec directly — buildStakeCalldata now takes seconds, not days
