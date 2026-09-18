@@ -1459,10 +1459,10 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
       // fire fully concurrently with each other AND with the 2-minute poll
       // below, confirmed as a major contributor to a sustained rate-limit
       // storm (400+ backoffs in one user session).
-      runPrivarThrottled(() => scanStealthNotes(account.address, recomputeShielded)).catch(() => {});
-      runPrivarThrottled(() => scanNoteRelay(account.address, recomputeShielded)).catch(() => {}); // §7.5 — address-free counterpart
-      runPrivarThrottled(() => resyncFromCloudVault(account.address, recomputeShielded)).catch(() => {});
-      runPrivarThrottled(() => resyncFromShieldVaultJournal(account.address, recomputeShielded)).catch(() => {});
+      scanStealthNotes(account.address, recomputeShielded).catch(() => {});
+      scanNoteRelay(account.address, recomputeShielded).catch(() => {}); // §7.5 — address-free counterpart
+      resyncFromCloudVault(account.address, recomputeShielded).catch(() => {});
+      resyncFromShieldVaultJournal(account.address, recomputeShielded).catch(() => {});
       // Retry any SPEND broadcasts that failed on a previous session (see
       // "Pending SPEND broadcast queue") — a no-op wallet-side if the queue
       // is empty, so safe to run on every connect without extra prompts.
@@ -1515,10 +1515,10 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
     // round 2: reduces sustained request volume against a tight shared rate
     // limit) in case new stealth notes / cloud journal entries arrive
     const id = setInterval(() => {
-      runPrivarThrottled(() => scanStealthNotes(account.address, recomputeShielded)).catch(() => {});
-      runPrivarThrottled(() => scanNoteRelay(account.address, recomputeShielded)).catch(() => {});
-      runPrivarThrottled(() => resyncFromCloudVault(account.address, recomputeShielded)).catch(() => {});
-      runPrivarThrottled(() => resyncFromShieldVaultJournal(account.address, recomputeShielded)).catch(() => {});
+      scanStealthNotes(account.address, recomputeShielded).catch(() => {});
+      scanNoteRelay(account.address, recomputeShielded).catch(() => {});
+      resyncFromCloudVault(account.address, recomputeShielded).catch(() => {});
+      resyncFromShieldVaultJournal(account.address, recomputeShielded).catch(() => {});
     }, 180_000);
     // AUDIT FINDING (2026-09): repeated cross-device sync reports, even
     // after every RPC-reliability fix this session, traced to something
@@ -1550,10 +1550,10 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
     const burstId = setInterval(() => {
       burstCount++;
       if (burstCount > 10) { clearInterval(burstId); return; }
-      runPrivarThrottled(() => scanStealthNotes(account.address, recomputeShielded)).catch(() => {});
-      runPrivarThrottled(() => scanNoteRelay(account.address, recomputeShielded)).catch(() => {});
-      runPrivarThrottled(() => resyncFromCloudVault(account.address, recomputeShielded)).catch(() => {});
-      runPrivarThrottled(() => resyncFromShieldVaultJournal(account.address, recomputeShielded)).catch(() => {});
+      scanStealthNotes(account.address, recomputeShielded).catch(() => {});
+      scanNoteRelay(account.address, recomputeShielded).catch(() => {});
+      resyncFromCloudVault(account.address, recomputeShielded).catch(() => {});
+      resyncFromShieldVaultJournal(account.address, recomputeShielded).catch(() => {});
     }, 12_000);
     return () => { cancelled = true; clearInterval(id); clearInterval(burstId); };
   }, [account?.address, onArc, recomputeShielded, sendViewKeyTx, notify]);

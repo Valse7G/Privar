@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v21.2.0-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v21.2.3-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -270,6 +270,22 @@ git push origin main --tags
 Open a PR against `main`, and before merging a contract-address sync specifically: confirm the Shield panel's TVL/version stats reflect the new vault, and — since a full-suite redeploy is never a migration — communicate to users that any balance on the previous `PrivarShieldVault` address must be withdrawn from there before switching over.
 
 ## Changelog
+
+### v21.2.3 — fixed a self-deadlocking shared RPC queue (found via v17.0.0 comparison) (2026-09-17)
+See `CHANGELOG-v21.0.0.md` (§v21.2.3) for full details. Summary: comparing
+against the user-supplied working `v17.0.0` build (which predates the
+shared RPC queue entirely) found that 4 cross-device discovery functions
+(`scanStealthNotes`/`scanNoteRelay`/`resyncFromCloudVault`/
+`resyncFromShieldVaultJournal`) were each wrapped in `runPrivarThrottled`
+at their outer call sites AND internally, a second time, via
+`fetchLogsPaginated`. That double-wrap is a real deadlock (provable from
+the queue's own FIFO-promise-chain implementation): the outer call can't
+finish until the inner one runs, and the inner one can't run until the
+outer one finishes — and once stuck, the shared queue is stuck for
+everything else in the app too, for the rest of the session. Removed the
+redundant outer wrapper at all 12 call sites (4 functions × 3 trigger
+points), restoring the exact call shape v17.0.0 had. This is very likely
+the actual cause of the cross-device balance divergence reported.
 
 ### v21.2.0 — cross-device balance divergence fixed, immediate reconcile, scalability hook (2026-09-17)
 See `CHANGELOG-v21.0.0.md` (§v21.2.0) for full details. Summary: found and

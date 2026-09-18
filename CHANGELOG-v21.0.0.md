@@ -220,3 +220,74 @@ the merged-scan helpers from v21.0.0/v21.1.0, the note lifecycle
 unchanged — this release only adds the deployment-block lookup, the
 immediate-reconcile trigger, and the opt-in dedicated-RPC hook, all
 additive and fail-safe to prior behavior.
+
+---
+
+## v21.2.3 — the real cross-device regression: a self-deadlocking shared queue
+
+The user supplied a working `v17.0.0` build for comparison. `v17.0.0` has
+**zero** occurrences of `runPrivarThrottled` — the shared RPC queue
+(introduced later, v20.x era, to fix the "9 independent scanners"
+thundering-herd problem) simply didn't exist yet. Diffing the two versions'
+cross-device discovery wiring against each other found the actual
+regression, and it's a genuine bug, not a timing/environment difference.
+
+### The bug
+Four cross-device discovery functions — `scanStealthNotes`, `scanNoteRelay`,
+`resyncFromCloudVault`, `resyncFromShieldVaultJournal` — each already
+throttle their OWN network calls internally, via `fetchLogsPaginated()`
+(which itself is `runPrivarThrottled(() => fetchLogsPaginatedInner(...))`).
+But at their three top-level trigger points (initial connect, the 2-minute
+poll, the visibility-change re-check), each of these four was ALSO wrapped
+a second time: `runPrivarThrottled(() => scanStealthNotes(...))`.
+
+That double-wrap is a real deadlock, provable from the queue's own
+implementation, not just a performance concern:
+
+1. `runPrivarThrottled` chains a strict FIFO onto a single module-level
+   promise (`__privarBgQueue = __privarBgQueue.then(run, run)`).
+2. The OUTER call (e.g. `resyncFromCloudVault`) claims a slot in that
+   chain and starts running.
+3. While still running — before it resolves — it calls
+   `fetchLogsPaginated()` internally, which calls `runPrivarThrottled`
+   AGAIN. This inner call chains onto `__privarBgQueue` too — but
+   `__privarBgQueue` was already advanced to a promise that only settles
+   once the OUTER call finishes.
+4. The outer call can't finish until the inner one runs. The inner one
+   can't run until the outer one finishes. Neither ever does.
+
+Once this fires, `__privarBgQueue` itself is a promise that will never
+settle — and because it's shared module state, **every other call that
+goes through `runPrivarThrottled` from that point on, from any part of the
+app, permanently stalls too** (protocol stats, tx-history, reconcile —
+whatever hasn't already claimed a slot ahead of the stuck one). It doesn't
+crash anything visibly; things just silently stop updating. This is a
+better fit for the reported symptoms than anything in v21.0–v21.2 so far:
+a note shielded on one device never appearing on another (its own
+discovery call deadlocks itself before it can find anything), and the "no
+stats with 2 devices" report (each device runs this same connect-time
+effect, so each independently has a very good chance of self-poisoning its
+own queue on ordinary use — not something that actually required a second
+device, just correlated with using the app enough to trigger it).
+
+### The fix
+Removed the redundant outer `runPrivarThrottled(...)` wrapper at all 12
+call sites (4 functions × 3 trigger points), restoring the exact call
+shape v17.0.0 already had and is proven to work: these four functions are
+invoked directly, and their own internal `fetchLogsPaginated` calls remain
+fully throttled through the shared queue exactly as before — nothing about
+the actual rate-limit protection changes, only the self-deadlocking
+duplicate layer is gone. Audited every remaining `runPrivarThrottled` call
+site in the file (4 total) to confirm none of them has this same nesting
+problem — `getContractDeploymentBlock`, `fetchLogsPaginatedInner`,
+`fetchLogsPaginatedMergedInner`, `fetchLogsPaginatedMergedFilteredInner`,
+and the protocol-stats poll (`runStatsFetch`) all call only genuine leaf
+functions (`rpcCall`/`rpcCallWithRetry`/`rpcCallWithBackoff`) with no
+further `runPrivarThrottled` inside them.
+
+### What wasn't touched
+The shared queue itself, its cooldown/backoff logic, the merged-scan
+helpers, the one-time-approve logic, the dynamic deployment-block lookup,
+and the immediate-reconcile trigger are all unchanged. This release is a
+pure subtraction (12 redundant wrapper calls removed) — no new mechanism,
+so no new surface for a fresh regression.
