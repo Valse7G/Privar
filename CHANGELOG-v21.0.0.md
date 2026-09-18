@@ -355,3 +355,73 @@ window permanently.
 ### What wasn't touched
 The queue/cooldown mechanism, the merged-scan helpers, the one-time-approve
 logic, and the dynamic deployment-block lookup are all unchanged.
+
+---
+
+## v21.2.5 — the actual root cause: Blockscout has always been CORS-blocked
+
+The user supplied real browser console logs. They settle the question: every
+theory in v21.0.0–v21.2.4 was a real bug worth fixing, but none of them was
+the dominant cause. This is:
+
+```
+Access to fetch at 'https://testnet.arcscan.app/api?...' from origin
+'https://privar.vercel.app' has been blocked by CORS policy: No
+'Access-Control-Allow-Origin' header is present on the requested resource.
+```
+
+...on **every single Blockscout call**, with no exception, in the log —
+the pre-flight token check, the `getcontractcreation` deployment-block
+lookup added in v21.2.0, the merged reconcile scan, the tx-history scan,
+all of it. `testnet.arcscan.app`'s API does not send an
+`Access-Control-Allow-Origin` header, so the browser blocks every one of
+these requests before the frontend ever sees a response. This is not
+something a frontend fetch() retry, header, or option can work around —
+CORS is enforced by the browser based on the SERVER's response headers, and
+that server (Blockscout, not something this codebase controls) never sends
+one.
+
+### What this explains, precisely
+Because Blockscout was 100% unreachable from the browser the entire time,
+**100% of this app's log-scanning traffic — not most of it, all of it —
+has always silently run through the raw, tightly-chunked `eth_getLogs` RPC
+fallback**, which is nowhere near fast enough on its own: the log shows one
+scan stream sitting 867,940 blocks behind head after falling back. That
+volume of raw RPC calls, all at once, across every background scanner
+(stealth scan, note relay, cloud vault, reconcile, tx-history) is exactly
+what then cascades into the wall of "Request limit exceeded" / "rate limit
+exceeded" errors filling the rest of the log — including v21.2.0's own
+deployment-block lookup, whose Blockscout attempt failed (CORS) and whose
+binary-search RPC fallback ALSO failed (already rate-limited by then),
+landing back on block 0 anyway. Every fix in v21.0.0–v21.2.4 was real and
+stays in — they just couldn't matter much while every one of them was
+starved down to the same overloaded RPC fallback path underneath.
+
+### The fix
+CORS is bypassed the standard, correct way: route the request through a
+same-origin server-side proxy instead of calling the third-party API
+directly from the browser. Server-to-server HTTP requests aren't subject to
+CORS at all.
+
+- Added `api/blockscout-proxy.js` — a Vercel serverless function (this
+  project already deploys on Vercel) that forwards the query string to
+  `testnet.arcscan.app/api` and relays the response, with a 5-second shared
+  cache since this is read-only, idempotent blockchain data.
+- `BLOCKSCOUT_API_BASE` now points to `/api/blockscout-proxy` (same-origin)
+  instead of `https://testnet.arcscan.app/api` directly. This one constant
+  change fixes every caller — `fetchLogsViaBlockscout` and the
+  `getcontractcreation` lookup both already funnel through it.
+- `vercel.json`'s SPA catch-all rewrite (`/(.*)` → `/index.html`) was
+  updated to `/((?!api/).*)` so it can never shadow the new `/api/*`
+  serverless function — Vercel's filesystem routing already takes priority
+  over rewrites, but excluding `/api/` explicitly removes any doubt rather
+  than relying on that implicitly (real projects have hit exactly this
+  ambiguity).
+
+### What wasn't touched
+Every fix from v21.0.0 through v21.2.4 stays — the merged scans, the
+one-time approve, the deployment-block lookup, the deadlock removal, the
+checkpoint-preservation guard. None of them was wrong; they were just
+running on top of a transport layer that never worked. This release adds
+one new file and changes two lines elsewhere (a constant and a rewrite
+pattern) — nothing existing was restructured.

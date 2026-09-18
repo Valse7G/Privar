@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v21.2.4-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v21.2.5-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -270,6 +270,21 @@ git push origin main --tags
 Open a PR against `main`, and before merging a contract-address sync specifically: confirm the Shield panel's TVL/version stats reflect the new vault, and — since a full-suite redeploy is never a migration — communicate to users that any balance on the previous `PrivarShieldVault` address must be withdrawn from there before switching over.
 
 ## Changelog
+
+### v21.2.5 — found via real console logs: Blockscout has been CORS-blocked this whole time (2026-09-18)
+See `CHANGELOG-v21.0.0.md` (§v21.2.5) for full details. Summary: the user's
+browser logs showed every single call to `testnet.arcscan.app/api` failing
+with a CORS error — that server never sends an
+`Access-Control-Allow-Origin` header, so 100% of this app's log-scanning
+traffic has always silently run through the much slower, heavily-rate-limited
+raw RPC fallback instead of Blockscout, cascading into the "Request limit
+exceeded" errors seen throughout the log. Every fix from v21.0.0–v21.2.4 was
+real and stays, but none of them could matter much while starved onto the
+same overloaded fallback path underneath. Added `api/blockscout-proxy.js` (a
+Vercel serverless function — this project already deploys on Vercel) that
+forwards Blockscout requests server-side, where CORS doesn't apply, and
+pointed `BLOCKSCOUT_API_BASE` at it. Updated `vercel.json`'s SPA rewrite to
+explicitly exclude `/api/*` so it can't shadow the new function.
 
 ### v21.2.4 — fixed a checkpoint that could permanently skip blocks scanned before the backup signature existed (2026-09-18)
 See `CHANGELOG-v21.0.0.md` (§v21.2.4) for full details. Summary: v21.2.3's

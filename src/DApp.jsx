@@ -3349,7 +3349,15 @@ function saveScanProgress(keyPrefix, topics, address, block) {
 // already-working paginated RPC path below, so it can only ever help, never
 // regress. First real test run will confirm the response shape; adjust here
 // if console logs show a mismatch.
-const BLOCKSCOUT_API_BASE = `${ARC_TESTNET.explorer}/api`;
+// v21.2.5: was `${ARC_TESTNET.explorer}/api` (https://testnet.arcscan.app/api)
+// called directly from the browser — confirmed via console logs to fail
+// EVERY call with a CORS error (Blockscout sends no Access-Control-Allow-
+// Origin header), silently forcing all log-scanning onto the much slower,
+// heavily-rate-limited raw RPC fallback. Routed through this app's own
+// same-origin serverless proxy instead (api/blockscout-proxy.js) — a
+// server-to-server request has no CORS restriction. See that file for the
+// full explanation.
+const BLOCKSCOUT_API_BASE = "/api/blockscout-proxy";
 
 function normalizeBlockscoutLog(l) {
   const toHex = (v) => {

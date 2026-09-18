@@ -1,6 +1,6 @@
 {
   "name": "privar-os",
-  "version": "21.2.4",
+  "version": "21.2.5",
   "private": true,
   "type": "module",
   "scripts": {
