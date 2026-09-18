@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v21.2.3-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v21.2.4-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -270,6 +270,22 @@ git push origin main --tags
 Open a PR against `main`, and before merging a contract-address sync specifically: confirm the Shield panel's TVL/version stats reflect the new vault, and — since a full-suite redeploy is never a migration — communicate to users that any balance on the previous `PrivarShieldVault` address must be withdrawn from there before switching over.
 
 ## Changelog
+
+### v21.2.4 — fixed a checkpoint that could permanently skip blocks scanned before the backup signature existed (2026-09-18)
+See `CHANGELOG-v21.0.0.md` (§v21.2.4) for full details. Summary: v21.2.3's
+deadlock fix didn't fully resolve cross-device sync, so dug further.
+Verified (via an independently cross-checked Keccak-256 implementation)
+that `NOTE_JOURNAL_TOPIC` and the backup-key derivation were both already
+correct. Found the real remaining bug: `resyncFromCloudVault`/
+`resyncFromShieldVaultJournal` would scan and advance their checkpoint even
+when no backup signature was cached yet (declined/dismissed/not-yet-answered
+on a brand-new device) — fetching real on-chain logs, failing to decrypt
+all of them, and then never being able to see those blocks again on any
+future attempt, even after the signature is later approved. Both functions
+now skip entirely (checkpoint untouched) until a signature is actually
+cached, and every panel's `onSuccess` now also retries cross-device
+discovery immediately, since completing any operation guarantees the
+signature is cached by then.
 
 ### v21.2.3 — fixed a self-deadlocking shared RPC queue (found via v17.0.0 comparison) (2026-09-17)
 See `CHANGELOG-v21.0.0.md` (§v21.2.3) for full details. Summary: comparing

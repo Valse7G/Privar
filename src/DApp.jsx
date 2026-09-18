@@ -1441,6 +1441,23 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
   const { bals: shieldedBals, recompute: recomputeShielded, lastVerified: shieldedLastVerified, triggerReconcile: triggerShieldedReconcile } = useShieldedBalances(prices, account?.address);
   const { sendRealTx: sendViewKeyTx } = useTxSend({ account, onArc, notify, refreshBalance });
 
+  // v21.2.4: exposed so any panel's onSuccess can re-run cross-device
+  // discovery right after an operation completes — guaranteed to have a
+  // cached backup signature by then (every operation that creates a note
+  // calls ensureSelfBackupKeyReady itself first), so this is the most
+  // reliable point to retry a scan that may have been skipped earlier for
+  // lack of a key (see _resyncFromCloudVaultImpl/_resyncFromShieldVaultJournalImpl's
+  // guard) — no need to wait for the next 2-minute poll.
+  useEffect(() => {
+    if (!account?.address) { window._privarTriggerCrossDeviceSync = null; return; }
+    window._privarTriggerCrossDeviceSync = () => {
+      scanStealthNotes(account.address, recomputeShielded).catch(() => {});
+      scanNoteRelay(account.address, recomputeShielded).catch(() => {});
+      resyncFromCloudVault(account.address, recomputeShielded).catch(() => {});
+      resyncFromShieldVaultJournal(account.address, recomputeShielded).catch(() => {});
+    };
+  }, [account?.address, recomputeShielded]);
+
   // Scan chain for ECDH stealth notes addressed to this wallet on every connect,
   // and opportunistically register a view key (real ECDH P-256) if missing —
   // see ensureViewKeyRegistered() for the once-per-address retry guard.
@@ -3866,6 +3883,21 @@ async function resyncFromCloudVault(address, recompute) {
 async function _resyncFromCloudVaultImpl(address, recompute) {
   try {
     await ensureSelfBackupKeyReady(address);
+    // v21.2.4: if the one-time signature prompt hasn't been approved yet on
+    // this device (declined, dismissed, or simply not answered in time),
+    // don't scan at all. Scanning without a key can't decrypt anything it
+    // finds, but fetchLogsPaginated's checkpoint still advances past every
+    // block it looked at regardless of decrypt success — so a scan that
+    // runs "too early" doesn't just fail harmlessly, it PERMANENTLY skips
+    // those blocks on every future attempt too, even after the key becomes
+    // available. Bailing out here before any fetch happens means the
+    // checkpoint is untouched and the very next attempt (2-minute poll, or
+    // right after any operation — see the onSuccess wiring) gets a clean
+    // shot at the real starting block once the key exists.
+    if (!getCachedBackupSignature(address)) {
+      console.info(`[cloud vault resync] ${address}: no backup signature yet — skipping this pass, checkpoint untouched`);
+      return;
+    }
 
     const [latestVerHex, lastCkBlockHex] = await Promise.all([
       rpcCallWithBackoff("eth_call", [{ to: CONTRACTS.PrivarCloudVault, data: buildCvLatestVersionCall(address) }, "latest"]),
@@ -3986,6 +4018,13 @@ async function resyncFromShieldVaultJournal(address, recompute) {
 async function _resyncFromShieldVaultJournalImpl(address, recompute) {
   try {
     await ensureSelfBackupKeyReady(address);
+    // v21.2.4: same reasoning as _resyncFromCloudVaultImpl's identical guard
+    // — scanning before a key exists would permanently burn the checkpoint
+    // past blocks it can never decrypt on a retry.
+    if (!getCachedBackupSignature(address)) {
+      console.info(`[shield vault journal resync] ${address}: no backup signature yet — skipping this pass, checkpoint untouched`);
+      return;
+    }
     const ownerTopic = "0x" + "0".repeat(24) + address.toLowerCase().slice(2);
     const journalFromBlock = await shieldVaultJournalGenesisBlock();
     const logs = await fetchLogsPaginated(
@@ -5709,7 +5748,7 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
   // §8.4 point 4 — optional third-party recipient. Empty = deposit to own
   // shielded balance (unchanged default). Mirrors SendPanel's `dest` field.
   const [depositRecipient, setDepositRecipient] = useState("");
-  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(true); onChainActivity?.refresh?.(); window._privarTriggerShieldedReconcile?.(); } });
+  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(true); onChainActivity?.refresh?.(); window._privarTriggerShieldedReconcile?.(); window._privarTriggerCrossDeviceSync?.(); } });
 
   // Ask user to confirm before hitting wallet — shows real amount for ERC-20 / ZK txs
   const askConfirm = (txInfo) => new Promise(resolve => {
@@ -6188,7 +6227,7 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
   const [amount, setAmount]   = useState("");
   const [q, setQ]             = useState(null);
   const [loading, setLoading] = useState(false);
-  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(true); onChainActivity?.refresh?.(); window._privarTriggerShieldedReconcile?.(); } });
+  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(true); onChainActivity?.refresh?.(); window._privarTriggerShieldedReconcile?.(); window._privarTriggerCrossDeviceSync?.(); } });
   const bals = shieldedBals;
 
   const SWAP_TOKENS = {
@@ -6726,7 +6765,7 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
   const askConfirm = (txInfo) => new Promise(resolve => { confirmRef.current = resolve; setConfirmTx(txInfo); });
   const onConfirm  = () => { setConfirmTx(null); confirmRef.current?.(true); };
   const onCancel   = () => { setConfirmTx(null); confirmRef.current?.(false); };
-  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(true); onChainActivity?.refresh?.(); window._privarTriggerShieldedReconcile?.(); } });
+  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(true); onChainActivity?.refresh?.(); window._privarTriggerShieldedReconcile?.(); window._privarTriggerCrossDeviceSync?.(); } });
   const bals = shieldedBals;
 
   // NOTE: ARC Name Service (.arc) is not yet deployed — there is no on-chain
@@ -7113,7 +7152,7 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
   const [dest, setDest]       = useState("");
   const [loading, setLoading] = useState(false);
   const [token, setToken]     = useState("USDC"); // selected token to withdraw
-  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(true); onChainActivity?.refresh?.(); window._privarTriggerShieldedReconcile?.(); } });
+  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(true); onChainActivity?.refresh?.(); window._privarTriggerShieldedReconcile?.(); window._privarTriggerCrossDeviceSync?.(); } });
   const bals = shieldedBals;
 
   // Token metadata — mirrors BridgePanel BRIDGE_TOKENS
@@ -7452,7 +7491,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
   const [recipient, setRecipient] = useState("");
   const [token, setToken]         = useState("USDC");
   const [step, setStep]           = useState("");
-  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(true); onChainActivity?.refresh?.(); window._privarTriggerShieldedReconcile?.(); } });
+  const { sendRealTx } = useTxSend({ account, onArc, notify, refreshBalance, onSuccess: () => { protocolStats?.refresh?.(true); onChainActivity?.refresh?.(); window._privarTriggerShieldedReconcile?.(); window._privarTriggerCrossDeviceSync?.(); } });
   const bals = shieldedBals;
   const ch   = CH.find(c=>c.domainId===destId) || CH[0];
 

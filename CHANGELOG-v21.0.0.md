@@ -291,3 +291,67 @@ helpers, the one-time-approve logic, the dynamic deployment-block lookup,
 and the immediate-reconcile trigger are all unchanged. This release is a
 pure subtraction (12 redundant wrapper calls removed) — no new mechanism,
 so no new surface for a fresh regression.
+
+---
+
+## v21.2.4 — the checkpoint was burning blocks it couldn't decrypt yet
+
+v21.2.3's deadlock fix was real and worth keeping, but the user confirmed
+cross-device sync was still broken after it. Dug further and found a
+second, independent bug in the same pipeline — this one is very likely the
+actual dominant cause, since it can silently and permanently disable
+cross-device discovery on a device from its very first page load.
+
+### Verified along the way, ruled out
+- `NOTE_JOURNAL_TOPIC`'s hash: implemented and cross-checked a Keccak-256
+  routine against two independently-known Ethereum constants (the
+  `transfer(address,uint256)` selector `0xa9059cbb` and the ERC20
+  `Transfer` event topic) to be sure the check itself was trustworthy, then
+  confirmed `NOTE_JOURNAL_TOPIC` exactly matches `keccak256("NoteJournal(address,bytes)")`
+  against `PrivarShieldVault.sol`'s actual event. Not the bug.
+- The backup-key derivation (`deriveSelfBackupKey`): deliberately
+  `personal_sign`-only (never EIP-712) specifically so it produces an
+  identical, wallet-agnostic key on any device for the same account — this
+  was already correctly engineered. Not the bug.
+- `scanStealthNotes`'s dependency on `ViewKeyRegistry`: that contract isn't
+  present at all in the current v5.3.0 contract set, so this path is
+  already a graceful, harmless no-op — not currently active, not the bug.
+- The mount-time flow already awaits `ensureSelfBackupKeyReady(address, notify)` —
+  with a real, visible notification — before running any of the 4
+  discovery scans. Not missing.
+
+### The actual bug: a scan run before the key exists poisons its own future
+`fetchLogsPaginated()`'s checkpoint advances based on "which blocks were
+fetched," completely independent of whether anything found in them could
+actually be decrypted. `_resyncFromCloudVaultImpl` and
+`_resyncFromShieldVaultJournalImpl` both call
+`ensureSelfBackupKeyReady(address)` but never checked whether it actually
+succeeded before scanning anyway. If the one-time signature prompt is
+declined, dismissed, or simply not answered before the scan runs — very
+plausible on a brand-new device's very first connect, with no way to
+retry that specific attempt — the scan still fetches the real on-chain
+logs, fails to decrypt every one of them (no key), and the checkpoint
+still advances past those blocks as if the pass had succeeded. Every
+later attempt, even after the user approves the signature, starts from
+the NEW checkpoint and can never see those blocks again. The note isn't
+missing from the chain and isn't undiscoverable in principle — the scan
+that could have found it already ran, without a key, and burned that
+window permanently.
+
+### The fix
+1. Both resync functions now check `getCachedBackupSignature(address)`
+   themselves, right after `ensureSelfBackupKeyReady`, and bail out
+   **before touching anything** — no fetch, no checkpoint write — if no
+   signature is cached yet. A skipped pass costs nothing and leaves the
+   next attempt free to start from the correct block.
+2. Added `window._privarTriggerCrossDeviceSync`, wired into all 5 panels'
+   `onSuccess` (alongside the existing immediate-reconcile trigger from
+   v21.2.0) — every action that succeeds is a moment the backup signature
+   is guaranteed to already be cached (that flow calls
+   `ensureSelfBackupKeyReady` itself first), so it's the most reliable
+   point to retry a discovery scan that may have been skipped earlier,
+   rather than waiting up to 2 minutes for the next poll.
+
+### What wasn't touched
+The queue/cooldown mechanism, the merged-scan helpers, the one-time-approve
+logic, and the dynamic deployment-block lookup are all unchanged.
