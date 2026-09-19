@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v21.2.6-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v21.2.7-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -270,6 +270,18 @@ git push origin main --tags
 Open a PR against `main`, and before merging a contract-address sync specifically: confirm the Shield panel's TVL/version stats reflect the new vault, and — since a full-suite redeploy is never a migration — communicate to users that any balance on the previous `PrivarShieldVault` address must be withdrawn from there before switching over.
 
 ## Changelog
+
+### v21.2.7 — "No logs found" was misclassified as a failure; explains why Multicall3 doesn't apply here (2026-09-19)
+See `CHANGELOG-v21.0.0.md` (§v21.2.7) for full details. Summary: this
+Blockscout instance returns "No logs found" for an empty range, a phrase
+the code didn't recognize as success (only "no records" was) — every
+genuinely-empty scan (note-relay, stealth scan — no history yet for this
+account) was misclassified as a failure and wastefully fell through to the
+RPC path. Fixed. Also: Multicall3 already batches every `eth_call` this app
+makes where it can, but it's a smart contract and can't read historical
+event logs (`eth_getLogs`) — that's a different JSON-RPC capability with no
+contract-level equivalent, so it can't help the log-scanning bottleneck
+specifically, only the state-read side (already covered).
 
 ### v21.2.6 — stop compounding a Blockscout rate-limit with an immediate RPC retry (2026-09-19)
 See `CHANGELOG-v21.0.0.md` (§v21.2.6) for full details. Summary: v21.2.5's

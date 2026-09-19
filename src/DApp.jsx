@@ -3533,7 +3533,18 @@ async function fetchLogsViaBlockscout(contractAddress, topics, fromBlock) {
   if (json.status !== "1") {
     // Blockscout returns status "0" + message "No records found" for a
     // legitimately empty (but successful) result — not a real error.
-    if ((json.message || "").toLowerCase().includes("no records")) return [];
+    // v21.2.7: this Blockscout instance's actual empty-result message is
+    // "No logs found" — confirmed from real logs ("[note-relay scan]
+    // Blockscout API unavailable (Blockscout: No logs found)") — which
+    // didn't match the "no records" check below, so a perfectly normal
+    // "nothing new in this range" response was being treated as a hard
+    // failure and triggering an unnecessary RPC fallback (and its own
+    // rate-limit exposure) on every single empty scan. "no records" is kept
+    // too in case a different Blockscout deployment/version phrases it that
+    // way — matching a broader set costs nothing when the message anyway
+    // only reaches this branch on a non-"1" status.
+    const msg = (json.message || "").toLowerCase();
+    if (msg.includes("no records") || msg.includes("no logs found") || msg.includes("no transactions found")) return [];
     throw new Error(`Blockscout: ${json.message || "unknown error"}`);
   }
   return Array.isArray(json.result) ? json.result.map(normalizeBlockscoutLog) : [];

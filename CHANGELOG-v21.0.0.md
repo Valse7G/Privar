@@ -477,3 +477,68 @@ Every fix from v21.0.0 through v21.2.5 stays as-is — including the
 CORS-fixing proxy itself, which is confirmed working. This release only
 changes how a Blockscout-specific rate-limit response is handled, in three
 near-identical spots plus the proxy's own retry.
+
+---
+
+## v21.2.7 — "No logs found" was being treated as an error; the Multicall question answered
+
+New logs show real progress: Blockscout succeeding directly for the merged
+reconcile scan (139/350 logs) and tx-history (48 logs) — the CORS/proxy fix
+and the rate-limit fixes are working. Two things from this round:
+
+### Bug: a normal empty result was triggering a wasted RPC fallback
+```
+[Privar note-relay scan] scan(10938b0a): Blockscout API unavailable
+(Blockscout: No logs found), falling back to paginated RPC
+```
+This Blockscout instance returns the message **"No logs found"** for a
+legitimately empty (but successful) range — this codebase's own check only
+recognized `"no records"`, a different phrase, so every genuinely-empty
+scan was misclassified as a failure and fell through to the RPC path
+anyway, for no reason: there was nothing to find, Blockscout already said
+so correctly. Fixed: `fetchLogsViaBlockscout()` now also recognizes "no
+logs found" (and "no transactions found") as a clean empty result. This
+matters more than it looks: the note-relay and stealth-scan contracts have
+no history at all for this account yet, so EVERY pass was hitting this
+exact false failure and burning an RPC fallback attempt on it.
+
+### "Et le multicall ? Ça ne pourrait pas résoudre le problème ?"
+Multicall3 already IS used, everywhere it can be: the protocol-stats poll
+and every fee/allowance/support-check read in Shield/Swap/Send/Withdraw/
+Bridge batch multiple `eth_call`s into one round trip through it (that's
+what "139/350 log(s)" and the merged reconcile scan from v21.0.0 also do
+conceptually, just via `eth_getLogs`'s own OR-topic feature instead, since
+Multicall3 doesn't apply there — see below).
+
+It can't help with the actual bottleneck in these logs, though, and it's
+worth being precise about why: **Multicall3 is a smart contract.** It
+batches multiple `eth_call`s (read a value from a contract's current state)
+into one round trip by having ONE contract call several others internally
+and return all the results together. `eth_getLogs` — everything this
+thread has been chasing — is a completely different thing: it asks the RPC
+node to search its **historical event-log index** over a block range.
+That index isn't contract state, so there's no function on any contract,
+Multicall3 included, that could hand it back — a smart contract has no way
+to read historical logs at all, from itself or anyone else. There's no
+version of "wrap it in Multicall3" that applies to log scanning; the two
+problems are different shapes.
+
+### On the 8 USDC vs 9.97 USDC seen in the screenshot
+Given the same log shows several scans still mid-catch-up (note-relay:
+~4,000,000 blocks remaining; stealth scan: ~4,400,000 remaining) at the
+moment of that screenshot, this reads as a **partial sync snapshot**, not a
+new bug — a device correctly showing the notes it's found *so far* while
+others are still in flight, exactly the transient state the last several
+releases have been shortening. Worth re-checking once those two scans
+report caught up; flag it again with fresh logs if the gap is still there
+after that.
+
+### Unrelated to Privar: the second half of the log
+Everything from the `net::ERR_INTERNET_DISCONNECTED` line onward is the
+machine's own internet connection dropping — not a rate limit, not
+Blockscout, not this app. Every subsequent "HTTP request failed" /
+"Failed to fetch" in that stretch is a symptom of that, not a new finding.
+
+### What wasn't touched
+Every fix from v21.0.0 through v21.2.6 stays as-is. This release changes
+one string-matching check in `fetchLogsViaBlockscout`.
