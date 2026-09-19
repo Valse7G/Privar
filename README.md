@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v21.2.7-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v21.2.8-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -270,6 +270,19 @@ git push origin main --tags
 Open a PR against `main`, and before merging a contract-address sync specifically: confirm the Shield panel's TVL/version stats reflect the new vault, and — since a full-suite redeploy is never a migration — communicate to users that any balance on the previous `PrivarShieldVault` address must be withdrawn from there before switching over.
 
 ## Changelog
+
+### v21.2.8 — connect-time signature casing fixed (cosmetic); sync confirmed fully caught up (2026-09-19)
+See `CHANGELOG-v21.0.0.md` (§v21.2.8) for full details. Summary: verified
+`BACKUP_SIG_MESSAGE` (the signature that actually derives the cross-device
+key) was already lowercase-normalized and unaffected by the Rabby/TokenPocket
+casing difference seen in a screenshot. The OTHER signature shown there
+("Sign in to Privar OS") wasn't normalized — fixed for display consistency,
+though it's a fresh nonce+timestamp login credential never used for key
+derivation, so this was cosmetic, not a contributor to the sync issue. Also:
+the accompanying log confirms every scan stream is now caught up to within a
+few thousand blocks of chain head — the historical backlog fixes worked;
+what remains is occasional steady-state Blockscout rate-limiting, already
+handled gracefully.
 
 ### v21.2.7 — "No logs found" was misclassified as a failure; explains why Multicall3 doesn't apply here (2026-09-19)
 See `CHANGELOG-v21.0.0.md` (§v21.2.7) for full details. Summary: this

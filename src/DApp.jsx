@@ -1002,11 +1002,20 @@ function WCModal({ onClose, onConnect }) {
     setStep("conn"); setErr("");
     try {
       const nonce = hx(8);
+      // v21.2.8: normalize to lowercase like BACKUP_SIG_MESSAGE already
+      // does — different wallets return the connected address in different
+      // casing (some checksummed, some not), so the text shown in the
+      // signature prompt was inconsistent between e.g. Rabby and
+      // TokenPocket for the exact same account. This signature isn't used
+      // for key derivation (unlike the backup-key one, it's a fresh
+      // nonce+timestamp every time, so nothing downstream depends on its
+      // exact bytes) — this is a display-consistency fix, not a
+      // cryptographic one.
       const message = [
         "Sign in to Privar OS",
         "",
         "Domain: privar.io",
-        `Address: ${addr}`,
+        `Address: ${addr.toLowerCase()}`,
         `Chain ID: ${ARC_TESTNET.id} (Arc Testnet)`,
         `Nonce: ${nonce}`,
         `Issued: ${new Date().toISOString()}`,

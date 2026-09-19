@@ -542,3 +542,46 @@ Blockscout, not this app. Every subsequent "HTTP request failed" /
 ### What wasn't touched
 Every fix from v21.0.0 through v21.2.6 stays as-is. This release changes
 one string-matching check in `fetchLogsViaBlockscout`.
+
+---
+
+## v21.2.8 — connect-time signature address casing (cosmetic), and confirmation sync fully caught up
+
+### The screenshot: address shown in different casing between Rabby and TokenPocket
+Checked both signature messages in this codebase:
+- **`BACKUP_SIG_MESSAGE`** (the one that actually matters — its signature
+  derives the cross-device decryption key) already does
+  `address.toLowerCase()`, deliberately, specifically so it produces the
+  identical key on any device regardless of which wallet's own casing
+  convention returned the address. Already correct — confirmed by reading
+  it again, not assumed.
+- **The "Sign in to Privar OS" message** (the one in the screenshot) did
+  NOT normalize casing — `Address: ${addr}` used whatever casing the
+  connecting wallet happened to return. Different wallets do genuinely
+  return different casing for the same account (some checksum, some
+  don't), so this message legitimately displayed differently on Rabby vs
+  TokenPocket, as observed.
+
+The distinction that matters: this second signature includes a fresh
+random nonce and timestamp every time (by design, as an anti-replay login
+credential) — nothing decrypts or derives a key from it, and grepping the
+codebase confirms the resulting signature is captured on connect and never
+read again anywhere. So this was a real but purely cosmetic inconsistency,
+not a contributor to the cross-device sync issue. Fixed anyway for
+consistency: `Address: ${addr.toLowerCase()}`, matching the pattern
+`BACKUP_SIG_MESSAGE` already uses.
+
+### Good news from the accompanying log: everything is caught up
+Every scan stream in the log — the merged reconcile scan, stealth scan,
+note-relay scan, tx-history (both topics), shield-vault journal — is now
+resuming from a block within a few thousand of the reported chain head
+(~62,953,xxx), not millions behind. The v21.2.0–v21.2.7 fixes did their
+job: the historical backlog is cleared. What's left in this log is
+steady-state polling occasionally hitting Blockscout's per-request rate
+limit, each time correctly waiting for the shared cooldown instead of
+compounding (per v21.2.6) — no data loss, no wasted double-calls, just an
+occasional short delay before a given poll's turn comes back around.
+
+### What wasn't touched
+Every fix from v21.0.0 through v21.2.7 stays as-is. This release changes
+one line (address casing in a non-cryptographic signature message).
