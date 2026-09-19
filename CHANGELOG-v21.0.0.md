@@ -425,3 +425,55 @@ checkpoint-preservation guard. None of them was wrong; they were just
 running on top of a transport layer that never worked. This release adds
 one new file and changes two lines elsewhere (a constant and a rewrite
 pattern) — nothing existing was restructured.
+
+---
+
+## v21.2.6 — mobile now syncs in 15–30s; desktop's new logs show real progress and one remaining problem
+
+Confirmation the v21.2.5 CORS fix works: mobile (TokenPocket) now shows the
+correct cross-device shielded balance in 15–30 seconds. Desktop's new logs
+(post-proxy) show the CORS errors are gone entirely, AND — good sign — the
+shield-vault journal resync actually succeeded mid-log: `pass done — 3
+log(s) this call... decrypted 3, failed 0`. The v21.2.0–v21.2.4 fixes are
+doing real work now that they can actually reach Blockscout.
+
+### What's different on desktop: Blockscout's OWN rate limit, now visible for the first time
+```
+/api/blockscout-proxy?...  Failed to load resource: the server responded
+with a status of 429 ()
+```
+Before v21.2.5, every Blockscout request was silently discarded by the
+browser's CORS check — meaning Blockscout's own response was NEVER actually
+seen, including whenever it was a 429. That budget was untested, not
+confirmed sufficient. Now that the proxy reaches it for real, Blockscout is
+rate-limiting a meaningful fraction of desktop's requests — likely because
+desktop had a much larger backlog to work through in one session (its
+reconcile scan alone showed 5,000,080 blocks remaining) than mobile did.
+
+### The compounding bug this exposed
+On a Blockscout rate-limit, the code immediately fell through to the RPC
+fallback in the SAME pass — right after the 429, the very next lines in the
+log are an `eth_getLogs` call that itself gets rate-limited 3 retries in a
+row. A Blockscout 429 was making things worse, not just failing over:
+every rate-limited Blockscout call was immediately followed by an
+ALSO-likely-to-fail RPC call, doubling load at exactly the moment neither
+budget could spare it.
+
+### The fix
+1. **`api/blockscout-proxy.js`**: retries an upstream 429 up to 2 more
+   times with a short server-side delay before giving up — absorbs brief
+   bursts without the client ever seeing a failure, and costs nothing extra
+   client-side since it happens once per request on Vercel's infrastructure.
+2. **`fetchLogsPaginatedInner` / `fetchLogsPaginatedMergedInner` /
+   `fetchLogsPaginatedMergedFilteredInner`**: a Blockscout rate-limit error
+   specifically (not a generic failure) now ends the pass right there —
+   checkpoint untouched, no RPC fallback attempted in the same breath. The
+   shared cooldown `markPrivarRateLimited()` already set takes care of
+   pacing the next attempt; doubling up immediately was only making that
+   cooldown's job harder.
+
+### What wasn't touched
+Every fix from v21.0.0 through v21.2.5 stays as-is — including the
+CORS-fixing proxy itself, which is confirmed working. This release only
+changes how a Blockscout-specific rate-limit response is handled, in three
+near-identical spots plus the proxy's own retry.

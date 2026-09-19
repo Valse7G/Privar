@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v21.2.5-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v21.2.6-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -270,6 +270,19 @@ git push origin main --tags
 Open a PR against `main`, and before merging a contract-address sync specifically: confirm the Shield panel's TVL/version stats reflect the new vault, and — since a full-suite redeploy is never a migration — communicate to users that any balance on the previous `PrivarShieldVault` address must be withdrawn from there before switching over.
 
 ## Changelog
+
+### v21.2.6 — stop compounding a Blockscout rate-limit with an immediate RPC retry (2026-09-19)
+See `CHANGELOG-v21.0.0.md` (§v21.2.6) for full details. Summary: v21.2.5's
+CORS fix is confirmed working — mobile now syncs the shielded balance
+cross-device in 15–30s, and desktop's logs show the journal resync
+succeeding for the first time. Desktop's remaining issue: Blockscout's own
+rate limit, invisible before (every response was discarded by the browser's
+CORS check) and now hit for real on a session with a large backlog. Worse,
+a Blockscout 429 was immediately triggering an RPC fallback attempt in the
+same pass, doubling load right when neither budget could spare it. Fixed:
+the proxy now retries an upstream 429 briefly server-side, and a
+Blockscout-specific rate-limit no longer falls through to RPC in the same
+pass — it waits for the existing shared cooldown instead.
 
 ### v21.2.5 — found via real console logs: Blockscout has been CORS-blocked this whole time (2026-09-18)
 See `CHANGELOG-v21.0.0.md` (§v21.2.5) for full details. Summary: the user's

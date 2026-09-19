@@ -33,6 +33,27 @@
 
 const ARCSCAN_API_BASE = "https://testnet.arcscan.app/api";
 
+// v21.2.6: real logs from this proxy's first deployment showed CORS was
+// fixed (no more "blocked by CORS policy"), but many requests now come back
+// with upstream 429s instead — Blockscout has its own separate rate limit,
+// and it was never actually being exercised before (the browser discarded
+// every response at the CORS layer before this app could see the status
+// code), so this budget was untested, not confirmed sufficient. A couple of
+// short server-side retries here absorb brief bursts without the client
+// ever seeing a failure — cheap, since this runs once per request on
+// Vercel's infrastructure, not from N different users' browsers each
+// retrying independently.
+async function fetchWithRetry(url, attempts = 3) {
+  let lastRes;
+  for (let i = 0; i < attempts; i++) {
+    const res = await fetch(url, { headers: { Accept: "application/json" } });
+    if (res.status !== 429) return res;
+    lastRes = res;
+    if (i < attempts - 1) await new Promise(r => setTimeout(r, 400 * (i + 1)));
+  }
+  return lastRes;
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
@@ -41,9 +62,7 @@ export default async function handler(req, res) {
 
   try {
     const qs = req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
-    const upstream = await fetch(`${ARCSCAN_API_BASE}${qs}`, {
-      headers: { Accept: "application/json" },
-    });
+    const upstream = await fetchWithRetry(`${ARCSCAN_API_BASE}${qs}`);
     const bodyText = await upstream.text();
     res.status(upstream.status);
     res.setHeader("Content-Type", upstream.headers.get("content-type") || "application/json");

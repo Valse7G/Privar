@@ -3601,7 +3601,21 @@ async function fetchLogsPaginatedInner(contractAddress, topics, fromBlock, keyPr
     } catch {} // progress bookkeeping only — the logs were already fetched successfully either way
     return logs;
   } catch (e) {
-    if (isPrivarRateLimitError(e)) markPrivarRateLimited();
+    if (isPrivarRateLimitError(e)) {
+      // v21.2.6: a Blockscout rate-limit is a signal to WAIT (the shared
+      // cooldown markPrivarRateLimited() just set), not to immediately try
+      // a second, different, ALSO rate-limited-prone path in the same
+      // breath. Falling straight through to the RPC fallback here was
+      // doubling load at exactly the moment the system could least afford
+      // it — real logs showed a Blockscout 429 immediately followed by an
+      // RPC eth_getLogs call that itself got rate-limited 3 retries in a
+      // row. Bail out for this pass; the checkpoint is untouched (nothing
+      // was fetched), so the next attempt — after the cooldown — gets a
+      // clean, unhurried shot via whichever path is actually free by then.
+      markPrivarRateLimited();
+      console.warn(`[${label}] scan(${topics[0]?.slice(2,10)}): Blockscout rate-limited (${e.message}) — waiting for the shared cooldown instead of doubling up on RPC`);
+      return [];
+    }
     console.warn(`[${label}] scan(${topics[0]?.slice(2,10)}): Blockscout API unavailable (${e.message}), falling back to paginated RPC`);
   }
 
@@ -3709,7 +3723,13 @@ async function fetchLogsPaginatedMergedInner(contractAddress, topic0List, fromBl
     } catch {} // progress bookkeeping only
     return filtered;
   } catch (e) {
-    if (isPrivarRateLimitError(e)) markPrivarRateLimited();
+    if (isPrivarRateLimitError(e)) {
+      // v21.2.6: see fetchLogsPaginatedInner's identical comment — don't
+      // double up onto RPC right after a Blockscout rate-limit hit.
+      markPrivarRateLimited();
+      console.warn(`[${label}] merged-scan(${tag}): Blockscout rate-limited (${e.message}) — waiting for the shared cooldown instead of doubling up on RPC`);
+      return [];
+    }
     console.warn(`[${label}] merged-scan(${tag}): Blockscout unavailable (${e.message}), falling back to paginated RPC`);
   }
 
@@ -3800,7 +3820,13 @@ async function fetchLogsPaginatedMergedFilteredInner(contractAddress, topic0List
     } catch {}
     return filtered;
   } catch (e) {
-    if (isPrivarRateLimitError(e)) markPrivarRateLimited();
+    if (isPrivarRateLimitError(e)) {
+      // v21.2.6: see fetchLogsPaginatedInner's identical comment — don't
+      // double up onto RPC right after a Blockscout rate-limit hit.
+      markPrivarRateLimited();
+      console.warn(`[${label}] merged-scan(${tag}): Blockscout rate-limited (${e.message}) — waiting for the shared cooldown instead of doubling up on RPC`);
+      return [];
+    }
     console.warn(`[${label}] merged-scan(${tag}): Blockscout unavailable (${e.message}), falling back to paginated RPC`);
   }
 
