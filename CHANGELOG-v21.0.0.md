@@ -585,3 +585,71 @@ occasional short delay before a given poll's turn comes back around.
 ### What wasn't touched
 Every fix from v21.0.0 through v21.2.7 stays as-is. This release changes
 one line (address casing in a non-cryptographic signature message).
+
+---
+
+## v21.2.9 — CRITICAL: rate-limiting was causing real note deletion (data loss), not just slow sync
+
+The most serious bug found in this entire thread, and it's a regression
+I (Claude) introduced myself in v21.2.6. Found directly in a user-supplied
+log:
+
+```
+[Privar] Quarantined 2 unbacked note(s) for 0x1dc724…
+— no matching Deposited event found on-chain.
+```
+
+...appearing right in the middle of a wave of Blockscout 429s. That log
+line means real, previously-shielded notes were just **deleted from local
+storage** — not "still syncing," gone.
+
+### How v21.2.6 caused this
+`reconcileAndVerifyNotes()` uses one signal to decide whether it's safe to
+delete a note for having "no matching Deposited event": whether the merged
+event scan came back as an array at all (`Array.isArray(depositedLogs)`).
+Before v21.2.6, a Blockscout rate-limit during that scan was an exception,
+so this check correctly stayed `false` — no deletion. v21.2.6 changed the
+rate-limit branch to `return []` instead of throwing (to stop compounding
+load on an already-strained RPC, which was itself the right call) — but an
+empty ARRAY is indistinguishable from an exception-free, fully-successful
+scan that genuinely found nothing. From that point on, a note could be
+deleted precisely because the check that was supposed to confirm its
+absence never actually ran.
+
+Worse, this wasn't only a rate-limit problem: the RPC fallback path already
+had the same flaw independently — it returns whatever it accumulated
+(`all`) as a normal result even when it only got partway to the chain head
+in a single pass (bounded by `MAX_CHUNKS_PER_CALL`), with no way for the
+caller to tell "confirmed empty" apart from "didn't get that far yet."
+Given the multi-million-block backlogs seen throughout this thread, this
+was a live risk independent of v21.2.6.
+
+### The fix
+`fetchLogsPaginatedMergedInner()` and `fetchLogsPaginatedMergedFilteredInner()`
+now return **`null`**, not `[]`, from every code path that doesn't
+represent a scan that actually reached the current chain head: the
+Blockscout-rate-limit branch, and the RPC-fallback path whenever it stops
+before catching up (rate-limited retries exhausted, or the per-call chunk
+cap reached). An array is only ever returned when the scan is genuinely
+complete. `reconcileAndVerifyNotes()` now derives `depositedScanOk`
+directly from `mergedLogs !== null` — not from "is this an array" — so a
+skipped or partial pass can never again be read as "confirmed no deposit."
+The spent-nullifier checks (which only ever ADD confidence, never delete
+based on absence) keep defaulting to an empty array either way — that
+direction was never dangerous.
+
+### Recovery for notes already caught by this bug
+Added `recoverWronglyDepositQuarantinedNotes()`: once a scan genuinely
+completes, it re-checks the quarantine bucket for any deposit-origin note
+whose commitment IS present in that scan's confirmed results, and restores
+it. This runs automatically on every successful reconcile pass going
+forward — no manual action needed; any note this bug quarantined gets
+a chance to come back the next time the scan actually reaches head.
+(The existing `recoverWronglyQuarantinedNotes()` only ever covered swap/
+send/bridge/withdraw-change outputs, which have no Deposited event by
+design — this is the deposit-specific counterpart it didn't have.)
+
+### What wasn't touched
+Every other fix from v21.0.0 through v21.2.8 stays as-is. This release
+changes the return contract of two internal functions and their two call
+sites, plus adds one new recovery function — no other behavior changes.

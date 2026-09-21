@@ -3744,11 +3744,25 @@ async function fetchLogsPaginatedMergedInner(contractAddress, topic0List, fromBl
     return filtered;
   } catch (e) {
     if (isPrivarRateLimitError(e)) {
-      // v21.2.6: see fetchLogsPaginatedInner's identical comment — don't
-      // double up onto RPC right after a Blockscout rate-limit hit.
+      // v21.2.9 CRITICAL FIX: this used to `return [];` (v21.2.6) to avoid
+      // doubling up onto RPC after a Blockscout rate-limit — correct for
+      // every OTHER caller of this function, but WRONG here specifically:
+      // reconcileAndVerifyNotes() treats "this came back as an array" as
+      // "the scan genuinely ran, trust its absence of a commitment as
+      // proof no matching Deposited event exists" and QUARANTINES (deletes)
+      // the local note on that basis. An empty array from a rate-limited,
+      // never-actually-executed scan is indistinguishable from a real
+      // "confirmed zero results" — and real logs showed exactly this:
+      // "[Privar] Quarantined 2 unbacked note(s) ... no matching Deposited
+      // event found on-chain" right after a wave of Blockscout 429s, i.e.
+      // legitimate notes deleted because the check that was supposed to
+      // confirm their absence never actually ran. `null` (here and from
+      // every other early/incomplete exit below) is the signal "we don't
+      // know" — every caller must treat that as "skip this pass, do NOT
+      // delete anything," never as "confirmed empty."
       markPrivarRateLimited();
       console.warn(`[${label}] merged-scan(${tag}): Blockscout rate-limited (${e.message}) — waiting for the shared cooldown instead of doubling up on RPC`);
-      return [];
+      return null;
     }
     console.warn(`[${label}] merged-scan(${tag}): Blockscout unavailable (${e.message}), falling back to paginated RPC`);
   }
@@ -3801,7 +3815,13 @@ async function fetchLogsPaginatedMergedInner(contractAddress, topic0List, fromBl
     }
   }
   console.info(`[${label}] merged-scan(${tag}): pass done — ${all.length} log(s), now at block ${start}${start <= head ? ` (${head - start} remaining)` : " (caught up)"}`);
-  return all;
+  // v21.2.9: same reasoning as the rate-limit branch above — `all` here can
+  // be a PARTIAL result (this pass hit MAX_CHUNKS_PER_CALL, or exhausted
+  // its retries, while still behind `head`). Returning it as if it were the
+  // complete truth is exactly what let reconcileAndVerifyNotes wrongly
+  // quarantine notes it simply hadn't gotten to yet. Only a pass that
+  // actually reached `head` is trustworthy enough to prove an absence.
+  return start > head ? all : null;
 }
 
 // ── v21.0.0 — merged multi-event scan, WITH a topics[1] filter ─────────────
@@ -3841,11 +3861,14 @@ async function fetchLogsPaginatedMergedFilteredInner(contractAddress, topic0List
     return filtered;
   } catch (e) {
     if (isPrivarRateLimitError(e)) {
-      // v21.2.6: see fetchLogsPaginatedInner's identical comment — don't
-      // double up onto RPC right after a Blockscout rate-limit hit.
+      // v21.2.9: see fetchLogsPaginatedMergedInner's identical, more
+      // detailed comment — null (not []) signals "didn't actually run",
+      // so nothing downstream mistakes a skipped pass for a confirmed
+      // empty result. This one only feeds tx-history display, not
+      // quarantine, but the same discipline avoids the same class of bug.
       markPrivarRateLimited();
       console.warn(`[${label}] merged-scan(${tag}): Blockscout rate-limited (${e.message}) — waiting for the shared cooldown instead of doubling up on RPC`);
-      return [];
+      return null;
     }
     console.warn(`[${label}] merged-scan(${tag}): Blockscout unavailable (${e.message}), falling back to paginated RPC`);
   }
@@ -3888,7 +3911,9 @@ async function fetchLogsPaginatedMergedFilteredInner(contractAddress, topic0List
       rateLimitRetries = 0;
     }
   }
-  return all;
+  // v21.2.9: same as fetchLogsPaginatedMergedInner — only a pass that
+  // actually reached head is trustworthy as "complete."
+  return start > head ? all : null;
 }
 
 // One-time migration: seed the new merged checkpoint from the MINIMUM of the
@@ -4822,9 +4847,9 @@ async function buildTxHistoryFromChain(address) {
         }
       } catch {}
     }
-    const stakingLogs = st ? await fetchLogsPaginatedMergedFiltered(
+    const stakingLogs = (st ? await fetchLogsPaginatedMergedFiltered(
       st, [EV.Staked, EV.Unstaked, EV.RewardsClaimed], addrTopic, from, "privar_txhist_staking", address, "Privar tx-history"
-    ) : [];
+    ) : []) || []; // v21.2.9: null (scan didn't complete) -> just show nothing new this pass, not an error
     const stakeLogs   = stakingLogs.filter(l => (l.topics?.[0] || "").toLowerCase() === EV.Staked.toLowerCase());
     const unstakeLogs = stakingLogs.filter(l => (l.topics?.[0] || "").toLowerCase() === EV.Unstaked.toLowerCase());
     const claimLogs   = stakingLogs.filter(l => (l.topics?.[0] || "").toLowerCase() === EV.RewardsClaimed.toLowerCase());
@@ -5099,7 +5124,18 @@ async function reconcileAndVerifyNotes(address) {
       [EV.Withdrawn, EV.Deposited, EV.PrivateSwap, EV.ShieldedSent, EV.PrivateBridged],
       fromBlock, "privar_reconcile_scanprogress", address, "Privar"
     );
-    const byTopic0 = (hash) => mergedLogs.filter(l => (l.topics?.[0] || "").toLowerCase() === hash.toLowerCase());
+    // v21.2.9 CRITICAL FIX: mergedLogs is now `null` (not `[]`) whenever the
+    // scan didn't actually complete (rate-limited, or stopped partway to
+    // head) — see fetchLogsPaginatedMergedInner's comment. `byTopic0`
+    // defaults to `[]` for the spent-nullifier checks below (safe: missing
+    // a spend just means "don't know it's spent yet, try again next pass",
+    // never data loss), but `depositedScanOk` below is derived from
+    // `mergedLogs !== null` specifically, NOT from "byTopic0 returned an
+    // array" — every array-shaped result from byTopic0 looks identical
+    // whether the underlying scan actually ran or was skipped, so that
+    // distinction has to be read from mergedLogs itself, before it's
+    // destructured.
+    const byTopic0 = (hash) => (mergedLogs || []).filter(l => (l.topics?.[0] || "").toLowerCase() === hash.toLowerCase());
     const withdrawnLogs = byTopic0(EV.Withdrawn);
     const depositedLogs = byTopic0(EV.Deposited);
     const swapLogs       = byTopic0(EV.PrivateSwap);
@@ -5139,13 +5175,31 @@ async function reconcileAndVerifyNotes(address) {
       if (n) spentNullifiers.add(n.toLowerCase());
     }
     const depositedCommitments = new Set();
-    let depositedScanOk = false;
-    if (Array.isArray(depositedLogs)) {
-      depositedScanOk = true;
+    // v21.2.9: was `Array.isArray(depositedLogs)`, which was ALWAYS true
+    // (byTopic0 always returns an array) regardless of whether the scan
+    // that was supposed to populate it actually ran. This is the fix for
+    // the "[Privar] Quarantined N unbacked note(s)" data-loss bug: only
+    // trust an absence when the merged scan itself confirms it actually
+    // reached the chain head this pass.
+    let depositedScanOk = mergedLogs !== null;
+    let recoveredDeposits = [];
+    if (depositedScanOk) {
       for (const log of depositedLogs) {
         const c = log.topics?.[1]; // Deposited: bytes32 indexed commitment
         if (c) depositedCommitments.add(c.toLowerCase());
       }
+      // v21.2.9: recover any deposit-origin note quarantined by the
+      // rate-limit bug this release fixes — now that we have a scan that
+      // actually reached head, if a quarantined commitment turns out to
+      // BE in depositedCommitments after all, it was wrongly removed
+      // earlier and belongs back in the active set. Deposit-origin notes
+      // aren't covered by recoverWronglyQuarantinedNotes() (that one
+      // deliberately only restores swap/send/bridge/withdraw outputs,
+      // which have no Deposited event by design) — this is the
+      // deposit-specific counterpart. Merged into `kept`/notes below,
+      // not written directly, so it survives this pass's saveNotes() call
+      // instead of being immediately overwritten by it.
+      recoveredDeposits = recoverWronglyDepositQuarantinedNotes(address, depositedCommitments);
     }
 
     const kept = [], spentNotes = [], unbackedNotes = [];
@@ -5200,8 +5254,8 @@ async function reconcileAndVerifyNotes(address) {
       kept.push(n);
     }
 
-    if (spentNotes.length > 0 || unbackedNotes.length > 0) {
-      saveNotes(address, kept);
+    if (spentNotes.length > 0 || unbackedNotes.length > 0 || recoveredDeposits.length > 0) {
+      saveNotes(address, [...kept, ...recoveredDeposits]);
       if (spentNotes.length > 0) {
         console.log(`[Privar] Pruned ${spentNotes.length} spent note(s) for ${address.slice(0,8)}…`);
       }
@@ -5254,6 +5308,43 @@ const quarantineKey = (addr) => notesKey(addr) + "_quarantined";
 // again, and the cycle repeats every sync interval indefinitely. This is
 // exactly what produced the "Removed 1 corrupted local note" banner
 // reappearing every ~2 minutes instead of firing once and staying resolved.
+// v21.2.9 — deposit-specific counterpart to recoverWronglyQuarantinedNotes()
+// above. That function only restores swap/send/bridge/withdraw-change
+// outputs (which have no Deposited event by design); a genuine deposit
+// wrongly quarantined by the rate-limit bug this release fixes DOES have a
+// real Deposited event — it just wasn't seen yet because the scan that was
+// supposed to check hadn't actually completed. Once a scan DOES complete
+// (depositedScanOk === true, checked by the caller before this runs),
+// re-checking the quarantine bucket against its results is a direct,
+// reliable answer, not a heuristic. Returns the recovered note objects —
+// does NOT write them to the active notes list itself, since the caller
+// (reconcileAndVerifyNotes) already holds the in-memory notes/kept arrays
+// this needs to merge into, and writing here too would just be overwritten
+// by that function's own saveNotes() call right after.
+function recoverWronglyDepositQuarantinedNotes(address, depositedCommitments) {
+  let bucket;
+  try { bucket = JSON.parse(localStorage.getItem(quarantineKey(address)) || "[]"); } catch { return []; }
+  if (!Array.isArray(bucket) || bucket.length === 0) return [];
+
+  const stillBad = [], recovered = [];
+  for (const n of bucket) {
+    const c = n.commitment?.toLowerCase();
+    if (n.quarantineReason === "no matching Deposited event on-chain"
+        && (n.origin || "deposit") === "deposit"
+        && c && depositedCommitments.has(c)) {
+      const { quarantineReason, ...clean } = n;
+      recovered.push({ ...clean, status: "available" });
+    } else {
+      stillBad.push(n);
+    }
+  }
+  if (recovered.length > 0) {
+    try { localStorage.setItem(quarantineKey(address), JSON.stringify(stillBad)); } catch {}
+    console.info(`[Privar] Recovered ${recovered.length} wrongly-quarantined deposit note(s) for ${address.slice(0,8)}… — a completed scan now confirms their Deposited event.`);
+  }
+  return recovered;
+}
+
 function loadQuarantinedCommitments(address) {
   try {
     const bad = JSON.parse(localStorage.getItem(quarantineKey(address)) || "[]");

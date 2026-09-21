@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v21.2.8-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v21.2.9-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -270,6 +270,22 @@ git push origin main --tags
 Open a PR against `main`, and before merging a contract-address sync specifically: confirm the Shield panel's TVL/version stats reflect the new vault, and — since a full-suite redeploy is never a migration — communicate to users that any balance on the previous `PrivarShieldVault` address must be withdrawn from there before switching over.
 
 ## Changelog
+
+### v21.2.9 — CRITICAL: fixed real note deletion caused by v21.2.6's rate-limit handling (2026-09-19)
+See `CHANGELOG-v21.0.0.md` (§v21.2.9) for full details. Summary: a
+user-supplied log showed `[Privar] Quarantined 2 unbacked note(s) ... no
+matching Deposited event found on-chain` right in the middle of a wave of
+Blockscout 429s — real notes were being deleted, not just delayed. Root
+cause: v21.2.6 changed a Blockscout rate-limit to `return []` instead of
+throwing, but an empty array is indistinguishable from "scan genuinely
+completed and found nothing," and `reconcileAndVerifyNotes()` uses exactly
+that signal to decide whether it's safe to delete a note for lacking a
+Deposited event. The RPC fallback path had the same latent flaw
+independently (returning partial results as if complete). Fixed: both
+merged-scan functions now return `null` (not `[]`) from every incomplete
+exit, and the deletion check is derived from that distinction directly.
+Also added automatic recovery for any note already wrongly deleted by this
+bug — it restores itself the next time a scan actually completes.
 
 ### v21.2.8 — connect-time signature casing fixed (cosmetic); sync confirmed fully caught up (2026-09-19)
 See `CHANGELOG-v21.0.0.md` (§v21.2.8) for full details. Summary: verified
