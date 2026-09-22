@@ -4038,7 +4038,7 @@ async function _resyncFromCloudVaultImpl(address, recompute) {
         if (!entry?.ops) { failed++; continue; }
         decrypted++;
         for (const op of entry.ops) {
-          if (op.t === 0 && op.commitment) { state.set(op.commitment, { commitment: op.commitment, amount: op.amount, token: op.token, ts: entry.ts }); spentCommitments.delete(op.commitment); }
+          if (op.t === 0 && op.commitment) { state.set(op.commitment, { commitment: op.commitment, amount: op.amount, token: op.token, ts: entry.ts, ...(op.blinding ? { blinding: op.blinding } : {}) }); spentCommitments.delete(op.commitment); }
           else if (op.t === 1 && op.commitment) { state.delete(op.commitment); spentCommitments.add(op.commitment); }
         }
       }
@@ -4068,7 +4068,13 @@ async function _resyncFromCloudVaultImpl(address, recompute) {
     for (const [commitment, n] of state) {
       if (quarantined.has(commitment.toLowerCase())) continue; // don't resurrect a deliberately-quarantined note
       if (!merged.some(x => x.commitment === commitment)) {
-        merged.push({ ...n, cloudSynced: true, source: "cloudvault" });
+        // v21.3.1: attach secret/pubkeyOwner (freshly re-derived from this
+        // device's own spendingKey — never trusted from the payload) so a
+        // note recovered on a device that didn't create it is actually
+        // spendable here, not just balance-visible. blinding is already on
+        // `n` when the entry that created it included one (see
+        // enrichReconstructedNoteWithSpendMaterial's doc comment).
+        merged.push({ ...(await enrichReconstructedNoteWithSpendMaterial(address, n)), cloudSynced: true, source: "cloudvault" });
         added++;
       }
     }
@@ -4133,7 +4139,7 @@ async function _resyncFromShieldVaultJournalImpl(address, recompute) {
       if (!entry?.ops) { failed++; continue; }
       decrypted++;
       for (const op of entry.ops) {
-        if (op.t === 0 && op.commitment) { state.set(op.commitment, { commitment: op.commitment, amount: op.amount, token: op.token, ts: entry.ts }); spentCommitments.delete(op.commitment); }
+        if (op.t === 0 && op.commitment) { state.set(op.commitment, { commitment: op.commitment, amount: op.amount, token: op.token, ts: entry.ts, ...(op.blinding ? { blinding: op.blinding } : {}) }); spentCommitments.delete(op.commitment); }
         else if (op.t === 1 && op.commitment) { state.delete(op.commitment); spentCommitments.add(op.commitment); }
       }
     }
@@ -4147,7 +4153,9 @@ async function _resyncFromShieldVaultJournalImpl(address, recompute) {
     for (const [commitment, n] of state) {
       if (quarantined.has(commitment.toLowerCase())) continue; // don't resurrect a deliberately-quarantined note
       if (!merged.some(x => x.commitment === commitment)) {
-        merged.push({ ...n, cloudSynced: true, source: "shieldvault-journal" });
+        // v21.3.1: same spend-material enrichment as resyncFromCloudVault —
+        // see its identical comment above.
+        merged.push({ ...(await enrichReconstructedNoteWithSpendMaterial(address, n)), cloudSynced: true, source: "shieldvault-journal" });
         added++;
       }
     }
@@ -5356,6 +5364,43 @@ function recoverWronglyDepositQuarantinedNotes(address, depositedCommitments) {
   return recovered;
 }
 
+// v21.3.1 — CRITICAL cross-device spendability fix, found by re-auditing
+// this whole thread's notes with a second AI's brainstorm as a prompt (see
+// the user's ChatGPT transcript): a note reconstructed on a device that
+// DIDN'T create it — via either resyncFromCloudVault or
+// resyncFromShieldVaultJournal — only ever carried {commitment, amount,
+// token}. That's enough to show a correct BALANCE, but createOwnedNote()
+// shows a note needs `blinding` (a random per-note value chosen at
+// creation, never derivable from anything else) and `secret` to actually
+// be spendable. `secret` turns out to be exactly this wallet's
+// `spendingKey` (see createOwnedNote in noteCrypto.js — `const secret =
+// spendingKey`), so it doesn't need to be transmitted at all: it's
+// deterministically re-derivable from a wallet signature on ANY device,
+// same as the backup-key signature. `blinding` has no such shortcut — it
+// was simply never included in the encrypted journal/cloudvault payload,
+// so a recovered note was silently missing exactly what it needs to be
+// spent. Deposit/Swap/Send/Withdraw/Bridge now all include `blinding` in
+// the ops they encrypt (see each panel's journalEntry/selfEntry/bridgeOps
+// construction); this function attaches it (and freshly-derived
+// secret/pubkeyOwner — never trusted from the payload, always recomputed
+// locally) to every note this device reconstructs from either source. Old
+// journal/cloudvault entries created before this fix still won't carry
+// blinding (nothing to backfill it from), so a note recovered from one of
+// those remains balance-visible but not self-spendable until it's
+// re-shielded — no regression, same limitation as before, just no longer
+// silent for everything going forward.
+async function enrichReconstructedNoteWithSpendMaterial(address, note) {
+  try {
+    const spendingKey = await ensureSpendKeyReady(address);
+    if (spendingKey != null) {
+      note.secret = fieldToBytes32(spendingKey);
+      const [x, y] = pubkeyFromSecret(spendingKey);
+      note.pubkeyOwner = [fieldToBytes32(x), fieldToBytes32(y)];
+    }
+  } catch { /* spend key not ready yet — note stays balance-visible, not yet spendable; a later pass retries */ }
+  return note;
+}
+
 function loadQuarantinedCommitments(address) {
   try {
     const bad = JSON.parse(localStorage.getItem(quarantineKey(address)) || "[]");
@@ -6095,7 +6140,7 @@ function ShieldPanel({ account, usdcBalance, onArc, notify, refreshBalance, prot
     await ensureSelfBackupKeyReady(account?.address, notify);
     const journalEntry = isThirdPartyDeposit
       ? null
-      : await encryptJournalBlob(account?.address, { ts: Date.now(), ops: [{ t: 0, commitment, amount: netAmount.toString(), token: token.address }] });
+      : await encryptJournalBlob(account?.address, { ts: Date.now(), ops: [{ t: 0, commitment, amount: netAmount.toString(), token: token.address, ...(noteBlinding ? { blinding: noteBlinding } : {}) }] });
 
     // For native USDC: value = amount * 1e12 (wei), no ERC-20 transferFrom
     // For EURC/cirBTC: value = flatFeeUsdc * 1e12 (the separate USDC fee payment, v2.8), standard ERC-20 transferFrom
@@ -6743,9 +6788,9 @@ function SwapPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
     }
     const swapOps = [
       { t: 1, commitment: note.commitment },
-      { t: 0, commitment: commitmentOut, amount: noteAmountOut.toString(), token: tkTo.addr },
+      { t: 0, commitment: commitmentOut, amount: noteAmountOut.toString(), token: tkTo.addr, ...(outNoteBlinding ? { blinding: outNoteBlinding } : {}) },
     ];
-    if (changeCommitment) swapOps.push({ t: 0, commitment: changeCommitment, amount: remaining.toString(), token: note.token });
+    if (changeCommitment) swapOps.push({ t: 0, commitment: changeCommitment, amount: remaining.toString(), token: note.token, ...(changeNoteBlinding ? { blinding: changeNoteBlinding } : {}) });
     const journalEntry = await encryptJournalBlob(account?.address, { ts: Date.now(), ops: swapOps });
 
     // Build calldata for PrivarShieldVault.privateSwapWithRouter() — always
@@ -7132,7 +7177,7 @@ function SendPanel({ account, onArc, notify, refreshBalance, prices, shieldedBal
       }
     }
     const selfOps = [{ t: 1, commitment: note.commitment }];
-    if (changeCommitment) selfOps.push({ t: 0, commitment: changeCommitment, amount: remaining.toString(), token: note.token });
+    if (changeCommitment) selfOps.push({ t: 0, commitment: changeCommitment, amount: remaining.toString(), token: note.token, ...(changeBlinding ? { blinding: changeBlinding } : {}) });
     const selfEntry = await encryptJournalBlob(account?.address, { ts: Date.now(), ops: selfOps });
 
     // Tx 1: the actual shielded fund movement
@@ -7444,7 +7489,7 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
         changeCommitment = null;
       }
       const ops = [{ t: 1, commitment: note.commitment }];
-      if (changeCommitment) ops.push({ t: 0, commitment: changeCommitment, amount: remaining.toString(), token: note.token });
+      if (changeCommitment) ops.push({ t: 0, commitment: changeCommitment, amount: remaining.toString(), token: note.token, ...(changeNoteBlinding ? { blinding: changeNoteBlinding } : {}) });
       journalEntry = await encryptJournalBlob(account?.address, { ts: Date.now(), ops });
 
       ({ data, value: txValue } = buildWithdrawCalldata({
@@ -7503,7 +7548,7 @@ function WithdrawPanel({ account, usdcBalance, onArc, notify, refreshBalance, pr
       }
 
       const ops = batchNotes.map(bn => ({ t: 1, commitment: bn.note.commitment }));
-      if (changeCommitment) ops.push({ t: 0, commitment: changeCommitment, amount: remaining.toString(), token: tk.addr });
+      if (changeCommitment) ops.push({ t: 0, commitment: changeCommitment, amount: remaining.toString(), token: tk.addr, ...(changeNoteBlinding ? { blinding: changeNoteBlinding } : {}) });
       journalEntry = await encryptJournalBlob(account?.address, { ts: Date.now(), ops });
 
       ({ data, value: txValue } = buildWithdrawBatchCalldata({
@@ -7800,7 +7845,7 @@ function BridgePanel({ account, onArc, notify, refreshBalance, prices, shieldedB
       }
     }
     const bridgeOps = [{ t: 1, commitment: note.commitment }];
-    if (changeCommitment) bridgeOps.push({ t: 0, commitment: changeCommitment, amount: remaining.toString(), token: note.token });
+    if (changeCommitment) bridgeOps.push({ t: 0, commitment: changeCommitment, amount: remaining.toString(), token: note.token, ...(changeNoteBlinding ? { blinding: changeNoteBlinding } : {}) });
     const journalEntry = await encryptJournalBlob(account?.address, { ts: Date.now(), ops: bridgeOps });
 
     // 5. Atomic unshield + LI.FI bridge — ONE transaction, either through

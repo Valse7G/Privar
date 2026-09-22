@@ -711,3 +711,99 @@ one-time approve, the deployment-block lookup, the deadlock removal, the
 checkpoint-preservation guard, and the null-vs-[] quarantine fix — stays
 exactly as shipped. This release only changes pacing/caching constants; no
 control flow changed.
+
+---
+
+## v21.3.1 — the ChatGPT brainstorm's most important point was real: recovered notes were missing `blinding`
+
+The user shared a ChatGPT analysis of v21.2.9 + logs. Most of it re-covers
+ground already fixed in this thread (CloudVault `latestVersion=0` is
+expected — it's manual-only, NoteJournal is the automatic primary path by
+design, not a bug; the `[]`-on-rate-limit vs `null` inconsistency it flags
+for `fetchLogsPaginatedMerged` was already fixed in v21.2.9). One point was
+**genuinely new and, once checked against the actual code, real**: a
+concern that CloudVault doesn't save a note's full secret material, so a
+recovered note's balance might show correctly while the note itself stays
+unspendable.
+
+### Verified directly against the code (not taken on faith)
+`createOwnedNote()` in `noteCrypto.js`:
+```
+const secret = spendingKey;
+...
+const b = blinding ?? randomBlinding();
+```
+`secret` **is** just this wallet's `spendingKey` — deterministic, derivable
+on any device from the same wallet signature already used for the backup
+key. Not a real gap; nothing to transmit.
+
+`blinding`, however, is a genuinely random value chosen once at note
+creation, with **no way to re-derive it from anything else** — and every
+journal/cloudvault payload in this codebase only ever encrypted
+`{ commitment, amount, token }` for a note's ADD op. Confirmed by reading
+every `ops`/`swapOps`/`selfOps`/`bridgeOps` construction site (Shield,
+Swap, Send, Withdraw ×2 paths, Bridge) — none of them included `blinding`.
+Confirmed by reading both reconstruction loops
+(`_resyncFromCloudVaultImpl`, `_resyncFromShieldVaultJournalImpl`) — both
+built the recovered note object as `{ commitment, amount, token, ts }`
+only, no `secret`, no `blinding`, no `pubkeyOwner`.
+
+**Consequence**: a note discovered on a device that didn't create it would
+display correctly in the shielded balance, but attempting to actually
+spend it (Swap/Send/Withdraw/Bridge) from that device would very likely
+fail — it's missing exactly the two fields (`secret`, `blinding`) a spend
+needs to construct. This had never come up in this thread because every
+report so far was about the balance not showing at all, not about
+spending a balance that *did* show.
+
+### The fix
+- **Every journal-entry-building call site** (Shield deposit, Swap
+  out+change, Send change, Withdraw's single-note and multi-note paths,
+  Bridge change) now includes `blinding` in the ADD op it encrypts —
+  `noteBlinding`/`outNoteBlinding`/`changeNoteBlinding` were already being
+  computed in every one of these flows for the LOCAL note object; they
+  just weren't being carried into the encrypted payload too.
+- **Both reconstruction loops** now carry `op.blinding` through into the
+  rebuilt note, and call a new `enrichReconstructedNoteWithSpendMaterial()`
+  that re-derives `secret`/`pubkeyOwner` fresh from this device's own
+  `spendingKey` — never trusted from the payload, always recomputed
+  locally, which also means no new signature prompt: `ensureSpendKeyReady()`
+  reuses the exact same cached signature `ensureSelfBackupKeyReady()`
+  already obtained earlier in the same resync pass.
+- Old journal/cloudvault entries created before this fix still won't carry
+  `blinding` — nothing to backfill it from after the fact. A note already
+  recovered from one of those stays balance-visible but not self-spendable
+  until it's re-shielded; not a regression, the same limitation as before,
+  just no longer silent for every deposit/swap/send/withdraw/bridge from
+  this release forward.
+
+### What I evaluated from the ChatGPT analysis and did NOT change, with reasoning
+- **"CloudVault should be the primary sync source, not NoteJournal"**: the
+  opposite direction would be a regression. NoteJournal's entire advantage
+  is embedding the entry in the SAME transaction as the operation — no
+  second wallet-signed broadcast that can independently fail. Making
+  CloudVault (a separate push requiring its own transaction) load-bearing
+  again reintroduces exactly the reliability gap NoteJournal was built to
+  close (documented in this codebase's own v3.4 comments). Not adopted.
+- **"`fetchLogsPaginatedInner` should also return `null` instead of `[]`
+  on an incomplete scan, for consistency with the merged variant"**:
+  checked every one of its callers first. Unlike the merged-scan path
+  (which feeds `reconcileAndVerifyNotes`'s destructive quarantine
+  decision), CloudVault/Journal/stealth/note-relay are all additive-only —
+  none of them delete a note because of what THIS function returns. Two of
+  CloudVault's call sites (`ckLogs.length`, `deltaLogs.length`) read the
+  result directly without an `Array.isArray` guard; switching to `null`
+  there without adding that guard would introduce a NEW crash for no
+  corresponding safety benefit. Left as `[]` — correct, considered
+  decision, not an oversight.
+- **"Need a single-flight lock shared across all scanners"**: already in
+  place — `runPrivarThrottled`'s shared queue (one call at a time, proactive
+  spacing, reactive cooldown) plus per-function per-address in-flight maps
+  (`_resyncInFlight`, `_shieldVaultJournalInFlight`) already provide this.
+  Nothing to add.
+
+### What wasn't touched
+Every other fix from v21.0.0 through v21.3.0 stays as-is. This release adds
+`blinding` to 6 journal-entry construction sites and one new enrichment
+step in the 2 reconstruction loops — no control flow, scheduling, or
+rate-limit handling changed.

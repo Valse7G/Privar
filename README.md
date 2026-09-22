@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v21.3.0-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v21.3.1-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -270,6 +270,24 @@ git push origin main --tags
 Open a PR against `main`, and before merging a contract-address sync specifically: confirm the Shield panel's TVL/version stats reflect the new vault, and — since a full-suite redeploy is never a migration — communicate to users that any balance on the previous `PrivarShieldVault` address must be withdrawn from there before switching over.
 
 ## Changelog
+
+### v21.3.1 — CRITICAL: recovered cross-device notes were missing `blinding`, making them unspendable (2026-09-22)
+See `CHANGELOG-v21.0.0.md` (§v21.3.1) for full details. Summary: the user
+shared a ChatGPT brainstorm on v21.2.9 + logs; most of it re-covered
+already-fixed ground, but one point checked out as genuinely real once
+verified against the actual code: `createOwnedNote()` shows a note needs
+`secret` (= this wallet's `spendingKey`, deterministic, no transmission
+needed) AND `blinding` (a true per-note random value, no way to re-derive
+it) to be spendable — and every journal/cloudvault payload in this codebase
+only ever encrypted `{ commitment, amount, token }`, never `blinding`. A
+note discovered cross-device would show correctly in the balance but likely
+fail to actually spend. Fixed: `blinding` is now included in every
+journal-entry-building call site (Shield/Swap/Send/Withdraw/Bridge), and
+both reconstruction loops now re-derive `secret`/`pubkeyOwner` locally
+(never trusted from the payload) and carry `blinding` through. Also
+evaluated and deliberately did NOT adopt two other suggestions from that
+analysis (making CloudVault primary again; changing a non-destructive
+scan's empty-result semantics) — reasoning for both is in the changelog.
 
 ### v21.3.0 — audited v21.2.6→v21.2.9, slowed pacing and lengthened caching to make a clean pass more likely (2026-09-21)
 See `CHANGELOG-v21.0.0.md` (§v21.3.0) for full details. Summary: re-audited
