@@ -887,3 +887,72 @@ merged scans, the one-time approve, the deployment-block lookup, the
 deadlock removal, the checkpoint-preservation guard, the blinding fix, the
 pacing/caching tuning. This release removes one `setInterval` and swaps a
 function name at 10 call sites; no other control flow changed.
+
+---
+
+## v21.3.3 — evaluated the "single Sync Engine" proposal; implemented the safe, high-value parts of it
+
+This round's ChatGPT document didn't come with a raw log attached (unlike
+every other round in this thread) — evaluated on its architectural
+reasoning and general log excerpts quoted in the prose alone, cross-checked
+against the actual code rather than taken at face value.
+
+### Where the analysis is right, directionally
+The core diagnosis — "too many independent read paths sharing one scarce
+RPC/Blockscout budget" — is consistent with everything found in this
+thread since v21.0.0. That part isn't new; it's the same finding that's
+driven every fix from the merged scans (v21.0.0) through the burst removal
+(v21.3.2).
+
+### Where it's not accurate about this specific codebase
+Several concrete claims don't hold up against what the code actually does:
+- **"The Multicall3 fallback isn't a real fallback, it multiplies load"**:
+  checked both fallback loops (`useProtocolStats`'s `runSequential`,
+  `multicallRead`'s catch branch). Both already wait out the shared
+  cooldown between calls when one is active, and the batched call itself
+  already retries 2-3 times before falling back at all. The claim isn't
+  entirely wrong, though — see the real gap below.
+- **"`[]` is dangerously ambiguous between 'empty' and 'failed'"**: already
+  fixed for the one place this was actually destructive
+  (`fetchLogsPaginatedMerged`, v21.2.9) and deliberately left as `[]` for
+  the additive-only scanners after checking each caller
+  (`fetchLogsPaginatedInner`, decided against in v21.3.1, with reasoning).
+  Not a gap ChatGPT could have known about without the code.
+
+### The one real, concrete gap this surfaced
+`multicallRead`'s sequential fallback had a shared-cooldown wait but **no
+minimum delay between calls when the ORIGINAL failure wasn't a rate-limit**
+(e.g. a revert) — it could blast through every descriptor back-to-back
+with nothing pacing it. `useProtocolStats`' equivalent fallback had a flat
+350ms pace, which is now inconsistent with the 1500ms standard v21.3.0
+established once the real provider budget was measured. Fixed both: every
+sequential fallback call is now paced at `PRIVAR_MIN_GAP_MS` regardless of
+whether a cooldown is currently active.
+
+### What I implemented from the "single read, many consumers" idea — the safe version
+Adopting the proposal's full shape (one "Sync Engine" that reads once and
+feeds a "State Reducer" that every module consumes) would mean rewriting
+the core data-fetching layer this thread has spent 15+ releases hardening,
+with no way to test it against a live chain from here. That's a real risk
+of a large regression for a directional idea, not a fix for a specific
+verified bug — not adopted wholesale.
+
+The genuinely safe, high-value version of "one read serving many
+consumers" that doesn't require restructuring anything: **`eth_blockNumber`**.
+Verified 11 separate call sites across the scan functions each
+independently calling it for what is, in practice, the same piece of
+information whenever more than one scanner runs within the same few
+seconds — which every log in this thread shows happening routinely. Added
+`getCachedBlockNumber()`, a 4-second shared cache; none of these callers
+need fresher-than-that precision (a scan's own chunking already tolerates
+being a few blocks behind by the time it finishes). Every
+`fetchLogsPaginated*`/scan-function call site that used to call
+`eth_blockNumber` directly now goes through it — a direct, safe cut in
+total RPC volume with zero behavior change.
+
+### What wasn't touched
+Every fix from v21.0.0 through v21.3.2 stays exactly as shipped — including
+the shared throttle queue, the merged scans, the blinding fix, and the
+burst removal. This release adds one small cache and paces two existing
+fallback loops consistently; no scanner's actual fetching/decoding logic
+changed, and nothing was rearchitected.

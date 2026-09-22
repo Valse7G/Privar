@@ -2064,7 +2064,7 @@ function useProtocolStats(onArc) {
               if (isPrivarRateLimitError(reason)) markPrivarRateLimited();
               out.push({ status: "rejected", reason });
             }
-            if (i + 1 < calls.length) await new Promise(r => setTimeout(r, 350));
+            if (i + 1 < calls.length) await new Promise(r => setTimeout(r, PRIVAR_MIN_GAP_MS)); // v21.3.3: was a flat 350ms, now matches the pacing standard established in v21.3.0
           }
           return out;
         };
@@ -2837,7 +2837,7 @@ async function getContractDeploymentBlock(contractAddress) {
   //    the permanent cache above. Provably correct regardless of Blockscout
   //    being up — no assumption about API shape or availability.
   try {
-    const headHex = await rpcCallWithBackoff("eth_blockNumber", []);
+    const headHex = await getCachedBlockNumber();
     let hi = Number(BigInt(headHex || "0x0"));
     let lo = 0;
     // Guard: if the contract has no code even at head, it isn't deployed on
@@ -3307,6 +3307,32 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 // resilient) log-scanning phase. A real console log confirmed this exact
 // failure: "[cloud vault resync] ... eth_call ... rate limit exceeded" on
 // the very first attempt, with the pass only succeeding on a later retry.
+// v21.3.3 — a shared, short-lived cache for the current block number.
+// Verified 10+ separate call sites across the scan functions below each
+// independently call eth_blockNumber for what is, in practice, the exact
+// same piece of information whenever more than one of them runs within the
+// same few seconds — which every log in this thread shows happening
+// routinely (multiple scanners firing close together is the normal case,
+// not an edge case). None of these callers need millisecond-accurate
+// freshness — a merged/journal/relay scan's "how far is head" check is
+// still completely correct against a 3-second-old block number, since the
+// scan's own chunking already tolerates being a few blocks behind by the
+// time it finishes anyway. This is the single-read-many-consumers
+// principle applied to the one piece of state that's both trivially
+// cacheable and called from the most places, without touching any of the
+// actual log-fetching/decoding logic those callers each still do their own
+// (correctly different) way.
+let __privarBlockNumberCache = { hex: null, at: 0 };
+async function getCachedBlockNumber() {
+  const now = Date.now();
+  if (__privarBlockNumberCache.hex != null && (now - __privarBlockNumberCache.at) < 4000) {
+    return __privarBlockNumberCache.hex;
+  }
+  const hex = await rpcCallWithBackoff("eth_blockNumber", []);
+  __privarBlockNumberCache = { hex, at: Date.now() };
+  return hex;
+}
+
 async function rpcCallWithBackoff(method, params, maxRetries = 4) {
   for (let attempt = 0; ; attempt++) {
     try {
@@ -3517,8 +3543,15 @@ async function multicallRead(descriptors) {
     // keep feeding) the shared cooldown between each fallback call instead
     // of hammering a rate limit that a sustained provider-side window
     // won't have cleared yet.
+    // v21.3.3: also enforce PRIVAR_MIN_GAP_MS between calls unconditionally
+    // (not just when a cooldown is active) — this loop previously had NO
+    // minimum delay at all when the ORIGINAL Multicall3 failure wasn't a
+    // rate-limit (e.g. a revert), meaning it could blast through every
+    // descriptor back-to-back with nothing pacing it, on the very path
+    // most likely to be called from multiple scanners at once.
     const out = [];
-    for (const d of descriptors) {
+    for (let i = 0; i < descriptors.length; i++) {
+      const d = descriptors[i];
       const wait = __privarBgCooldownUntil - Date.now();
       if (wait > 0) await new Promise(r => setTimeout(r, wait));
       try {
@@ -3528,6 +3561,7 @@ async function multicallRead(descriptors) {
         if (isPrivarRateLimitError(e2)) markPrivarRateLimited();
         out.push(null);
       }
+      if (i + 1 < descriptors.length) await new Promise(r => setTimeout(r, PRIVAR_MIN_GAP_MS));
     }
     return out;
   }
@@ -3622,7 +3656,7 @@ async function fetchLogsPaginatedInner(contractAddress, topics, fromBlock, keyPr
     const logs = await fetchLogsViaBlockscout(contractAddress, topics, checkpointStart);
     console.info(`[${label}] scan(${topics[0]?.slice(2,10)}): ${logs.length} log(s) via Blockscout API (single request, no RPC pagination needed), from block ${checkpointStart}`);
     try {
-      const headHex = await rpcCallWithBackoff("eth_blockNumber", []);
+      const headHex = await getCachedBlockNumber();
       saveScanProgress(keyPrefix, topics, address, Number(BigInt(headHex || "0x0")) + 1);
     } catch {} // progress bookkeeping only — the logs were already fetched successfully either way
     return logs;
@@ -3646,7 +3680,7 @@ async function fetchLogsPaginatedInner(contractAddress, topics, fromBlock, keyPr
   }
 
   // 2) Fallback: paginated, backoff-aware eth_getLogs against the RPC node.
-  const headHex = await rpcCallWithBackoff("eth_blockNumber", []);
+  const headHex = await getCachedBlockNumber();
   const head = Number(BigInt(headHex || "0x0"));
   const all = [];
   let start = checkpointStart;
@@ -3744,7 +3778,7 @@ async function fetchLogsPaginatedMergedInner(contractAddress, topic0List, fromBl
     const filtered = logs.filter(l => wanted.has((l.topics?.[0] || "").toLowerCase()));
     console.info(`[${label}] merged-scan(${tag}): ${filtered.length}/${logs.length} log(s) via Blockscout, from block ${checkpointStart}`);
     try {
-      const headHex = await rpcCallWithBackoff("eth_blockNumber", []);
+      const headHex = await getCachedBlockNumber();
       save(Number(BigInt(headHex || "0x0")) + 1);
     } catch {} // progress bookkeeping only
     return filtered;
@@ -3777,7 +3811,7 @@ async function fetchLogsPaginatedMergedInner(contractAddress, topic0List, fromBl
   //    across every event type in this merge. Same chunking/backoff as the
   //    single-event path (fetchLogsPaginatedInner) — just more event types
   //    per round trip instead of one call per type.
-  const headHex = await rpcCallWithBackoff("eth_blockNumber", []);
+  const headHex = await getCachedBlockNumber();
   const head = Number(BigInt(headHex || "0x0"));
   const all = [];
   let start = checkpointStart;
@@ -3861,7 +3895,7 @@ async function fetchLogsPaginatedMergedFilteredInner(contractAddress, topic0List
     );
     console.info(`[${label}] merged-scan(${tag}): ${filtered.length}/${logs.length} log(s) via Blockscout, from block ${checkpointStart}`);
     try {
-      const headHex = await rpcCallWithBackoff("eth_blockNumber", []);
+      const headHex = await getCachedBlockNumber();
       save(Number(BigInt(headHex || "0x0")) + 1);
     } catch {}
     return filtered;
@@ -3879,7 +3913,7 @@ async function fetchLogsPaginatedMergedFilteredInner(contractAddress, topic0List
     console.warn(`[${label}] merged-scan(${tag}): Blockscout unavailable (${e.message}), falling back to paginated RPC`);
   }
 
-  const headHex = await rpcCallWithBackoff("eth_blockNumber", []);
+  const headHex = await getCachedBlockNumber();
   const head = Number(BigInt(headHex || "0x0"));
   const all = [];
   let start = checkpointStart;
@@ -4185,7 +4219,7 @@ async function scanNoteRelay(address, recompute) {
   if (ownSpendingKey == null) return;
 
   try {
-    const cur = Number(BigInt(await rpcCallWithBackoff("eth_blockNumber", [])));
+    const cur = Number(BigInt(await getCachedBlockNumber()));
     const logs = await fetchLogsPaginated(
       CONTRACTS.PrivarNoteRelay, [NOTE_RELAYED_TOPIC],
       Math.max(0, cur - 5_000_000), "privar_noterelay_scanprogress", address, "Privar note-relay scan"
@@ -4276,7 +4310,7 @@ async function buildNoteRelayCalldata(recipientPubkeyOwner, noteJson) {
 async function scanStealthNotes(address, recompute) {
   if (!address || !CONTRACTS.ViewKeyRegistry) return;
   try {
-    const cur = Number(BigInt(await rpcCallWithBackoff("eth_blockNumber", [])));
+    const cur = Number(BigInt(await getCachedBlockNumber()));
     const recipientTopic = "0x" + "0".repeat(24) + address.toLowerCase().slice(2);
     // Was previously a single unpaginated eth_getLogs spanning up to
     // 5,000,000 blocks with no retry — fired fresh from scratch on every
@@ -4786,7 +4820,7 @@ async function buildTxHistoryFromChain(address) {
   if (!address) return [];
   const MAX_BLOCKS = 5_000_000;
   try {
-    const cur = Number(BigInt(await rpcCallWithBackoff("eth_blockNumber", [])));
+    const cur = Number(BigInt(await getCachedBlockNumber()));
     const from = Math.max(0, cur - MAX_BLOCKS);
     const addrTopic = "0x" + "000000000000000000000000" + address.slice(2).toLowerCase();
 
@@ -5078,7 +5112,7 @@ async function reconcileAndVerifyNotes(address) {
   if (notes.length === 0) return { spent: 0, unbacked: 0 };
 
   try {
-    const current = Number(BigInt(await rpcCallWithBackoff("eth_blockNumber", [])));
+    const current = Number(BigInt(await getCachedBlockNumber()));
     const fromBlock = Math.max(0, current - 5_000_000);
 
     // AUDIT FINDING (2026-09): the doc comment above (and the one on the

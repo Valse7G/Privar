@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v21.3.2-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v21.3.3-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -270,6 +270,24 @@ git push origin main --tags
 Open a PR against `main`, and before merging a contract-address sync specifically: confirm the Shield panel's TVL/version stats reflect the new vault, and — since a full-suite redeploy is never a migration — communicate to users that any balance on the previous `PrivarShieldVault` address must be withdrawn from there before switching over.
 
 ## Changelog
+
+### v21.3.3 — evaluated a "single Sync Engine" rewrite proposal; adopted the safe, verified part of it (2026-09-22)
+See `CHANGELOG-v21.0.0.md` (§v21.3.3) for full details. Summary: evaluated
+a ChatGPT architectural analysis proposing one unified sync engine
+replacing all independent scanners. Directionally consistent with this
+thread's findings, but several specific technical claims didn't hold up
+against the actual code (the Multicall3 fallback already waits out the
+shared cooldown; the `[]`-vs-`null` ambiguity was already fixed where it
+was actually destructive, in v21.2.9). Found one real gap: both sequential
+Multicall3 fallback loops lacked a minimum pace between calls when the
+original failure wasn't a rate-limit — fixed, both now paced at
+`PRIVAR_MIN_GAP_MS`. Did not adopt the full rewrite (real regression risk
+for a directional idea, untestable from here against a live chain).
+Implemented the safe version of "one read, many consumers" instead: added
+`getCachedBlockNumber()` (4s shared cache) — 11 separate call sites were
+each independently calling `eth_blockNumber` for the same information when
+multiple scanners run close together, which is the routine case per every
+log in this thread.
 
 ### v21.3.2 — removed a "fast catch-up burst" that was the real structural cause of the rate-limit cascade (2026-09-22)
 See `CHANGELOG-v21.0.0.md` (§v21.3.2) for full details. Summary: the user
