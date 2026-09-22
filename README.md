@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v21.2.9-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v21.3.0-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -270,6 +270,23 @@ git push origin main --tags
 Open a PR against `main`, and before merging a contract-address sync specifically: confirm the Shield panel's TVL/version stats reflect the new vault, and — since a full-suite redeploy is never a migration — communicate to users that any balance on the previous `PrivarShieldVault` address must be withdrawn from there before switching over.
 
 ## Changelog
+
+### v21.3.0 — audited v21.2.6→v21.2.9, slowed pacing and lengthened caching to make a clean pass more likely (2026-09-21)
+See `CHANGELOG-v21.0.0.md` (§v21.3.0) for full details. Summary: re-audited
+every release since v21.2.6 against the "8 USDC vs 9.97 USDC" gap first
+reported then and still present on v21.2.9. Most likely explanation: 9.97 −
+8 = 1.97, consistent with a single deposit caught by the exact quarantine
+bug v21.2.9 fixed — but that fix's automatic recovery only runs once a scan
+genuinely reaches chain head, and every log in this thread shows Blockscout
+being rate-limited often enough that a fully clean pass is rare. This
+release doesn't change any correctness logic (v21.2.9's fix stands); it
+makes a clean pass more likely to actually happen: `PRIVAR_MIN_GAP_MS`
+500ms → 1500ms (proactive spacing is per-tab and can't see a second
+tab/device also polling), the Blockscout proxy's cache 5s → 12s (the one
+place that sees combined traffic regardless of tab/device count — logs show
+the same query 429'd repeatedly within seconds from different sources), and
+the proxy's retry budget extended. Flagged honestly: this can't be
+confirmed fully resolved without a fresh v21.3.0 log.
 
 ### v21.2.9 — CRITICAL: fixed real note deletion caused by v21.2.6's rate-limit handling (2026-09-19)
 See `CHANGELOG-v21.0.0.md` (§v21.2.9) for full details. Summary: a

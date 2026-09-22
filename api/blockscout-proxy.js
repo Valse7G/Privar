@@ -43,13 +43,20 @@ const ARCSCAN_API_BASE = "https://testnet.arcscan.app/api";
 // ever seeing a failure — cheap, since this runs once per request on
 // Vercel's infrastructure, not from N different users' browsers each
 // retrying independently.
-async function fetchWithRetry(url, attempts = 3) {
+// v21.3.0: retries 3 → 4, backoff ramp lengthened (400/800ms -> 600/1200/2000ms).
+// Real logs show the SAME exact query (identical fromBlock/address/topics)
+// getting 429'd 4-5 times in a row within seconds, from different scan
+// streams (and, separately, different browser tabs/devices this app has no
+// way to coordinate client-side) hitting this proxy independently. A
+// longer, more patient server-side retry absorbs more of that for free —
+// cost is paid once here, not once per caller.
+async function fetchWithRetry(url, attempts = 4) {
   let lastRes;
   for (let i = 0; i < attempts; i++) {
     const res = await fetch(url, { headers: { Accept: "application/json" } });
     if (res.status !== 429) return res;
     lastRes = res;
-    if (i < attempts - 1) await new Promise(r => setTimeout(r, 400 * (i + 1)));
+    if (i < attempts - 1) await new Promise(r => setTimeout(r, 600 * Math.pow(2, i)));
   }
   return lastRes;
 }
@@ -66,12 +73,17 @@ export default async function handler(req, res) {
     const bodyText = await upstream.text();
     res.status(upstream.status);
     res.setHeader("Content-Type", upstream.headers.get("content-type") || "application/json");
-    // Short cache: this is read-only, idempotent blockchain data (logs up to
-    // a given block, or a fixed contract-creation fact) — a few seconds of
-    // shared CDN caching costs nothing in correctness and takes real load
-    // off both this function and the upstream Blockscout instance when
-    // multiple devices/tabs happen to poll at the same moment.
-    res.setHeader("Cache-Control", "public, max-age=5, s-maxage=5, stale-while-revalidate=30");
+    // v21.3.0: 5s -> 12s. This is the highest-leverage fix available
+    // without external infrastructure: Vercel's Edge Network serves a
+    // cached response for an identical request WITHOUT this function (or
+    // Blockscout) being invoked again at all — and real logs show the
+    // exact same query repeated 4-5 times within a few seconds from
+    // different scan streams AND (something no client-side fix can see)
+    // different browser tabs/devices for the same user. Every one of those
+    // duplicates now gets served from cache instead of counting against
+    // Blockscout's budget. A shielded balance changing meaningfully faster
+    // than every 12 seconds isn't a real requirement this app has.
+    res.setHeader("Cache-Control", "public, max-age=12, s-maxage=12, stale-while-revalidate=60");
     res.send(bodyText);
   } catch (e) {
     res.status(502).json({ error: "blockscout-proxy: upstream fetch failed", detail: String(e?.message || e) });

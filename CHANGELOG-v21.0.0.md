@@ -653,3 +653,61 @@ design — this is the deposit-specific counterpart it didn't have.)
 Every other fix from v21.0.0 through v21.2.8 stays as-is. This release
 changes the return contract of two internal functions and their two call
 sites, plus adds one new recovery function — no other behavior changes.
+
+---
+
+## v21.3.0 — v21.2.6→v21.2.9 audit, and why the gap likely persisted
+
+The user asked for a full re-audit of v21.2.6 through v21.2.9 against every
+log shared in this thread, specifically because the "8 USDC vs 9.97 USDC"
+discrepancy first reported on v21.2.6 was still present on v21.2.9.
+
+### Most likely explanation for the persistent gap
+9.97 − 8 = **1.97**, a plausible single deposit amount. The v21.2.6→v21.2.9
+audit trail already found and fixed the exact mechanism that could make a
+real deposit disappear: a Blockscout rate-limit (or a partial RPC-fallback
+pass) being misread as "confirmed no matching Deposited event," causing
+`reconcileAndVerifyNotes()` to quarantine (delete) an otherwise-legitimate
+note. v21.2.9 fixed the misread and added automatic recovery — but that
+recovery only runs at the moment a scan *genuinely* reaches chain head
+(`depositedScanOk === true`). Every log in this thread shows Blockscout
+being rate-limited often enough that a fully clean pass is genuinely rare.
+So the most likely reading is: v21.2.9's fix is correct, but the specific
+condition it needs (one clean completed pass) may simply not have occurred
+yet for this account by the time v21.2.9 was tested — not that the fix is
+wrong.
+
+That reading can't be fully confirmed without a fresh log from a v21.3.0
+session, though — flagging that honestly rather than declaring this solved
+on theory alone.
+
+### What actually changes in this release: make a clean pass more likely
+Every fix through v21.2.9 was about *reacting correctly* once something
+goes wrong (don't double up on RPC, don't delete on an unconfirmed absence,
+recover what was wrongly deleted). None of them made a rate-limit hit
+itself less likely. This release does:
+
+1. **`PRIVAR_MIN_GAP_MS`: 500ms → 1500ms.** The proactive spacing between
+   any two throttled calls is enforced per browser tab — it has no way to
+   know a second tab or a second device (this user routinely runs both
+   TokenPocket and Rabby at once) is also polling the same address through
+   the same Blockscout instance at the same time. Two sessions at 500ms
+   each is already an effective ~250ms gap from Blockscout's point of view.
+   Slowing each session down individually is the only lever available
+   without server-side coordination infrastructure.
+2. **`api/blockscout-proxy.js` cache: 5s → 12s.** This is the one place
+   that already sees combined traffic regardless of tab/device count.
+   Logs repeatedly show the exact same query (same address/topics/block
+   range) 429'd 4-5 times within a few seconds from different scan streams
+   — a longer edge cache means the 2nd+ of those is served instantly
+   without reaching Blockscout (or this function) again at all.
+3. **Proxy retries: 3 → 4 attempts, longer backoff (600ms → 1.2s → 2.4s).**
+   More patience absorbing a 429 server-side, once per request, instead of
+   the client seeing a failure and waiting for its own cooldown.
+
+### What wasn't touched
+Every correctness fix from v21.0.0 through v21.2.9 — the merged scans, the
+one-time approve, the deployment-block lookup, the deadlock removal, the
+checkpoint-preservation guard, and the null-vs-[] quarantine fix — stays
+exactly as shipped. This release only changes pacing/caching constants; no
+control flow changed.

@@ -3428,7 +3428,18 @@ let __privarBgConsecutiveLimits = 0;
 //     once a call actually succeeds — so a provider whose window is
 //     longer than 4s eventually gets a cooldown long enough to actually
 //     clear it, without permanently over-throttling a healthy connection.
-const PRIVAR_MIN_GAP_MS = 500;
+// v21.3.0: 500ms → 1500ms. Real logs (multiple releases, both proxied and
+// pre-proxy) show Blockscout's actual per-source rate limit is tighter than
+// 500ms-spacing can respect — and critically, this spacing is PER BROWSER
+// TAB: it has no way to know about a second tab or a second device also
+// polling the same address, so two of a single user's own sessions already
+// halve the effective gap Blockscout sees. Slowing the proactive pace is a
+// direct trade of "each individual scan ticks slightly less often" for
+// "far fewer 429s consumed retrying the same request" — net faster
+// real-world catch-up, not slower, given how much of the 429 volume in
+// every log in this thread was pure waste (see fetchLogsPaginatedMerged's
+// null-vs-[] fix in v21.2.9 for how expensive a wasted 429 could get).
+const PRIVAR_MIN_GAP_MS = 1500;
 
 function isPrivarRateLimitError(e) {
   const msg = ((e && e.message) || String(e || "")).toLowerCase();
