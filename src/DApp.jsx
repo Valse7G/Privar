@@ -1546,42 +1546,37 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
       resyncFromCloudVault(account.address, recomputeShielded).catch(() => {});
       resyncFromShieldVaultJournal(account.address, recomputeShielded).catch(() => {});
     }, 180_000);
-    // AUDIT FINDING (2026-09): repeated cross-device sync reports, even
-    // after every RPC-reliability fix this session, traced to something
-    // the throttle/cooldown work never addressed — not failure, but TIME.
-    // fetchLogsPaginatedInner's RPC fallback path only advances up to
-    // MAX_CHUNKS_PER_CALL(6) * 2000 = 12,000 blocks per call before saving
-    // progress and returning (deliberately, to stay polite to a tight rate
-    // limit — see that function's own comment). Fine once caught up, but a
-    // BRAND-NEW device has to walk potentially millions of blocks from
-    // each scanner's genesis block, 12,000 at a time, and — combined with
-    // this same session's own fix moving the steady-state interval from
-    // 2 minutes to 3 for load reasons — that catch-up could take a very
-    // long time this way alone, indistinguishable from "cross-device sync
-    // is broken" to someone testing shortly after connecting on a second
-    // device. Blockscout (tried first, whenever it's up) usually gets the
-    // whole range in one shot and sidesteps this entirely — this burst
-    // only matters when it's down and every scanner is stuck walking the
-    // slow RPC-paginated path.
+    // v21.3.2 — REMOVED the "fast catch-up burst" that used to run here
+    // (all 4 scanners again every 12s, up to 10 times = 2 minutes after
+    // every connect). Found by re-reading this exact log the user asked
+    // "isn't the problem the scanning infrastructure itself" about: SIX
+    // near-identical `[cloud vault resync] ... latestVersion=0` lines
+    // firing within seconds of each other, right alongside the
+    // protocol-stats Multicall3 read itself getting rejected with "Request
+    // exceeds defined limit" — a single BATCHED call, rejected outright.
+    // That's not a slow catch-up; it's this burst's own repeated,
+    // ultimately pointless requests (an "already caught up, 0 results"
+    // check still costs one full request against a tight budget — it was
+    // never actually free) directly competing with — and starving —
+    // ordinary reads the UI needs right now.
     //
-    // Fast catch-up burst: for the first ~2 minutes after connecting, run
-    // an EXTRA pass of all 4 scanners every 12s (still fully throttled —
-    // this doesn't bypass the shared queue/cooldown, it just asks more
-    // often) instead of waiting the full 3-minute steady-state interval.
-    // Self-limiting: fetchLogsPaginatedInner's own "already caught up to
-    // head" early-return (see its own log line) makes every extra call
-    // after catch-up cheap — effectively a fast/slow mode that settles on
-    // its own, not a permanent increase in steady-state load.
-    let burstCount = 0;
-    const burstId = setInterval(() => {
-      burstCount++;
-      if (burstCount > 10) { clearInterval(burstId); return; }
-      scanStealthNotes(account.address, recomputeShielded).catch(() => {});
-      scanNoteRelay(account.address, recomputeShielded).catch(() => {});
-      resyncFromCloudVault(account.address, recomputeShielded).catch(() => {});
-      resyncFromShieldVaultJournal(account.address, recomputeShielded).catch(() => {});
-    }, 12_000);
-    return () => { cancelled = true; clearInterval(id); clearInterval(burstId); };
+    // This burst was reasonable engineering under the assumptions in place
+    // when it was written: scans were slow to converge, and a Blockscout
+    // hit was assumed close to free. Both assumptions no longer hold: the
+    // real, measured Blockscout+RPC budget (v21.2.6–v21.3.0) is tight
+    // enough to reject even one Multicall3 call, AND the cold-start cost
+    // this burst existed to shorten is now mostly gone on its own —
+    // dynamic per-contract deployment-block discovery (v21.2.0) instead of
+    // scanning from block 0, the Blockscout CORS fix (v21.2.5) making a
+    // successful call cover an unlimited range in one shot instead of
+    // chunking, and the checkpoint-preservation/recovery fixes (v21.2.4,
+    // v21.2.9) mean there's very little backlog left for a burst to help
+    // clear. What's left of "burst harder" is now pure downside: 10 extra
+    // rounds of every scanner, all sharing the same queue and budget as
+    // everything else, for a catch-up problem that's already mostly solved
+    // by the fixes above. The single immediate pass on connect (right
+    // above this) plus the steady-state interval below is enough.
+    return () => { cancelled = true; clearInterval(id); };
   }, [account?.address, onArc, recomputeShielded, sendViewKeyTx, notify]);
 
   const panelProps = { account, balance, usdcBalance, onArc, notify, refreshBalance, txHistory, loadingBal, prices, changes, change24h, lastUpdate, priceError, setPanel, protocolStats, onChainActivity, shieldedBals, recomputeShielded, sendRealTx: sendViewKeyTx };
@@ -8055,9 +8050,9 @@ function AnalyticsPanel({ protocolStats, txHistory, account, onArc, prices, onCh
         // computed correctly from real FeeCollected events. Reading the
         // real value now, consistent with the rest of the file.
         const [leafRaw, feesUsdcRaw, feesEurcRaw] = await Promise.all([
-          rpcCall("eth_call", [{ to:CONTRACTS.PrivarMerkleTreeManager, data: SEL.nextIndex }, "latest"]),
-          rpcCall("eth_call", [{ to:CONTRACTS.PrivarShieldVault, data: SEL.feesCollectedByToken + encodeAddress(CONTRACTS.USDC) }, "latest"]).catch(() => null),
-          rpcCall("eth_call", [{ to:CONTRACTS.PrivarShieldVault, data: SEL.feesCollectedByToken + encodeAddress(CONTRACTS.EURC) }, "latest"]).catch(() => null),
+          rpcCallWithBackoff("eth_call", [{ to:CONTRACTS.PrivarMerkleTreeManager, data: SEL.nextIndex }, "latest"]),
+          rpcCallWithBackoff("eth_call", [{ to:CONTRACTS.PrivarShieldVault, data: SEL.feesCollectedByToken + encodeAddress(CONTRACTS.USDC) }, "latest"]).catch(() => null),
+          rpcCallWithBackoff("eth_call", [{ to:CONTRACTS.PrivarShieldVault, data: SEL.feesCollectedByToken + encodeAddress(CONTRACTS.EURC) }, "latest"]).catch(() => null),
         ]);
         const feesUsdc   = feesUsdcRaw != null && feesUsdcRaw !== "0x" ? Number(nativeToUsdc6(BigInt(feesUsdcRaw))) / 1e6 : 0;
         const feesEurc   = feesEurcRaw != null && feesEurcRaw !== "0x" ? Number(BigInt(feesEurcRaw)) / 1e6 : 0;
@@ -8068,7 +8063,7 @@ function AnalyticsPanel({ protocolStats, txHistory, account, onArc, prices, onCh
         const from24 = Math.max(0, cur - 172800); // ~24h at 2 blk/sec
         let logs24 = [];
         try {
-          const res = await rpcCall("eth_getLogs", [{
+          const res = await rpcCallWithBackoff("eth_getLogs", [{
             fromBlock: "0x"+from24.toString(16),
             toBlock:   "latest",
             address:   CONTRACTS.PrivarShieldVault,
@@ -8140,8 +8135,8 @@ function AnalyticsPanel({ protocolStats, txHistory, account, onArc, prices, onCh
   useEffect(() => {
     if (!onArc) return;
     const run = () => Promise.all([
-      rpcCall("eth_call", [{ to: CONTRACTS.PrivarShieldVault, data: SEL.protocolFeeBps }, "latest"]).catch(() => null),
-      rpcCall("eth_call", [{ to: CONTRACTS.PrivarShieldVault, data: SEL.treasury }, "latest"]).catch(() => null),
+      rpcCallWithBackoff("eth_call", [{ to: CONTRACTS.PrivarShieldVault, data: SEL.protocolFeeBps }, "latest"]).catch(() => null),
+      rpcCallWithBackoff("eth_call", [{ to: CONTRACTS.PrivarShieldVault, data: SEL.treasury }, "latest"]).catch(() => null),
     ]).then(([bpsRes, treasuryRes]) => {
       setFeeConfig({
         bps:      bpsRes && bpsRes !== "0x" ? Number(BigInt(bpsRes)) : null,
@@ -8159,7 +8154,7 @@ function AnalyticsPanel({ protocolStats, txHistory, account, onArc, prices, onCh
   const [stakingTxCount, setStakingTxCount] = useState(null);
   useEffect(() => {
     if (!onArc || !CONTRACTS.PrivarStaking) return;
-    const run = () => rpcCall("eth_call", [{ to: CONTRACTS.PrivarStaking, data: SEL.totalTxCount }, "latest"])
+    const run = () => rpcCallWithBackoff("eth_call", [{ to: CONTRACTS.PrivarStaking, data: SEL.totalTxCount }, "latest"])
       .then(res => setStakingTxCount(res && res !== "0x" ? Number(BigInt(res)) : 0))
       .catch(() => {}); // older PrivarStaking (pre-v1.2) doesn't have this — silently keep null, not an error
     run();
@@ -8439,9 +8434,9 @@ function StakingPanel({ account, usdcBalance, onArc, notify, refreshBalance }) {
     try {
       // getUserStakes(address) — returns StakePosition[]
       const [stakesRaw, rewardsRaw, totalRaw] = await Promise.all([
-        rpcCall("eth_call", [{ to: CONTRACTS.PrivarStaking, data: SEL.previewRewards + encodeAddress(account.address) }, "latest"]),
-        rpcCall("eth_call", [{ to: CONTRACTS.PrivarStaking, data: SEL.previewRewards + encodeAddress(account.address) }, "latest"]),
-        rpcCall("eth_call", [{ to: CONTRACTS.PrivarStaking, data: "0x817b1cd2" /* totalStakedGlobal() */ }, "latest"]),
+        rpcCallWithBackoff("eth_call", [{ to: CONTRACTS.PrivarStaking, data: SEL.previewRewards + encodeAddress(account.address) }, "latest"]),
+        rpcCallWithBackoff("eth_call", [{ to: CONTRACTS.PrivarStaking, data: SEL.previewRewards + encodeAddress(account.address) }, "latest"]),
+        rpcCallWithBackoff("eth_call", [{ to: CONTRACTS.PrivarStaking, data: "0x817b1cd2" /* totalStakedGlobal() */ }, "latest"]),
       ]);
       // previewRewards returns uint256
       if (rewardsRaw && rewardsRaw !== "0x") setRewards(BigInt(rewardsRaw));

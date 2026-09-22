@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v21.3.1-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v21.3.2-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -270,6 +270,25 @@ git push origin main --tags
 Open a PR against `main`, and before merging a contract-address sync specifically: confirm the Shield panel's TVL/version stats reflect the new vault, and — since a full-suite redeploy is never a migration — communicate to users that any balance on the previous `PrivarShieldVault` address must be withdrawn from there before switching over.
 
 ## Changelog
+
+### v21.3.2 — removed a "fast catch-up burst" that was the real structural cause of the rate-limit cascade (2026-09-22)
+See `CHANGELOG-v21.0.0.md` (§v21.3.2) for full details. Summary: the user
+asked directly whether the problem was in the scanning infrastructure
+itself. Yes — found a `setInterval(..., 12_000)` firing all 4 background
+scanners again every 12 seconds for the first 2 minutes after connecting, a
+"fast catch-up" mode built on an assumption (later proven wrong by real
+logs) that an "already caught up" check is essentially free. It isn't — the
+real Blockscout/RPC budget is tight enough to reject even a single
+Multicall3-batched call — and a burst round now takes longer than 12s on
+its own at the correctly-paced 1.5s/call spacing (v21.3.0), so rounds were
+piling up on each other throughout the exact window it was meant to help.
+The catch-up problem it existed to solve is also mostly gone now for other
+reasons (dynamic deployment-block discovery, the Blockscout CORS fix,
+checkpoint recovery). Removed entirely — connect still gets one immediate
+scan pass, then the existing 3-minute steady interval. Also hardened 10
+call sites in `AnalyticsPanel`/`StakingPanel` that were calling the RPC
+directly with no retry/backoff at all (panel-scoped, not the cause of this
+log, but unprotected against the same shared budget).
 
 ### v21.3.1 — CRITICAL: recovered cross-device notes were missing `blinding`, making them unspendable (2026-09-22)
 See `CHANGELOG-v21.0.0.md` (§v21.3.1) for full details. Summary: the user

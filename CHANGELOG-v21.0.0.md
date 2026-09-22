@@ -807,3 +807,83 @@ Every other fix from v21.0.0 through v21.3.0 stays as-is. This release adds
 `blinding` to 6 journal-entry construction sites and one new enrichment
 step in the 2 reconstruction loops — no control flow, scheduling, or
 rate-limit handling changed.
+
+---
+
+## v21.3.2 — yes: the scheduling INFRASTRUCTURE itself was the structural problem
+
+The user asked directly: "isn't the problem in the structural logic or the
+current infrastructure that performs the scans?" Re-read the newest log
+with that framing specifically, instead of continuing to patch individual
+symptoms — and the answer is yes, found it.
+
+### The smoking gun in the log
+```
+[cloud vault resync] 0x1dc724…: on-chain latestVersion=0
+[cloud vault resync] 0x1dc724…: on-chain latestVersion=0
+[cloud vault resync] 0x1dc724…: on-chain latestVersion=0
+[cloud vault resync] 0x1dc724…: on-chain latestVersion=0
+[cloud vault resync] 0x1dc724…: on-chain latestVersion=0
+[cloud vault resync] 0x1dc724…: on-chain latestVersion=0
+```
+Six near-identical lines, seconds apart — right alongside the
+protocol-stats Multicall3 read itself getting rejected: `stats:
+Multicall3 failed... Request exceeds defined limit` on a single, already
+batched call. Something was calling all 4 background scanners far more
+often than the documented "mount + every 3 minutes" schedule.
+
+### The cause: a "fast catch-up burst" that made sense when it was written, and doesn't anymore
+Traced it to a `setInterval(..., 12_000)` that fired ALL 4 scanners again
+every 12 seconds for the first 2 minutes after connecting — a deliberate
+"fast catch-up" mode, reasoning at the time: *"an 'already caught up, 0
+results' check is basically free, so asking more often during catch-up
+costs nothing once caught up."* That assumption is what v21.2.6–v21.3.0
+proved wrong, with real logs: Blockscout has its own tight rate limit, and
+the raw RPC's budget is tight enough to reject a single Multicall3-batched
+call outright. A request costs real budget whether the answer is 0 results
+or 100 — "cheap once caught up" was never actually true here. Worse, the
+burst was firing a full 4-scanner round every 12 seconds while a single
+round — now correctly paced at 1.5s between calls (v21.3.0) specifically
+*because* the real budget is tight — can easily take longer than 12 seconds
+on its own, meaning burst rounds were piling up behind each other,
+guaranteeing contention through the very cold-start window it was supposed
+to help.
+
+The burst also solved a problem that's mostly gone now for other reasons:
+dynamic per-contract deployment-block discovery (v21.2.0) instead of
+scanning from block 0, the Blockscout CORS fix (v21.2.5) letting a
+successful call cover an unlimited range in one shot instead of chunking,
+and the checkpoint-preservation/recovery fixes (v21.2.4, v21.2.9). What
+was once a genuinely slow cold start is now usually one or two calls.
+
+### The fix
+Removed the burst entirely. What's left: one immediate pass on connect,
+then the existing 3-minute steady-state interval — both already routed
+through the same throttled queue as everything else. This isn't a
+reduction in capability, it's removing a mechanism that had turned into
+the single biggest source of self-inflicted contention in every log this
+thread has looked at.
+
+### Also found and hardened while looking: two panel-scoped intervals bypassing the queue entirely
+`AnalyticsPanel` (three separate 30s intervals: 24h stats, fee config,
+staking tx count) and `StakingPanel` (15s interval: rewards/stake totals)
+call `rpcCall(...)` directly — not `rpcCallWithBackoff`, not routed through
+`runPrivarThrottled` at all. These only run while their panel is actually
+open (not a constant background drain like the burst was), so they weren't
+the cause of what's in this log — but they share the exact same scarce RPC
+budget with no retry/backoff and no coordination with anything else.
+Hardened the 10 call sites to `rpcCallWithBackoff` (drop-in signature,
+adds retry-with-backoff instead of throwing immediately on a 429) rather
+than leaving them silently unprotected. Not restructured further this
+release — that's a real but lower-priority item, noted here rather than
+changed under time pressure: `AnalyticsPanel`'s 24h-stats call in
+particular does an unfiltered `eth_getLogs` straight to raw RPC (never
+Blockscout) every 30 seconds while that panel is open, which would benefit
+from a proper Blockscout-routed rewrite in a future pass.
+
+### What wasn't touched
+Every fix from v21.0.0 through v21.3.1 stays exactly as shipped — the
+merged scans, the one-time approve, the deployment-block lookup, the
+deadlock removal, the checkpoint-preservation guard, the blinding fix, the
+pacing/caching tuning. This release removes one `setInterval` and swaps a
+function name at 10 call sites; no other control flow changed.
