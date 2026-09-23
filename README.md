@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v21.3.3-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v21.3.4-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -270,6 +270,20 @@ git push origin main --tags
 Open a PR against `main`, and before merging a contract-address sync specifically: confirm the Shield panel's TVL/version stats reflect the new vault, and — since a full-suite redeploy is never a migration — communicate to users that any balance on the previous `PrivarShieldVault` address must be withdrawn from there before switching over.
 
 ## Changelog
+
+### v21.3.4 — fixed the block-number ticker, and a worse bug found right next to it (2026-09-22)
+See `CHANGELOG-v21.0.0.md` (§v21.3.4) for full details. Summary: the header's
+live block-number display was polling `eth_blockNumber` every 6 seconds,
+unthrottled — more volume than every sync scanner combined. Now uses the
+shared cache and polls every 30s. While routing every remaining direct
+`eth_blockNumber` call through that cache, found a much bigger issue in
+`useOnChainActivity` (refreshes TVL/fees/volume after every user action): a
+rate-limit error was handled identically to "range too wide" — splitting
+the block range and retrying both halves in parallel, recursively, meaning
+a rate limit could trigger an exponential fan-out of retries (up to 1024
+calls at the depth cap) instead of backing off. Fixed, and merged 3 of its
+4 calls into 1 (same technique as v21.0.0's reconcile-scan merge) while
+making the rest run sequentially instead of via `Promise.all`.
 
 ### v21.3.3 — evaluated a "single Sync Engine" rewrite proposal; adopted the safe, verified part of it (2026-09-22)
 See `CHANGELOG-v21.0.0.md` (§v21.3.3) for full details. Summary: evaluated

@@ -956,3 +956,51 @@ the shared throttle queue, the merged scans, the blinding fix, and the
 burst removal. This release adds one small cache and paces two existing
 fallback loops consistently; no scanner's actual fetching/decoding logic
 changed, and nothing was rearchitected.
+
+---
+
+## v21.3.4 — the block-number ticker fix, and a bigger one found right next to it
+
+### The fix the user asked for
+The header's live block-number display (`#62,951,685` next to the bell
+icon) was polling `eth_blockNumber` directly every **6 seconds**, forever,
+unthrottled, uncached — more RPC volume than every sync scanner combined
+(the busiest of those asks once every 3 minutes). Purely cosmetic; nobody
+needs it accurate to the second. Now uses the shared `getCachedBlockNumber()`
+cache (v21.3.3) and polls every 30s instead of 6s — still visibly live, a
+fraction of the cost.
+
+### Found while fixing it: a worse, related bug in `useOnChainActivity`
+Grepping for every remaining direct `eth_blockNumber` call (to route them
+all through the same cache) turned up `fetchLogsRange()` — used by the
+hook that refreshes TVL/fees/volume after **every single** Shield/Swap/
+Send/Withdraw/Bridge. Two real problems in it:
+
+1. **A rate-limit error was handled identically to "range too wide."** On
+   any `eth_getLogs` failure, this function split the block range in half
+   and retried BOTH halves **in parallel**, recursively, up to depth 10.
+   That's the right response to "range too wide" — completely wrong for a
+   rate limit, where it means: get rate-limited once → 2 parallel retries →
+   both also rate-limited → 4 parallel retries → 8 → 16... a genuine
+   exponential fan-out (up to 1024 calls at the depth cap) **triggered by**
+   the rate limit itself, on a hook firing after every user action. Fixed:
+   a rate-limit error now backs off and gives up on this pass (checked via
+   `isPrivarRateLimitError`, same as everywhere else in this codebase) —
+   only a genuine non-rate-limit rejection still splits-and-retries.
+2. **Three of its four calls ran via `Promise.all`** (Deposited, Withdrawn,
+   PrivateSwap on the same contract, each independently). Same merge this
+   codebase already applies elsewhere (v21.0.0's reconcile-scan merge):
+   none of them filter beyond topic0 on this contract, so `eth_getLogs`'s
+   topic-OR support merges them into one call. The remaining 2 calls
+   (merged event scan + FeeUpdated) now run sequentially instead of in
+   parallel, so nothing from this hook fires without the same pacing
+   everything else respects.
+
+### What wasn't touched
+Every fix from v21.0.0 through v21.3.3 stays exactly as shipped. This
+release: slows one UI polling interval, merges 3 calls into 1 in
+`useOnChainActivity`, fixes its rate-limit-vs-too-wide misclassification,
+and routes every remaining direct `eth_blockNumber` call (6 sites total,
+across the block ticker, `fetchLogsChunked`, `useOnChainActivity`, and
+`AnalyticsPanel`) through the shared cache. No scanner's discovery/decode
+logic changed.

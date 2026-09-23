@@ -1337,14 +1337,25 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
   const unread = notifs.filter(n=>!n.read).length;
 
   // Fetch real block number from Arc Testnet
+  // v21.3.4: this is a purely cosmetic header display (the "#62,951,685"
+  // next to the bell icon) — nobody needs it to tick in true real time. It
+  // was polling eth_blockNumber directly, unthrottled, uncached, every 6
+  // SECONDS — 10 times a minute, forever, for as long as the app is open.
+  // That's more RPC volume than every actual sync scanner combined (the
+  // busiest of those only asks once every 3 minutes). Now uses the shared
+  // 4-second block-number cache (getCachedBlockNumber, v21.3.3) — free
+  // whenever a scanner already fetched it moments ago — and polls every
+  // 30s instead of 6s, matching the pace of the other passive UI refreshes
+  // (stats: 45s, Analytics: 30s). Still visibly "live" to a user glancing
+  // at it, at a fraction of the cost.
   useEffect(() => {
     const fetchBlock = async () => {
       try {
-        const raw = await rpcCall("eth_blockNumber");
+        const raw = await getCachedBlockNumber();
         setBlockNum(parseInt(raw, 16));
       } catch {}
     };
-    if (onArc) { fetchBlock(); const id = setInterval(fetchBlock, 6000); return ()=>clearInterval(id); }
+    if (onArc) { fetchBlock(); const id = setInterval(fetchBlock, 30000); return ()=>clearInterval(id); }
   }, [onArc]);
 
   // Keyboard shortcut
@@ -2222,16 +2233,34 @@ const EV2 = {
 async function fetchLogsRange(address, topics, fromBlock, toBlock, depth = 0) {
   if (fromBlock > toBlock) return [];
   try {
-    const res = await rpcCall("eth_getLogs", [{
+    const res = await rpcCallWithBackoff("eth_getLogs", [{
       address, topics,
       fromBlock: "0x" + fromBlock.toString(16),
       toBlock:   "0x" + toBlock.toString(16),
     }]);
     return res || [];
   } catch (e) {
-    // Provider rejected this range (too wide, or too many results) — split in
-    // half and retry both halves in parallel. Depth-capped so a genuinely
-    // broken RPC fails fast instead of hammering it with 2^n requests.
+    // v21.3.4 CRITICAL FIX: a rate-limit error used to fall into the SAME
+    // "range too wide" handling below — splitting in half and retrying
+    // BOTH halves IN PARALLEL. That's exactly backwards for a rate limit:
+    // two parallel retries right after being rate-limited is more likely
+    // to get rate-limited again, which would split again into 4 parallel
+    // calls, then 8, then 16 — a genuine exponential fan-out (capped at
+    // depth 10 = up to 1024 calls) triggered BY the rate limit itself, on
+    // a hook that runs after every single Shield/Swap/Send/Withdraw/Bridge.
+    // rpcCallWithBackoff above already retries a rate-limited call itself
+    // with backoff before giving up, so reaching this catch with a
+    // rate-limit error means that already failed — the right response is
+    // to give up on this range for now, not multiply it.
+    if (isPrivarRateLimitError(e)) {
+      markPrivarRateLimited();
+      console.warn(`[onchain-activity] range ${fromBlock}-${toBlock} rate-limited, skipping this pass instead of fanning out`);
+      return [];
+    }
+    // Provider rejected this range for a non-rate-limit reason (too wide, or
+    // too many results) — split in half and retry both halves in parallel.
+    // Depth-capped so a genuinely broken RPC fails fast instead of
+    // hammering it with 2^n requests.
     if (depth >= 10 || fromBlock === toBlock) return [];
     const mid = fromBlock + Math.floor((toBlock - fromBlock) / 2);
     const [a, b] = await Promise.all([
@@ -2247,7 +2276,7 @@ async function fetchLogsRange(address, topics, fromBlock, toBlock, depth = 0) {
 // means this is cheap when the RPC's real range limit is small, since only
 // the windows that actually contain matching logs cost more than 1 request.
 async function fetchLogsChunked(address, topics, blocksBack = 2_000_000) {
-  const latest = parseInt(await rpcCall("eth_blockNumber", []), 16);
+  const latest = parseInt(await getCachedBlockNumber(), 16);
   const from = Math.max(0, latest - blocksBack);
   return fetchLogsRange(address, topics, from, latest);
 }
@@ -2310,22 +2339,34 @@ function useOnChainActivity(onArc) {
       // Incremental scan: only look at blocks since the last successful run
       // for THIS vault address. Cache resets automatically on redeploy since
       // the key includes the vault address.
-      const latest = parseInt(await rpcCall("eth_blockNumber", []), 16);
+      const latest = parseInt(await getCachedBlockNumber(), 16);
       const fromBlock = cache ? cache.lastBlock + 1 : null;
 
+      // v21.3.4: Deposited/Withdrawn/PrivateSwap all leave every topic
+      // position past topic0 unfiltered on this contract (verified the
+      // same way as the reconcile-scan merge in v21.0.0) — merged into one
+      // call via eth_getLogs' topic-OR support instead of 3 separate calls
+      // run in parallel. Also no longer truly parallel: fetchLogsRange
+      // already funnels its actual network call through
+      // rpcCallWithBackoff (shared backoff/cooldown), but firing 2 calls
+      // (this merged one + FeeUpdated) via Promise.all still means both
+      // requests go out at once with nothing pacing them relative to each
+      // other — sequential now, so every request from this hook respects
+      // the same minimum spacing as everything else, on a hook that fires
+      // after EVERY successful Shield/Swap/Send/Withdraw/Bridge.
       const scanFrom = async (topics) => fromBlock != null
         ? fetchLogsRange(vault, topics, fromBlock, latest)
         : fetchLogsChunked(vault, topics);
 
-      const [depLogs, wdLogs, swapLogs, feeLogs] = await Promise.all([
-        scanFrom([EV2.Deposited]),
-        scanFrom([EV2.Withdrawn]),
-        scanFrom([EV2.PrivateSwap]),
-        // Fee history always needs full context to know the bps active at
-        // each NEW deposit — but it's a small, infrequent event (admin-only
-        // rate changes), so re-scanning it in full each time is cheap.
-        fetchLogsChunked(vault, [EV2.FeeUpdated]),
-      ]);
+      const mergedLogs = await scanFrom([[EV2.Deposited, EV2.Withdrawn, EV2.PrivateSwap]]);
+      const byTopic0 = (hash) => mergedLogs.filter(l => (l.topics?.[0] || "").toLowerCase() === hash.toLowerCase());
+      const depLogs = byTopic0(EV2.Deposited);
+      const wdLogs = byTopic0(EV2.Withdrawn);
+      const swapLogs = byTopic0(EV2.PrivateSwap);
+      // Fee history always needs full context to know the bps active at
+      // each NEW deposit — but it's a small, infrequent event (admin-only
+      // rate changes), so re-scanning it in full each time is cheap.
+      const feeLogs = await fetchLogsChunked(vault, [EV2.FeeUpdated]);
 
       const bpsHistory = feeLogs
         .map(l => ({ block: parseInt(l.blockNumber, 16), bps: Number(BigInt(dataWord(l.data, 0))) }))
@@ -8043,7 +8084,7 @@ function AnalyticsPanel({ protocolStats, txHistory, account, onArc, prices, onCh
   const [blockchainStats, setBlockchainStats] = useState(null);
   useEffect(() => {
     if (!onArc) return;
-    rpcCall("eth_blockNumber", []).then(hex => {
+    getCachedBlockNumber().then(hex => {
       const n = parseInt(hex, 16);
       if (isFinite(n)) setBlockchainStats({ blockNum: n });
     }).catch(() => {});
@@ -8068,7 +8109,7 @@ function AnalyticsPanel({ protocolStats, txHistory, account, onArc, prices, onCh
     if (!onArc) return;
     const run = async () => {
       try {
-        const blockHex = await rpcCall("eth_blockNumber", []);
+        const blockHex = await getCachedBlockNumber();
         const cur = parseInt(blockHex, 16);
         if (!isFinite(cur)) return;
 
