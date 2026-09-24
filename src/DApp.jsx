@@ -2193,7 +2193,21 @@ function useProtocolStats(onArc) {
 
   useEffect(() => {
     if (!onArc) return;
-    fetch();
+    // v21.3.5 REGRESSION FIX: this was `fetch()` — priority=false/undefined
+    // — meaning even the very FIRST stats fetch on page load went through
+    // the shared background queue, competing for a turn with every other
+    // scanner (stealth/relay/cloudvault/journal/reconcile) that also fires
+    // around connect time. That queue's pacing is now deliberately much
+    // slower than it used to be (v21.3.0's 500ms->1500ms min-gap, plus
+    // v21.3.3's fallback pacing) — correct for preventing a thundering
+    // herd, but it meant the numbers a user sees on first opening Shield
+    // (TVL, vault status, commitments) could sit "loading…" for a long
+    // time behind unrelated housekeeping, exactly the "—" seen in the
+    // reported screenshot. `priority: true` (see this hook's own comment
+    // on the parameter, a few lines up) already existed for exactly this
+    // case — a user-facing refresh that shouldn't wait in line — but the
+    // initial mount call was never actually passing it.
+    fetch(true);
     // Was 10s — 23 eth_call requests every 10s is heavy sustained load on a
     // public testnet RPC, likely the cause of the intermittent stat
     // failures/staleness reported (values working one moment, stuck
@@ -3584,12 +3598,15 @@ async function multicallRead(descriptors) {
     // keep feeding) the shared cooldown between each fallback call instead
     // of hammering a rate limit that a sustained provider-side window
     // won't have cleared yet.
-    // v21.3.3: also enforce PRIVAR_MIN_GAP_MS between calls unconditionally
-    // (not just when a cooldown is active) — this loop previously had NO
-    // minimum delay at all when the ORIGINAL Multicall3 failure wasn't a
-    // rate-limit (e.g. a revert), meaning it could blast through every
-    // descriptor back-to-back with nothing pacing it, on the very path
-    // most likely to be called from multiple scanners at once.
+    // v21.3.5: this fallback's descriptor count is always small (2-4 —
+    // every caller is a panel's own pre-flight fee/allowance check, a user
+    // actively waiting on screen for it, unlike useProtocolStats' 21-call
+    // background poll). PRIVAR_MIN_GAP_MS (1500ms, tuned for that 21-call
+    // case) between each of just 4 calls adds real, visible latency to a
+    // user-blocking flow for comparatively little extra protection — a
+    // fixed, smaller pace here still rules out the original zero-delay
+    // blast this fix was for, without making Shield/Swap/Send noticeably
+    // slower to submit under normal conditions.
     const out = [];
     for (let i = 0; i < descriptors.length; i++) {
       const d = descriptors[i];
@@ -3602,7 +3619,7 @@ async function multicallRead(descriptors) {
         if (isPrivarRateLimitError(e2)) markPrivarRateLimited();
         out.push(null);
       }
-      if (i + 1 < descriptors.length) await new Promise(r => setTimeout(r, PRIVAR_MIN_GAP_MS));
+      if (i + 1 < descriptors.length) await new Promise(r => setTimeout(r, 500));
     }
     return out;
   }

@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v21.3.4-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v21.3.5-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -270,6 +270,19 @@ git push origin main --tags
 Open a PR against `main`, and before merging a contract-address sync specifically: confirm the Shield panel's TVL/version stats reflect the new vault, and — since a full-suite redeploy is never a migration — communicate to users that any balance on the previous `PrivarShieldVault` address must be withdrawn from there before switching over.
 
 ## Changelog
+
+### v21.3.5 — REGRESSION FIX: protocol stats stuck on "—", fee preview stuck on "loading…" (2026-09-23)
+See `CHANGELOG-v21.0.0.md` (§v21.3.5) for full details. Summary: confirmed
+a real regression from the screenshot the user reported. `useProtocolStats`
+already had a `priority` flag meant to skip the shared background queue for
+user-facing refreshes, but the initial mount-time call never actually
+passed it — so the very first stats fetch on page load queued behind other
+scanners like everything else. Harmless when the queue was fast; very
+visible now that v21.3.0 deliberately slowed its pacing to stop a real
+rate-limit cascade. Fixed: mount now calls `fetch(true)`. Also reduced
+`multicallRead`'s fallback pace from 1500ms to 500ms specifically for panel
+pre-flight checks (2-4 calls, a user actively waiting) — `useProtocolStats`'
+own 21-call fallback keeps the full 1500ms pace.
 
 ### v21.3.4 — fixed the block-number ticker, and a worse bug found right next to it (2026-09-22)
 See `CHANGELOG-v21.0.0.md` (§v21.3.4) for full details. Summary: the header's

@@ -1004,3 +1004,55 @@ and routes every remaining direct `eth_blockNumber` call (6 sites total,
 across the block ticker, `fetchLogsChunked`, `useOnChainActivity`, and
 `AnalyticsPanel`) through the shared cache. No scanner's discovery/decode
 logic changed.
+
+---
+
+## v21.3.5 — REGRESSION FIX: TVL/Vault/Commitments stuck on "—", Protocol Fee stuck on "loading…"
+
+The user reported (with a screenshot) that the protocol stats shown on the
+Shield screen — TVL USDC/EURC/cirBTC, Vault status, Commitments — stayed
+on "—", and the fee preview stayed on "loading…". Confirmed: a real
+regression, caused by the cumulative effect of this thread's own rate-limit
+safety fixes.
+
+### The concrete bug
+`useProtocolStats`'s `fetch(priority)` already had a `priority` parameter
+specifically designed for this: `priority: true` skips the shared
+background queue entirely (documented reasoning: "Multicall3 is always
+exactly ONE outbound request either way"), meant for exactly the case of a
+user-facing refresh that shouldn't sit waiting behind unrelated background
+scans. But the **initial mount-time call was `fetch()` — no argument**,
+meaning `priority` was `undefined`/falsy, so even the very FIRST stats
+fetch on page load went through the shared queue anyway. This bug predates
+this specific thread's changes, but its visible impact didn't: with the
+queue's pacing now deliberately much slower (v21.3.0's 500ms→1500ms
+min-gap, meant to stop a real rate-limit cascade), a first-load stats fetch
+sitting behind even 2-3 other scanners queued at connect time could now
+take a very visibly long time — exactly the "—" wall in the screenshot.
+Fixed: the mount-time call is now `fetch(true)`.
+
+### A related, smaller fix: `multicallRead`'s fallback pace
+v21.3.3 added a mandatory `PRIVAR_MIN_GAP_MS` (1500ms) pace between each
+call in `multicallRead`'s sequential fallback — correct for
+`useProtocolStats`' 21-call case, but `multicallRead` is also what every
+panel's own pre-flight check uses (Shield/Swap/Send/Withdraw/Bridge — 2-4
+descriptors, a user actively waiting on screen, not a background poll).
+1500ms × up to 4 calls added real, visible latency to an already
+user-blocking flow for comparatively little protection benefit versus a
+4-call burst. Reduced to a fixed 500ms specifically for this path — still
+real pacing, far less user-facing latency. `useProtocolStats`' own 21-call
+fallback keeps the full 1500ms pace, unchanged.
+
+### Honesty note
+Under genuinely sustained rate-limiting, a panel's fee preview can still
+take a while to resolve — that's the real, external RPC/Blockscout
+constraint this whole thread has been working around, not something either
+of these two fixes can fully remove. What they fix is the UNNECESSARY
+extra delay this codebase itself was adding: a stats fetch waiting in a
+queue it was designed to skip, and a small fallback paced as conservatively
+as a 21-call one.
+
+### What wasn't touched
+Every fix from v21.0.0 through v21.3.4 stays exactly as shipped. This
+release changes one function argument and one constant; no scanning,
+decoding, or note-reconstruction logic changed.
