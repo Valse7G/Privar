@@ -1056,3 +1056,68 @@ as a 21-call one.
 Every fix from v21.0.0 through v21.3.4 stays exactly as shipped. This
 release changes one function argument and one constant; no scanning,
 decoding, or note-reconstruction logic changed.
+
+---
+
+## v21.3.6 — the free win: skip discovery scans entirely when nothing changed anywhere
+
+Implements the "free, zero-extra-RPC" optimization discussed after
+evaluating the ChatGPT paginated-registry proposal: use
+`PrivarMerkleTreeManager.nextIndex()` — already fetched every 45s for the
+"Commitments" stat, no new RPC call needed — to skip the 4 cross-device
+discovery scanners (stealth/relay/cloudvault/journal) entirely when it
+hasn't moved since the last check.
+
+### Why this is sound
+`nextIndex()` only grows, and only grows when a new commitment is inserted
+anywhere in the protocol — exactly the condition all 4 discovery scanners
+exist to detect (a note created on another device IS a new commitment). If
+the count hasn't moved, there is categorically nothing new for any of them
+to find, and calling them anyway is a guaranteed-wasted round of RPC/
+Blockscout calls.
+
+### Where it's applied, and where it deliberately isn't
+- **Mount + the 3-minute interval**: gated. These are the repeating
+  background schedules where the "6 identical lines" waste pattern
+  (v21.3.2) actually happens.
+- **The post-action trigger** (`window._privarTriggerCrossDeviceSync`,
+  fired after every Shield/Swap/Send/Withdraw/Bridge): deliberately left
+  ungated. This exists specifically to force an immediate re-check — often
+  right after obtaining a signing key a background attempt earlier lacked
+  (v21.2.4) — and `protocolStats.leafCount` can still reflect the state
+  from before this very action when it fires (its own refresh is async).
+  Gating a rare, deliberately-forceful trigger for comparatively little
+  benefit wasn't worth the risk of undermining what it's for.
+- **`reconcileAndVerifyNotes()`**: deliberately NOT gated by this. It also
+  detects SPENDS via nullifier events, and a withdrawal with no change
+  output consumes a nullifier without necessarily inserting a new leaf — an
+  unchanged commitment count doesn't guarantee "nothing relevant happened"
+  for that specific check the way it does for pure note-discovery.
+
+### A real bug caught and fixed while wiring this up
+The 3-minute interval's callback doesn't (and shouldn't) depend on
+`protocolStats` — adding it would re-run the whole connect-time effect
+(including `ensureViewKeyRegistered`/`ensureSpendKeyRegistered`) every 45s.
+That meant a direct read of `protocolStats?.leafCount` inside the interval
+closure would capture the value from the moment the effect first ran and
+never see it update — silently defeating the gate (always comparing against
+a stale `null`, so it would never actually skip anything). Fixed with a
+ref (`leafCountRef`), updated by its own small effect that only depends on
+the leaf count itself, read by the interval instead of a direct closure
+capture — standard fix for this exact class of React staleness bug, caught
+before shipping rather than after.
+
+### Safety bound
+Never skips for more than ~15 minutes straight regardless of the count, so
+even in the narrow case where a scan attempt keeps failing while global
+protocol activity happens to be flat, a real attempt still gets forced
+periodically.
+
+### What wasn't touched
+Every fix from v21.0.0 through v21.3.5 stays exactly as shipped, including
+each scanner's own internal checkpoint/retry logic — this release only adds
+a gate deciding whether to call them at all on a given cycle, using data
+already being fetched for the UI. No scanner's own scanning/decoding logic
+changed, and the on-chain contracts are untouched (this is the "zero
+contract changes" half of the two-part plan — the paginated-registry
+contract work is next).

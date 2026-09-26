@@ -1461,6 +1461,18 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
   const { bals: shieldedBals, recompute: recomputeShielded, lastVerified: shieldedLastVerified, triggerReconcile: triggerShieldedReconcile } = useShieldedBalances(prices, account?.address);
   const { sendRealTx: sendViewKeyTx } = useTxSend({ account, onArc, notify, refreshBalance });
 
+  // v21.3.6: a ref, not a direct read of protocolStats.leafCount, for the
+  // mount effect's setInterval callback below — that effect intentionally
+  // does NOT depend on protocolStats (adding it would re-run
+  // ensureViewKeyRegistered/ensureSpendKeyRegistered and the whole
+  // connect-time flow every 45s, once per stats refresh), so its closure
+  // would otherwise capture leafCount's value from the moment the effect
+  // first ran and never see it change — silently defeating the gate below
+  // (it would always see the initial null and never actually skip). A ref
+  // sidesteps that: same effect, no new dependency, always reads current.
+  const leafCountRef = useRef(null);
+  useEffect(() => { leafCountRef.current = protocolStats?.leafCount ?? null; }, [protocolStats?.leafCount]);
+
   // v21.2.4: exposed so any panel's onSuccess can re-run cross-device
   // discovery right after an operation completes — guaranteed to have a
   // cached backup signature by then (every operation that creates a note
@@ -1470,6 +1482,16 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
   // guard) — no need to wait for the next 2-minute poll.
   useEffect(() => {
     if (!account?.address) { window._privarTriggerCrossDeviceSync = null; return; }
+    // v21.3.6: deliberately NOT gated by canSkipDiscoveryScans — this
+    // trigger exists specifically for an immediate, forceful re-check right
+    // after a user's own action (e.g. retrying a scan that was earlier
+    // skipped for lack of a signing key, see v21.2.4's comment on this
+    // effect). protocolStats.leafCount can still reflect the state from
+    // BEFORE this very action at the moment onSuccess fires (its own
+    // refresh is async and may not have resolved yet), so gating here could
+    // skip the one re-check this mechanism exists to guarantee, for a
+    // trigger that's inherently rare (once per user action) rather than the
+    // repeating background schedules the gate below is aimed at.
     window._privarTriggerCrossDeviceSync = () => {
       scanStealthNotes(account.address, recomputeShielded).catch(() => {});
       scanNoteRelay(account.address, recomputeShielded).catch(() => {});
@@ -1496,10 +1518,12 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
       // fire fully concurrently with each other AND with the 2-minute poll
       // below, confirmed as a major contributor to a sustained rate-limit
       // storm (400+ backoffs in one user session).
-      scanStealthNotes(account.address, recomputeShielded).catch(() => {});
-      scanNoteRelay(account.address, recomputeShielded).catch(() => {}); // §7.5 — address-free counterpart
-      resyncFromCloudVault(account.address, recomputeShielded).catch(() => {});
-      resyncFromShieldVaultJournal(account.address, recomputeShielded).catch(() => {});
+      // v21.3.6: gated by canSkipDiscoveryScans — see that function's
+      // comment. Naturally a no-op skip risk here specifically: leafCount
+      // is very likely still null this early (the stats fetch hasn't
+      // resolved yet even with v21.3.5's priority fetch), and the gate
+      // never skips on unknown data.
+      runCrossDeviceDiscoveryScans(account.address, recomputeShielded, leafCountRef.current, "connect");
       // Retry any SPEND broadcasts that failed on a previous session (see
       // "Pending SPEND broadcast queue") — a no-op wallet-side if the queue
       // is empty, so safe to run on every connect without extra prompts.
@@ -1550,12 +1574,13 @@ function Dashboard({ user, prices, changes, change24h, lastUpdate, priceError })
     })();
     // Rescan every 3 minutes (was 2 — see runPrivarThrottled's AUDIT FINDING,
     // round 2: reduces sustained request volume against a tight shared rate
-    // limit) in case new stealth notes / cloud journal entries arrive
+    // limit) in case new stealth notes / cloud journal entries arrive.
+    // v21.3.6: gated by canSkipDiscoveryScans — this is exactly the
+    // repeating background schedule that gate is for. protocolStats.leafCount
+    // has almost certainly resolved by the time this first fires (3 minutes
+    // in), so this is where the free win actually pays off in practice.
     const id = setInterval(() => {
-      scanStealthNotes(account.address, recomputeShielded).catch(() => {});
-      scanNoteRelay(account.address, recomputeShielded).catch(() => {});
-      resyncFromCloudVault(account.address, recomputeShielded).catch(() => {});
-      resyncFromShieldVaultJournal(account.address, recomputeShielded).catch(() => {});
+      runCrossDeviceDiscoveryScans(account.address, recomputeShielded, leafCountRef.current, "3min-interval");
     }, 180_000);
     // v21.3.2 — REMOVED the "fast catch-up burst" that used to run here
     // (all 4 scanners again every 12s, up to 10 times = 2 minutes after
@@ -2930,6 +2955,69 @@ function shieldVaultJournalGenesisBlock() {
   }
   return __shieldVaultDeployBlockPromise;
 }
+
+// v21.3.6 — free, zero-extra-RPC gate on the 4 cross-device discovery
+// scanners (stealth/relay/cloudvault/journal), using a number the app
+// already fetches for the UI anyway: PrivarMerkleTreeManager.nextIndex()
+// (the "Commitments" stat on the Shield screen). That count only ever
+// GROWS, and only ever grows when a NEW commitment is inserted anywhere in
+// the protocol — which is exactly the condition all 4 discovery scanners
+// exist to detect (a note created on another device IS a new commitment).
+// So: if this count hasn't moved since the last time we checked, there is
+// categorically nothing new for ANY of the 4 scanners to find, and calling
+// them is a guaranteed-wasted round of RPC/Blockscout calls — exactly the
+// kind of redundant, closely-spaced re-triggering the "6 identical
+// [cloud vault resync] lines" log (v21.3.2) was full of.
+//
+// Does NOT replace each scanner's own checkpoint/retry logic — this only
+// decides whether to bother calling them at all this cycle. Deliberately
+// NOT applied to reconcileAndVerifyNotes(): that function also detects
+// SPENDS via nullifier events, and a withdrawal with no change output
+// consumes a nullifier without necessarily inserting a new leaf, so an
+// unchanged leaf count doesn't guarantee "nothing relevant happened" for
+// that specific check the way it does for pure note-discovery.
+//
+// Safety bound: never skips for more than ~15 minutes straight, regardless
+// of the count — so even in the narrow case where a scan attempt keeps
+// failing while global protocol activity happens to be flat, a real
+// attempt still gets forced periodically rather than potentially skipping
+// forever.
+function lastKnownCommitmentCountKey(address) { return `privar_lastknown_commitcount_${address.toLowerCase()}`; }
+function lastForcedDiscoveryScanKey(address) { return `privar_lastforced_discoveryscan_${address.toLowerCase()}`; }
+const DISCOVERY_SCAN_FORCE_INTERVAL_MS = 15 * 60 * 1000;
+
+function canSkipDiscoveryScans(address, currentLeafCount) {
+  if (currentLeafCount == null) return false; // don't know — never skip on missing data
+  let lastCount = null, lastForced = 0;
+  try {
+    const v = localStorage.getItem(lastKnownCommitmentCountKey(address));
+    lastCount = v != null ? Number(v) : null;
+    const f = localStorage.getItem(lastForcedDiscoveryScanKey(address));
+    lastForced = f != null ? Number(f) : 0;
+  } catch {}
+  const unchanged = lastCount != null && Number(currentLeafCount) === lastCount;
+  const forceDue = (Date.now() - lastForced) > DISCOVERY_SCAN_FORCE_INTERVAL_MS;
+  try { localStorage.setItem(lastKnownCommitmentCountKey(address), String(currentLeafCount)); } catch {}
+  if (unchanged && !forceDue) return true;
+  try { localStorage.setItem(lastForcedDiscoveryScanKey(address), String(Date.now())); } catch {}
+  return false;
+}
+
+// Shared entry point for all 3 trigger sites (mount, 3-minute interval,
+// post-operation onSuccess) — replaces calling the 4 scanners directly so
+// the gate above is applied consistently everywhere instead of duplicated.
+function runCrossDeviceDiscoveryScans(address, recompute, leafCount, label) {
+  if (canSkipDiscoveryScans(address, leafCount)) {
+    console.info(`[Privar] cross-device discovery (${label}): commitment count unchanged (${leafCount}) since last check — skipping, nothing new anywhere in the protocol`);
+    return;
+  }
+  scanStealthNotes(address, recompute).catch(() => {});
+  scanNoteRelay(address, recompute).catch(() => {});
+  resyncFromCloudVault(address, recompute).catch(() => {});
+  resyncFromShieldVaultJournal(address, recompute).catch(() => {});
+}
+
+
 
 // IMPORTANT: the address is normalized to lowercase here. Different wallets
 // return the connected account in different casing from eth_requestAccounts/

@@ -1,6 +1,6 @@
 # Privar OS
 
-![version](https://img.shields.io/badge/version-v21.3.5-00FFB0?style=flat-square&labelColor=0a1628)
+![version](https://img.shields.io/badge/version-v21.3.6-00FFB0?style=flat-square&labelColor=0a1628)
 ![react](https://img.shields.io/badge/React-18-61dafb?style=flat-square&logo=react&labelColor=0a1628)
 ![vite](https://img.shields.io/badge/Vite-5-646cff?style=flat-square&logo=vite&labelColor=0a1628)
 ![network](https://img.shields.io/badge/Arc_Testnet-chainId_5042002-00FFB0?style=flat-square&labelColor=0a1628)
@@ -270,6 +270,23 @@ git push origin main --tags
 Open a PR against `main`, and before merging a contract-address sync specifically: confirm the Shield panel's TVL/version stats reflect the new vault, and — since a full-suite redeploy is never a migration — communicate to users that any balance on the previous `PrivarShieldVault` address must be withdrawn from there before switching over.
 
 ## Changelog
+
+### v21.3.6 — free win: skip discovery scans entirely when the global commitment count hasn't moved (2026-09-25)
+See `CHANGELOG-v21.0.0.md` (§v21.3.6) for full details. Summary: implements
+the zero-extra-RPC optimization from the paginated-registry discussion —
+`PrivarMerkleTreeManager.nextIndex()` (already fetched every 45s for the
+"Commitments" stat) only grows when a new commitment is inserted anywhere
+in the protocol, exactly the condition the 4 cross-device discovery
+scanners exist to detect. If it hasn't moved since the last check, calling
+them is guaranteed wasted work — now skipped, applied to the mount call and
+the 3-minute interval (the repeating schedules where this actually pays
+off), deliberately NOT applied to the post-action immediate trigger (needs
+to stay forceful) or to `reconcileAndVerifyNotes` (also detects spends,
+which don't always insert a new leaf). Caught and fixed a real stale-closure
+bug while wiring this up: the interval's callback would have silently
+compared against a `null` forever without a ref. Bounded to never skip more
+than ~15 minutes straight. Contracts untouched — this is step one of two;
+the paginated on-chain registry itself is next.
 
 ### v21.3.5 — REGRESSION FIX: protocol stats stuck on "—", fee preview stuck on "loading…" (2026-09-23)
 See `CHANGELOG-v21.0.0.md` (§v21.3.5) for full details. Summary: confirmed
